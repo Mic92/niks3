@@ -5,5 +5,6 @@ mkShell {
     go
     golangci-lint
     gopls
+    minio-client
   ];
 }

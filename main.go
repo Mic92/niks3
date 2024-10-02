@@ -4,8 +4,6 @@ import (
 	"flag"
 	"log"
 	"os"
-
-	"github.com/Mic92/nix-s3-gc/api"
 )
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -15,18 +13,21 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func parseArgs() *api.Options {
-	var opts api.Options
-	flag.StringVar(&opts.DBPath, "db", getEnvOrDefault("NIX_S3_GC_DB", "nix-s3-gc.db"), "Path to the database file")
+func parseArgs() *Options {
+	var opts Options
+	flag.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIX_S3_GC_DB", ""), "Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters")
 	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIX_S3_GC_HTTP_ADDR", ":5751"), "HTTP address to listen on")
 	flag.Parse()
+	if opts.DBConnectionString == "" {
+		log.Fatalf("Missing required flag: --db")
+	}
 	return &opts
 }
 
 func main() {
 	opts := parseArgs()
-	if err := api.RunServer(opts); err != nil {
+	if err := RunServer(opts); err != nil {
 		log.Fatalf("Failed to run gc service: %v", err)
 	}
-	api.RunServer(opts)
+	RunServer(opts)
 }

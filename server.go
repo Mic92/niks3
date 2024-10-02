@@ -1,24 +1,22 @@
-package api
+package main
 
 import (
 	"fmt"
 	"log/slog"
 	"net/http"
-
-	bolt "go.etcd.io/bbolt"
 )
 
 type Options struct {
-	DBPath   string
+	DBConnectionString string
 	HTTPAddr string
 }
 
 type Server struct {
-	db *bolt.DB
+	db *Db
 }
 
 func RunServer(opts *Options) error {
-	db, err := bolt.Open(opts.DBPath, 0o600, nil)
+	db, err := ConnectDB(opts.DBConnectionString)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -28,6 +26,7 @@ func RunServer(opts *Options) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", service.healthCheckHandler)
+	mux.HandleFunc("/uploads", service.uploadsHandler)
 
 	server := &http.Server{
 		Addr:    opts.HTTPAddr,
