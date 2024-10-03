@@ -12,7 +12,7 @@ type Options struct {
 }
 
 type Server struct {
-	db *Db
+	db *DB
 }
 
 func RunServer(opts *Options) error {
