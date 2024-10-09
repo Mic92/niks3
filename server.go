@@ -26,7 +26,8 @@ func RunServer(opts *Options) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", service.healthCheckHandler)
-	mux.HandleFunc("/uploads", service.uploadsHandler)
+	mux.HandleFunc("/uploads", service.startUploadHandler)
+	mux.HandleFunc("/uploads/{upload_id}/complete", service.completeUploadHandler)
 
 	server := &http.Server{
 		Addr:    opts.HTTPAddr,

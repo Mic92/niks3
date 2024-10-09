@@ -1,4 +1,4 @@
-module github.com/Mic92/nix-s3-gc
+module github.com/Mic92/niks3
 
 go 1.22.7
 

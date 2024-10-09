@@ -1,18 +1,20 @@
 package main
 
 import (
-	"log/slog"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strconv"
 )
 
 type UploadsRequest struct {
-	StorePaths []string `json:"store_paths"`
+	ClosureNarHash string   `json:"closure_nar_hash"`
+	StorePaths     []string `json:"store_paths"`
 }
 
 // POST /uploads
 // Request body: {"store_paths": ["3dyw8dzj9ab4m8hv5dpyx7zii8d0w6fi", "3dyw8dzj9ab4m8hv5dpyx7zii8d0w6fi"]}
-func (s *Server) uploadsHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
 	req := &UploadsRequest{}
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
@@ -20,7 +22,7 @@ func (s *Server) uploadsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	upload, err := s.db.StartUpload(req.StorePaths)
+	upload, err := s.db.StartUpload(req.ClosureNarHash, req.StorePaths)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -31,4 +33,25 @@ func (s *Server) uploadsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// POST /uploads/{upload_id}/complete
+// Request body: {}
+func (s *Server) completeUploadHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
+	uploadID := r.URL.Query().Get("upload_id")
+	if uploadID == "" {
+		http.Error(w, "missing upload_id", http.StatusBadRequest)
+		return
+	}
+	parsedUploadID, err := strconv.ParseInt(uploadID, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid upload_id", http.StatusBadRequest)
+		return
+	}
+	if err = s.db.CompleteUpload(parsedUploadID); err != nil {
+		http.Error(w, "failed to complete upload: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
