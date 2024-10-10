@@ -1,4 +1,4 @@
-# GC server for S3-based Nix binary caches
+# GC server for Nix binary caches based on S3-compatible storage
 
 Status: WIP, nothing works yet
 
