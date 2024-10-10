@@ -37,3 +37,7 @@ func RunServer(opts *Options) error {
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
 	return server.ListenAndServe()
 }
+
+func (s *Server) Close() {
+	s.db.Close()
+}
