@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type Upload struct {
+type UploadResponse struct {
 	ID        string    `json:"id"`
 	StartedAt time.Time `json:"started_at"`
 }
@@ -60,7 +60,7 @@ type closureObjectParams struct {
 	NarHash        string `db:"nar_hash"`
 }
 
-func (d *DB) StartUpload(closureNarHash string, storePaths []string) (*Upload, error) {
+func (d *DB) StartUpload(closureNarHash string, storePaths []string) (*UploadResponse, error) {
 	uploadStartedAt := time.Now().UTC()
 	tx, err := d.db.Beginx()
 	if err != nil {
@@ -115,7 +115,7 @@ func (d *DB) StartUpload(closureNarHash string, storePaths []string) (*Upload, e
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	return &Upload{
+	return &UploadResponse{
 		// use string to avoid json marshalling issues
 		ID:        fmt.Sprintf("%d", uploadID),
 		StartedAt: uploadStartedAt,
