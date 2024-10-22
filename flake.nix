@@ -12,21 +12,18 @@
 
   outputs =
     inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } (
-      { lib, ... }:
-      {
-        systems = [
-          "x86_64-linux"
-          "aarch64-linux"
-          "x86_64-darwin"
-          "aarch64-darwin"
-        ];
-        imports = [
-          ./nix/devshells/flake-module.nix
-          ./nix/packages/flake-module.nix
-          ./nix/formatter/flake-module.nix
-          ./nix/checks/flake-module.nix
-        ];
-      }
-    );
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      imports = [
+        ./nix/devshells/flake-module.nix
+        ./nix/packages/flake-module.nix
+        ./nix/formatter/flake-module.nix
+        ./nix/checks/flake-module.nix
+      ];
+    };
 }
