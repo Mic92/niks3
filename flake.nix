@@ -25,6 +25,7 @@
           ./nix/devshells/flake-module.nix
           ./nix/packages/flake-module.nix
           ./nix/formatter/flake-module.nix
+          ./nix/checks/flake-module.nix
         ];
       }
     );
