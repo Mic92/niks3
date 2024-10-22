@@ -8,7 +8,7 @@ import (
 
 type Options struct {
 	DBConnectionString string
-	HTTPAddr string
+	HTTPAddr           string
 }
 
 type Server struct {

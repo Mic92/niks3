@@ -12,8 +12,8 @@ func TestServer_healthCheckHandler(t *testing.T) {
 	server.db.Close()
 
 	testRequest(&TestRequest{
-		method: "GET",
-	  path: "/health",
-	  handler: server.healthCheckHandler,
+		method:  "GET",
+		path:    "/health",
+		handler: server.healthCheckHandler,
 	}, t)
 }
