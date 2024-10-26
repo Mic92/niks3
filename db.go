@@ -1,38 +1,18 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"log/slog"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 )
 
-var schema = `
-CREATE TABLE IF NOT EXISTS closures (
-	nar_hash char(32) primary key,
-  updated_at timestamp not null
-);
-
-CREATE TABLE IF NOT EXISTS uploads (
-  id int generated always as identity primary key,
-  started_at timestamp not null,
-  closure_nar_hash char(32) not null references closures(nar_hash)
-);
-
-CREATE TABLE IF NOT EXISTS objects (
-	nar_hash char(32) primary key,
-	reference_count integer not null
-);
--- partial index to find objects with reference_count == 0
-CREATE INDEX IF NOT EXISTS objects_reference_count_zero_idx ON objects(nar_hash) WHERE reference_count = 0;
-
-CREATE TABLE IF NOT EXISTS closure_objects (
-	closure_nar_hash char(32) not null references closures(nar_hash),
-	nar_hash char(32) not null references objects(nar_hash)
-);
-CREATE INDEX IF NOT EXISTS closure_objects_closure_nar_hash_idx ON closure_objects(closure_nar_hash);
-`
+//go:embed migrations/*.sql
+var embedMigrations embed.FS
 
 type DB struct {
 	db                       *sqlx.DB
@@ -57,8 +37,15 @@ func ConnectDB(connectionString string) (*DB, error) {
 	if d.db, err = sqlx.Connect("postgres", connectionString); err != nil {
 		return nil, fmt.Errorf("failed to connect to db: %w", err)
 	}
-	if _, err = d.db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("failed to create schema: %w", err)
+
+	// migrate the database
+	slog.Debug("migrating database")
+	goose.SetBaseFS(embedMigrations)
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		return nil, fmt.Errorf("failed to set dialect: %w", err)
+	} else if err = goose.Up(d.db.DB, "migrations"); err != nil {
+		return nil, fmt.Errorf("failed to migrate db: %w", err)
 	}
 
 	if d.upsertClosureStmt, err = d.db.PrepareNamed(upsertClosureQuery); err != nil {
