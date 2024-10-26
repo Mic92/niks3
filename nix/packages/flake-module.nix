@@ -6,7 +6,7 @@
         name = "niks3";
         src = ../..;
 
-        vendorHash = "sha256-FSDLGB+oN/sZhlBwugOiG2I3m+tcHpkaznY3rX6825c=";
+        vendorHash = "sha256-X2gMvKQeAY7pVJYAP4O0Nq+seiSuGvPub26seCk0c80=";
 
         # TODO: fix sandbox test
         doCheck = false;

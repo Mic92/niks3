@@ -9,6 +9,7 @@ import (
 type Options struct {
 	DBConnectionString string
 	HTTPAddr           string
+	MigrateDB          bool
 }
 
 type Server struct {
