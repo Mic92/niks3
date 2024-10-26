@@ -7,8 +7,6 @@
       ...
     }:
     let
-      postgresql = pkgs.postgresql_16;
-
       initdb = {
         args = [
           "--locale=en_US.UTF-8"
@@ -31,7 +29,7 @@
 
               mkdir -p "$PGDATA"
 
-              eval '${postgresql}/bin/initdb --username="$PGUSER" --pwfile=<(printf "%s\n" "$PGPASS") ${lib.concatStringsSep " " initdb.args}'
+              eval 'initdb --username="$PGUSER" --pwfile=<(printf "%s\n" "$PGPASS") ${lib.concatStringsSep " " initdb.args}'
 
               cat >> "$PGDATA/postgresql.conf" <<EOF
                 port = $PGPORT
@@ -39,20 +37,18 @@
                 unix_socket_directories = '$PGHOST'
             EOF
 
-              echo "CREATE DATABASE ''${PGUSER:-$(id -nu)};" | ${postgresql}/bin/postgres --single -E postgres
+              echo "CREATE DATABASE ''${PGUSER:-$(id -nu)};" | postgres --single -E postgres
 
               # execute init scripts
               ${
-                lib.concatStringsSep "\n" (
-                  map (script: "${postgresql}/bin/postgres --single -E postgres < ${script}") initdb.scripts
-                )
+                lib.concatStringsSep "\n" (map (script: "postgres --single -E postgres < ${script}") initdb.scripts)
               }
             fi
           '';
           settings = {
             processes = {
               postgres = {
-                command = "${postgresql}/bin/postgres";
+                command = "postgres";
                 working_dir = "$PGDATA";
               };
             };
