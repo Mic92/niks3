@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestMain(m *testing.M) {
+func innerTestMain(m *testing.M) int {
 	var err error
 	testPostgresServer, err = startPostgresServer()
 	defer testPostgresServer.Cleanup()
@@ -14,5 +14,10 @@ func TestMain(m *testing.M) {
 		slog.Error("failed to start postgres", "error", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	return m.Run()
+}
+
+func TestMain(m *testing.M) {
+	// inner main is required to be able to defer cleanup
+	os.Exit(innerTestMain(m))
 }
