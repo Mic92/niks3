@@ -8,6 +8,8 @@
 
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+
+    process-compose.url = "github:Platonic-Systems/process-compose-flake";
   };
 
   outputs =
