@@ -8,8 +8,7 @@
 
         vendorHash = "sha256-X2gMvKQeAY7pVJYAP4O0Nq+seiSuGvPub26seCk0c80=";
 
-        # TODO: fix sandbox test
-        doCheck = false;
+        doCheck = true;
         nativeCheckInputs = [
           pkgs.postgresql
           pkgs.minio-client
