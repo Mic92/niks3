@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -10,9 +12,24 @@ func TestServer_startUploadHandler(t *testing.T) {
 	server := createTestServer(t)
 	defer server.Close()
 
+	invalidBody, err := json.Marshal(map[string]interface{}{})
+	ok(t, err)
+	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected http status 400, got %d", rr.Code)
+		}
+	}
+	testRequest(&TestRequest{
+		method:        "POST",
+		path:          "/upload",
+		body:          invalidBody,
+		handler:       server.startUploadHandler,
+		checkResponse: &val,
+	}, t)
+
 	body, err := json.Marshal(map[string]interface{}{
-		"closure_nar_hash": "00000000000000000000000000000000",
-		"store_paths":      []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		"closure": "00000000000000000000000000000000",
+		"objects": []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 	})
 	ok(t, err)
 
