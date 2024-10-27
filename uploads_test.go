@@ -22,12 +22,13 @@ func TestServer_startUploadHandler(t *testing.T) {
 	}
 	testRequest(&TestRequest{
 		method:        "POST",
-		path:          "/upload",
+		path:          "/pending_closure",
 		body:          invalidBody,
-		handler:       server.startUploadHandler,
+		handler:       server.createPendingClosureHandler,
 		checkResponse: &val,
 	}, t)
 
+	closureKey := "00000000000000000000000000000000"
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": "00000000000000000000000000000000",
 		"objects": []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
@@ -36,23 +37,45 @@ func TestServer_startUploadHandler(t *testing.T) {
 
 	rr := testRequest(&TestRequest{
 		method:  "POST",
-		path:    "/upload",
+		path:    "/pending_closure",
 		body:    body,
-		handler: server.startUploadHandler,
+		handler: server.createPendingClosureHandler,
 	}, t)
 
-	var uploadResponse UploadResponse
-	err = json.Unmarshal(rr.Body.Bytes(), &uploadResponse)
-	slog.Info("upload response", "response", rr.Body.String(), "status", rr.Code)
+	var pendingClosureResponse PendingClosureResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
+	slog.Info("create pending closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
-	if uploadResponse.ID == "" {
+	if pendingClosureResponse.ID == "" {
 		t.Errorf("handler returned empty upload id")
 	}
 
 	testRequest(&TestRequest{
 		method:  "POST",
-		path:    fmt.Sprintf("/upload/%s/complete", uploadResponse.ID),
+		path:    fmt.Sprintf("/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
-		handler: server.startUploadHandler,
+		handler: server.commitPendingClosureHandler,
+		pathValues: map[string]string{
+			"id": pendingClosureResponse.ID,
+		},
 	}, t)
+
+	rr = testRequest(&TestRequest{
+		method:  "GET",
+		path:    fmt.Sprintf("/closure/%s", closureKey),
+		body:    body,
+		handler: server.getClosureHandler,
+		pathValues: map[string]string{
+			"key": closureKey,
+		},
+	}, t)
+
+	var closureResponse ClosureResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
+	slog.Info("get closure", "response", rr.Body.String(), "status", rr.Code)
+	ok(t, err)
+	objects := closureResponse.Objects
+	if len(objects) != 2 {
+		t.Errorf("expected 2 objects, got %d", len(objects))
+	}
 }

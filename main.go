@@ -38,5 +38,4 @@ func main() {
 	if err := RunServer(opts); err != nil {
 		log.Fatalf("Failed to run gc service: %v", err)
 	}
-	RunServer(opts)
 }

@@ -63,12 +63,16 @@ type TestRequest struct {
 	// function to checkResponse the response
 	checkResponse *func(*testing.T, *httptest.ResponseRecorder)
 	header        map[string]string
+	pathValues    map[string]string
 }
 
 func testRequest(req *TestRequest, tb *testing.T) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
 	handler := http.HandlerFunc(req.handler)
 	httpReq, err := http.NewRequest(req.method, req.path, bytes.NewBuffer(req.body))
+	for k, v := range req.pathValues {
+		httpReq.SetPathValue(k, v)
+	}
 	for k, v := range req.header {
 		httpReq.Header.Set(k, v)
 	}
