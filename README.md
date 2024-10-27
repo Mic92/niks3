@@ -7,3 +7,28 @@ and have a gc server that tracks all uploads to the cache and runs periodic GC o
 Since writes to a binary cache are often not as critical as reads,
 we can vastly simplify the operational complexity of the GC server, i.e. only
 running one instance next to the CI infrastructure.
+
+## DB Migrations
+
+We use [Goose].
+
+Migrations are located in `pg/migrations`.
+
+## SQL Querying
+
+We use \[sqlc\] with \[pgx\].
+
+Config is located at `sqlc.yml`. Re-generate using `sqlc generate`.
+
+## Local dev services
+
+A `postgres` and `minio` service is available for local dev by running `nix run .#dev`.
+
+It uses `process-compose`. Look in `.envrc` for some env variables that are related.
+
+State is stored in `.data`. For a fresh local dev environment, delete `.data`.
+
+\[sqlc\]\]: https://sqlc.dev/
+\[pgx\]: https://github.com/jackc/pgx
+
+[goose]: https://github.com/pressly/goose
