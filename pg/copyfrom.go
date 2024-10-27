@@ -29,8 +29,8 @@ func (r *iteratorForInsertClosures) Next() bool {
 
 func (r iteratorForInsertClosures) Values() ([]interface{}, error) {
 	return []interface{}{
-		r.rows[0].ClosureNarHash,
-		r.rows[0].NarHash,
+		r.rows[0].ClosureKey,
+		r.rows[0].ObjectKey,
 	}, nil
 }
 
@@ -39,5 +39,5 @@ func (r iteratorForInsertClosures) Err() error {
 }
 
 func (q *Queries) InsertClosures(ctx context.Context, arg []InsertClosuresParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"closure_objects"}, []string{"closure_nar_hash", "nar_hash"}, &iteratorForInsertClosures{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"closure_objects"}, []string{"closure_key", "object_key"}, &iteratorForInsertClosures{rows: arg})
 }
