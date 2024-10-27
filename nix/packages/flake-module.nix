@@ -6,7 +6,7 @@
         name = "niks3";
         src = ../..;
 
-        vendorHash = "sha256-X2gMvKQeAY7pVJYAP4O0Nq+seiSuGvPub26seCk0c80=";
+        vendorHash = "sha256-PX0MYvoyZYYHYV7sMMXVbzDl+TpQjIJpAr4RBFxSmuQ=";
 
         doCheck = true;
         nativeCheckInputs = [
