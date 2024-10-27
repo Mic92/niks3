@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
+
+	"github.com/Mic92/niks3/pg"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Options struct {
@@ -13,17 +18,20 @@ type Options struct {
 }
 
 type Server struct {
-	db *DB
+	pool *pgxpool.Pool
 }
 
 func RunServer(opts *Options) error {
-	db, err := ConnectDB(opts.DBConnectionString)
-	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
-	}
-	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	service := &Server{db: db}
+	pool, err := pg.Connect(ctx, opts.DBConnectionString)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer pool.Close()
+
+	service := &Server{pool: pool}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", service.healthCheckHandler)
@@ -40,5 +48,5 @@ func RunServer(opts *Options) error {
 }
 
 func (s *Server) Close() {
-	s.db.Close()
+	s.pool.Close()
 }

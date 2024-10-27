@@ -18,34 +18,35 @@
 --
 -- +goose Up
 -- +goose StatementBegin
-
-CREATE TABLE closures (
-    key char(32) primary key,
+CREATE TABLE closures
+(
+    nar_hash   char(32) primary key,
     updated_at timestamp not null
 );
 
-CREATE TABLE uploads (
-    id int generated always as identity primary key,
-    started_at timestamp not null,
-    closure_key char(32) not null references closures(key)
+CREATE TABLE uploads
+(
+    id               bigint generated always as identity primary key,
+    started_at       timestamp not null,
+    closure_nar_hash char(32)  not null references closures (nar_hash)
 );
 
-CREATE TABLE IF NOT EXISTS objects (
-    -- do we need longer names than this?
-    -- how long can be output names?
-    key char(200) primary key,
+CREATE TABLE objects
+(
+    nar_hash        char(32) primary key,
     reference_count integer not null
 );
 
 -- partial index to find objects with reference_count == 0
-CREATE INDEX objects_reference_count_zero_idx ON objects(key) WHERE reference_count = 0;
+CREATE INDEX objects_reference_count_zero_idx ON objects (nar_hash) WHERE reference_count = 0;
 
-CREATE TABLE IF NOT EXISTS closure_objects (
-    closure_key char(32) not null references closures(key),
-    object_key char(200) not null references objects(key)
+CREATE TABLE IF NOT EXISTS closure_objects
+(
+    closure_nar_hash char(32) not null references closures (nar_hash),
+    nar_hash         char(32) not null references objects (nar_hash)
 );
 
-CREATE INDEX IF NOT EXISTS closure_objects_closure_key_idx ON closure_objects(closure_key);
+CREATE INDEX closure_objects_closure_nar_hash_idx ON closure_objects (closure_nar_hash);
 
 -- +goose StatementEnd
 

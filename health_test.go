@@ -9,7 +9,7 @@ func TestServer_healthCheckHandler(t *testing.T) {
 	defer server.Close()
 
 	// check that health check works also with database closed
-	server.db.Close()
+	server.pool.Close()
 
 	testRequest(&TestRequest{
 		method:  "GET",
