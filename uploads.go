@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+
+	"github.com/Mic92/niks3/pg"
 )
 
 type UploadsRequest struct {
@@ -48,7 +50,7 @@ func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 	for _, object := range req.Objects {
 		storePathSet[object] = true
 	}
-	upload, err := s.db.StartUpload(*req.Closure, storePathSet)
+	upload, err := StartUpload(r.Context(), s.pool, *req.Closure, storePathSet)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -67,19 +69,24 @@ func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 // Response body: -
 func (s *Server) completeUploadHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
+
 	uploadID := r.URL.Query().Get("upload_id")
 	if uploadID == "" {
 		http.Error(w, "missing upload_id", http.StatusBadRequest)
 		return
 	}
+
 	parsedUploadID, err := strconv.ParseInt(uploadID, 10, 64)
 	if err != nil {
 		http.Error(w, "invalid upload_id", http.StatusBadRequest)
 		return
 	}
-	if err = s.db.CompleteUpload(parsedUploadID); err != nil {
+
+	queries := pg.New(s.pool)
+	if err = queries.DeleteUpload(r.Context(), parsedUploadID); err != nil {
 		http.Error(w, "failed to complete upload: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }

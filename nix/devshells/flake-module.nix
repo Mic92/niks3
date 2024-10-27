@@ -19,6 +19,7 @@
           pkgs.goose # db migrations
           pkgs.delve
           pkgs.postgresql_16
+          pkgs.sqlc # type safe querying
         ];
 
         shellHook = ''

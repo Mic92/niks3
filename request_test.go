@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"os/exec"
 	"strconv"
 	"testing"
+
+	"github.com/Mic92/niks3/pg"
 )
 
 func createTestServer(t *testing.T) *Server {
@@ -25,12 +28,16 @@ func createTestServer(t *testing.T) *Server {
 	ok(t, err)
 
 	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
-	db, err := ConnectDB(connectionString)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10)
+	defer cancel()
+
+	pool, err := pg.Connect(ctx, connectionString)
 	if err != nil {
 		ok(t, err)
 	}
 	return &Server{
-		db: db,
+		pool: pool,
 	}
 }
 
