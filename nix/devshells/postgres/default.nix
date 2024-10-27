@@ -52,7 +52,6 @@
                 working_dir = "$PGDATA";
               };
             };
-
           };
         };
       };
