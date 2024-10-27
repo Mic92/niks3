@@ -48,15 +48,15 @@ func StartUpload(ctx context.Context, pool *pgxpool.Pool, closureKey string, sto
 
 	// upsert closure
 	if err = queries.UpsertClosure(ctx, pg.UpsertClosureParams{
-		NarHash:   closureKey,
+		Key:       closureKey,
 		UpdatedAt: timestamp,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to upsert closure: %w", err)
 	}
 
 	if uploadID, err = queries.InsertUpload(ctx, pg.InsertUploadParams{
-		StartedAt:      timestamp,
-		ClosureNarHash: closureKey,
+		StartedAt:  timestamp,
+		ClosureKey: closureKey,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to insert upload: %w", err)
 	}
@@ -70,8 +70,8 @@ func StartUpload(ctx context.Context, pool *pgxpool.Pool, closureKey string, sto
 	closures := make([]pg.InsertClosuresParams, 0, len(storePathSet))
 	for storePath := range storePathSet {
 		closures = append(closures, pg.InsertClosuresParams{
-			NarHash:        storePath,
-			ClosureNarHash: closureKey,
+			ObjectKey:  storePath,
+			ClosureKey: closureKey,
 		})
 	}
 

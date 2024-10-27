@@ -21,51 +21,51 @@ func (q *Queries) DeleteUpload(ctx context.Context, id int64) error {
 }
 
 type InsertClosuresParams struct {
-	ClosureNarHash string `json:"closure_nar_hash"`
-	NarHash        string `json:"nar_hash"`
+	ClosureKey string `json:"closure_key"`
+	ObjectKey  string `json:"object_key"`
 }
 
 const insertUpload = `-- name: InsertUpload :one
-INSERT INTO uploads (started_at, closure_nar_hash) VALUES ($1, $2) RETURNING id
+INSERT INTO uploads (started_at, closure_key) VALUES ($1, $2) RETURNING id
 `
 
 type InsertUploadParams struct {
-	StartedAt      pgtype.Timestamp `json:"started_at"`
-	ClosureNarHash string           `json:"closure_nar_hash"`
+	StartedAt  pgtype.Timestamp `json:"started_at"`
+	ClosureKey string           `json:"closure_key"`
 }
 
 func (q *Queries) InsertUpload(ctx context.Context, arg InsertUploadParams) (int64, error) {
-	row := q.db.QueryRow(ctx, insertUpload, arg.StartedAt, arg.ClosureNarHash)
+	row := q.db.QueryRow(ctx, insertUpload, arg.StartedAt, arg.ClosureKey)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
 
 const upsertClosure = `-- name: UpsertClosure :exec
-INSERT INTO closures (nar_hash, updated_at)
+INSERT INTO closures (key, updated_at)
 VALUES ($1, $2)
-ON CONFLICT (nar_hash)
+ON CONFLICT (key)
 DO UPDATE SET updated_at = $2
 `
 
 type UpsertClosureParams struct {
-	NarHash   string           `json:"nar_hash"`
+	Key       string           `json:"key"`
 	UpdatedAt pgtype.Timestamp `json:"updated_at"`
 }
 
 func (q *Queries) UpsertClosure(ctx context.Context, arg UpsertClosureParams) error {
-	_, err := q.db.Exec(ctx, upsertClosure, arg.NarHash, arg.UpdatedAt)
+	_, err := q.db.Exec(ctx, upsertClosure, arg.Key, arg.UpdatedAt)
 	return err
 }
 
 const upsertObject = `-- name: UpsertObject :exec
-INSERT INTO objects (nar_hash, reference_count)
+INSERT INTO objects (key, reference_count)
 VALUES ($1, 1)
-ON CONFLICT (nar_hash)
+ON CONFLICT (key)
 DO UPDATE SET reference_count = objects.reference_count + 1
 `
 
-func (q *Queries) UpsertObject(ctx context.Context, narHash string) error {
-	_, err := q.db.Exec(ctx, upsertObject, narHash)
+func (q *Queries) UpsertObject(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, upsertObject, key)
 	return err
 }
