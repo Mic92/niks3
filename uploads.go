@@ -14,6 +14,7 @@ type UploadsRequest struct {
 	Objects []string `json:"objects"`
 }
 
+// startUploadHandler
 // POST /uploads
 // Request body:
 //
@@ -24,8 +25,11 @@ type UploadsRequest struct {
 // Response body:
 //
 //	{
-//	 "id": 1,
-//	 "started_at": "2021-08-31T00:00:00Z"
+//	  "id": 1,
+//	  "started_at": "2021-08-31T00:00:00Z"
+//	  "objects": {
+//		  "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo": "https://yours3endpoint?authkey=...",
+//	   }
 //	}
 func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
