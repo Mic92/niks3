@@ -9,22 +9,22 @@ import (
 )
 
 type Closure struct {
-	NarHash   string           `json:"nar_hash"`
+	Key       string           `json:"key"`
 	UpdatedAt pgtype.Timestamp `json:"updated_at"`
 }
 
 type ClosureObject struct {
-	ClosureNarHash string `json:"closure_nar_hash"`
-	NarHash        string `json:"nar_hash"`
+	ClosureKey string `json:"closure_key"`
+	ObjectKey  string `json:"object_key"`
 }
 
 type Object struct {
-	NarHash        string `json:"nar_hash"`
+	Key            string `json:"key"`
 	ReferenceCount int32  `json:"reference_count"`
 }
 
 type Upload struct {
-	ID             int64            `json:"id"`
-	StartedAt      pgtype.Timestamp `json:"started_at"`
-	ClosureNarHash string           `json:"closure_nar_hash"`
+	ID         int64            `json:"id"`
+	StartedAt  pgtype.Timestamp `json:"started_at"`
+	ClosureKey string           `json:"closure_key"`
 }
