@@ -10,13 +10,18 @@ import (
 	"os/exec"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/pg"
+	minio "github.com/minio/minio-go/v7"
 )
 
 func createTestServer(t *testing.T) *Server {
 	if testPostgresServer == nil {
 		t.Fatal("postgres server not started")
+	}
+	if testMinioServer == nil {
+		t.Fatal("minio server not started")
 	}
 
 	// create database for test
@@ -29,15 +34,24 @@ func createTestServer(t *testing.T) *Server {
 
 	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	pool, err := pg.Connect(ctx, connectionString)
 	if err != nil {
 		ok(t, err)
 	}
+	// create bucket for test
+	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
+	minioClient := testMinioServer.Client(t)
+
+	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	ok(t, err)
+
 	return &Server{
-		pool: pool,
+		pool:        pool,
+		bucketName:  bucketName,
+		minioClient: minioClient,
 	}
 }
 
