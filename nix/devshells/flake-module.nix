@@ -23,6 +23,7 @@
           pkgs.sqlc # type safe querying
           pkgs.minio-client
           pkgs.awscli
+          pkgs.minio
         ];
 
         shellHook = ''
