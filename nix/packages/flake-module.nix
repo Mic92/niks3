@@ -6,12 +6,13 @@
         name = "niks3";
         src = ../..;
 
-        vendorHash = "sha256-PX0MYvoyZYYHYV7sMMXVbzDl+TpQjIJpAr4RBFxSmuQ=";
+        vendorHash = "sha256-Vqll61QhSmpN6GdL7L2ghUHtzpT9mhxfhyRgTNFVQyo=";
 
         doCheck = true;
         nativeCheckInputs = [
           pkgs.postgresql
           pkgs.minio-client
+          pkgs.minio
         ];
       };
       packages.default = config.packages.niks3;
