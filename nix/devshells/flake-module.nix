@@ -2,6 +2,7 @@
 {
   imports = [
     inputs.process-compose.flakeModule
+    ./minio.nix
     ./postgres
   ];
 
@@ -20,6 +21,8 @@
           pkgs.delve
           pkgs.postgresql_16
           pkgs.sqlc # type safe querying
+          pkgs.minio-client
+          pkgs.awscli
         ];
 
         shellHook = ''
