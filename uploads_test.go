@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -47,4 +48,11 @@ func TestServer_startUploadHandler(t *testing.T) {
 	if uploadResponse.ID == "" {
 		t.Errorf("handler returned empty upload id")
 	}
+
+	testRequest(&TestRequest{
+		method:  "POST",
+		path:    fmt.Sprintf("/upload/%s/complete", uploadResponse.ID),
+		body:    body,
+		handler: server.startUploadHandler,
+	}, t)
 }
