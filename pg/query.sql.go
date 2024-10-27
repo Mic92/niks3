@@ -11,61 +11,91 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteUpload = `-- name: DeleteUpload :exec
-DELETE FROM uploads WHERE id = $1
+const commitPendingClosure = `-- name: CommitPendingClosure :exec
+SELECT commit_pending_closure($1::bigint)
 `
 
-func (q *Queries) DeleteUpload(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, deleteUpload, id)
+func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) error {
+	_, err := q.db.Exec(ctx, commitPendingClosure, dollar_1)
 	return err
 }
 
-type InsertClosuresParams struct {
-	ClosureKey string `json:"closure_key"`
-	ObjectKey  string `json:"object_key"`
-}
-
-const insertUpload = `-- name: InsertUpload :one
-INSERT INTO uploads (started_at, closure_key) VALUES ($1, $2) RETURNING id
+const getClosure = `-- name: GetClosure :one
+SELECT updated_at FROM closures WHERE key = $1 LIMIT 1
 `
 
-type InsertUploadParams struct {
-	StartedAt  pgtype.Timestamp `json:"started_at"`
-	ClosureKey string           `json:"closure_key"`
+func (q *Queries) GetClosure(ctx context.Context, key string) (pgtype.Timestamp, error) {
+	row := q.db.QueryRow(ctx, getClosure, key)
+	var updated_at pgtype.Timestamp
+	err := row.Scan(&updated_at)
+	return updated_at, err
 }
 
-func (q *Queries) InsertUpload(ctx context.Context, arg InsertUploadParams) (int64, error) {
-	row := q.db.QueryRow(ctx, insertUpload, arg.StartedAt, arg.ClosureKey)
+const getClosureObjects = `-- name: GetClosureObjects :many
+SELECT object_key FROM closure_objects WHERE closure_key = $1
+`
+
+func (q *Queries) GetClosureObjects(ctx context.Context, closureKey string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getClosureObjects, closureKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var object_key string
+		if err := rows.Scan(&object_key); err != nil {
+			return nil, err
+		}
+		items = append(items, object_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getExistingObjects = `-- name: GetExistingObjects :many
+SELECT key FROM objects WHERE key = ANY($1::varchar[])
+`
+
+func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getExistingObjects, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertPendingClosure = `-- name: InsertPendingClosure :one
+INSERT INTO pending_closures (started_at, key) VALUES ($1, $2) RETURNING id
+`
+
+type InsertPendingClosureParams struct {
+	StartedAt pgtype.Timestamp `json:"started_at"`
+	Key       string           `json:"key"`
+}
+
+func (q *Queries) InsertPendingClosure(ctx context.Context, arg InsertPendingClosureParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertPendingClosure, arg.StartedAt, arg.Key)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
 
-const upsertClosure = `-- name: UpsertClosure :exec
-INSERT INTO closures (key, updated_at)
-VALUES ($1, $2)
-ON CONFLICT (key)
-DO UPDATE SET updated_at = $2
-`
-
-type UpsertClosureParams struct {
-	Key       string           `json:"key"`
-	UpdatedAt pgtype.Timestamp `json:"updated_at"`
-}
-
-func (q *Queries) UpsertClosure(ctx context.Context, arg UpsertClosureParams) error {
-	_, err := q.db.Exec(ctx, upsertClosure, arg.Key, arg.UpdatedAt)
-	return err
-}
-
-const upsertObject = `-- name: UpsertObject :exec
-INSERT INTO objects (key, reference_count)
-VALUES ($1, 1)
-ON CONFLICT (key)
-DO UPDATE SET reference_count = objects.reference_count + 1
-`
-
-func (q *Queries) UpsertObject(ctx context.Context, key string) error {
-	_, err := q.db.Exec(ctx, upsertObject, key)
-	return err
+type InsertPendingObjectsParams struct {
+	PendingClosureID int64  `json:"pending_closure_id"`
+	Key              string `json:"key"`
 }

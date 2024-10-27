@@ -88,8 +88,6 @@ func startMinioServer() (*minioServer, error) {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
-	fmt.Printf("####################### Command: minio server --address :%d %s\n", port, filepath.Join(tempDir, "data"))
-
 	minioProc := exec.Command("minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr

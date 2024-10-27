@@ -9,13 +9,13 @@ import (
 	"context"
 )
 
-// iteratorForInsertClosures implements pgx.CopyFromSource.
-type iteratorForInsertClosures struct {
-	rows                 []InsertClosuresParams
+// iteratorForInsertPendingObjects implements pgx.CopyFromSource.
+type iteratorForInsertPendingObjects struct {
+	rows                 []InsertPendingObjectsParams
 	skippedFirstNextCall bool
 }
 
-func (r *iteratorForInsertClosures) Next() bool {
+func (r *iteratorForInsertPendingObjects) Next() bool {
 	if len(r.rows) == 0 {
 		return false
 	}
@@ -27,17 +27,17 @@ func (r *iteratorForInsertClosures) Next() bool {
 	return len(r.rows) > 0
 }
 
-func (r iteratorForInsertClosures) Values() ([]interface{}, error) {
+func (r iteratorForInsertPendingObjects) Values() ([]interface{}, error) {
 	return []interface{}{
-		r.rows[0].ClosureKey,
-		r.rows[0].ObjectKey,
+		r.rows[0].PendingClosureID,
+		r.rows[0].Key,
 	}, nil
 }
 
-func (r iteratorForInsertClosures) Err() error {
+func (r iteratorForInsertPendingObjects) Err() error {
 	return nil
 }
 
-func (q *Queries) InsertClosures(ctx context.Context, arg []InsertClosuresParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"closure_objects"}, []string{"closure_key", "object_key"}, &iteratorForInsertClosures{rows: arg})
+func (q *Queries) InsertPendingObjects(ctx context.Context, arg []InsertPendingObjectsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"pending_objects"}, []string{"pending_closure_id", "key"}, &iteratorForInsertPendingObjects{rows: arg})
 }

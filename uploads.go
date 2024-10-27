@@ -2,20 +2,18 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
-
-	"github.com/Mic92/niks3/pg"
 )
 
-type UploadsRequest struct {
+type CreatePendingClosureRequest struct {
 	Closure *string  `json:"closure"`
 	Objects []string `json:"objects"`
 }
 
-// startUploadHandler
-// POST /uploads
+// POST /pending_closures
 // Request body:
 //
 //	{
@@ -27,15 +25,15 @@ type UploadsRequest struct {
 //	{
 //	  "id": 1,
 //	  "started_at": "2021-08-31T00:00:00Z"
-//	  "objects": {
+//	  "pending_objects": {
 //		  "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo": "https://yours3endpoint?authkey=...",
 //	   }
 //	}
-func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
 	defer r.Body.Close()
 
-	req := &UploadsRequest{}
+	req := &CreatePendingClosureRequest{}
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
 		return
@@ -54,7 +52,7 @@ func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 	for _, object := range req.Objects {
 		storePathSet[object] = true
 	}
-	upload, err := StartUpload(r.Context(), s.pool, *req.Closure, storePathSet)
+	upload, err := createPendingClosure(r.Context(), s.pool, *req.Closure, storePathSet)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -68,27 +66,26 @@ func (s *Server) startUploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// POST /uploads/{upload_id}/complete
+// POST /pending_closures/{key}/commit
 // Request body: -
 // Response body: -
-func (s *Server) completeUploadHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
 
-	uploadID := r.URL.Query().Get("upload_id")
-	if uploadID == "" {
-		http.Error(w, "missing upload_id", http.StatusBadRequest)
+	pendingClosureValue := r.PathValue("id")
+	if pendingClosureValue == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
 
-	parsedUploadID, err := strconv.ParseInt(uploadID, 10, 64)
+	parsedUploadID, err := strconv.ParseInt(pendingClosureValue, 10, 32)
 	if err != nil {
-		http.Error(w, "invalid upload_id", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("invalid id: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	queries := pg.New(s.pool)
-	if err = queries.DeleteUpload(r.Context(), parsedUploadID); err != nil {
-		http.Error(w, "failed to complete upload: "+err.Error(), http.StatusInternalServerError)
+	if err = commitPendingClosure(r.Context(), s.pool, parsedUploadID); err != nil {
+		http.Error(w, fmt.Sprintf("failed to complete upload: %v", err), http.StatusInternalServerError)
 		return
 	}
 
