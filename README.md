@@ -16,7 +16,7 @@ Migrations are located in `pg/migrations`.
 
 ## SQL Querying
 
-We use \[sqlc\] with \[pgx\].
+We use [sqlc] with [pgx].
 
 Config is located at `sqlc.yml`. Re-generate using `sqlc generate`.
 
@@ -28,7 +28,6 @@ It uses `process-compose`. Look in `.envrc` for some env variables that are rela
 
 State is stored in `.data`. For a fresh local dev environment, delete `.data`.
 
-\[sqlc\]\]: https://sqlc.dev/
-\[pgx\]: https://github.com/jackc/pgx
-
 [goose]: https://github.com/pressly/goose
+[pgx]: https://github.com/jackc/pgx
+[sqlc]: https://sqlc.dev/
