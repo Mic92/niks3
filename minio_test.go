@@ -60,16 +60,24 @@ func (s *minioServer) Client(t *testing.T) *minio.Client {
 }
 
 func (s *minioServer) Cleanup() {
-	err := syscall.Kill(s.cmd.Process.Pid, syscall.SIGKILL)
+	defer os.RemoveAll(s.tempDir)
+
+	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
 	if err != nil {
-		slog.Error("failed to kill postgres", "error", err)
+		slog.Error("failed to get pgid", "error", err)
+		return
 	}
+	err = syscall.Kill(pgid, syscall.SIGKILL)
+	if err != nil {
+		slog.Error("failed to kill minio", "error", err)
+		return
+	}
+	slog.Info("killed minio")
 	err = s.cmd.Wait()
 	if err != nil {
-		slog.Error("failed to wait for postgres", "error", err)
+		slog.Error("failed to wait for minio", "error", err)
+		return
 	}
-
-	os.RemoveAll(s.tempDir)
 }
 
 func startMinioServer() (*minioServer, error) {
@@ -91,6 +99,8 @@ func startMinioServer() (*minioServer, error) {
 	minioProc := exec.Command("minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
+	minioProc.SysProcAttr = &syscall.SysProcAttr{}
+	minioProc.SysProcAttr.Setsid = true
 
 	// random hex string
 	secret, err := randToken(20)

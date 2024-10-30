@@ -13,7 +13,7 @@ import (
 
 var (
 	testPostgresServer *postgresServer
-	testDbCount        atomic.Int32
+	testDBCount        atomic.Int32
 )
 
 type postgresServer struct {
@@ -22,16 +22,22 @@ type postgresServer struct {
 }
 
 func (s *postgresServer) Cleanup() {
-	err := syscall.Kill(s.cmd.Process.Pid, syscall.SIGTERM)
+	defer os.RemoveAll(s.tempDir)
+
+	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
+	if err != nil {
+		slog.Error("failed to get pgid", "error", err)
+		return
+	}
+	err = syscall.Kill(pgid, syscall.SIGKILL)
 	if err != nil {
 		slog.Error("failed to kill postgres", "error", err)
+		return
 	}
 	err = s.cmd.Wait()
 	if err != nil {
 		slog.Error("failed to wait for postgres", "error", err)
 	}
-
-	os.RemoveAll(s.tempDir)
 }
 
 func startPostgresServer() (*postgresServer, error) {
@@ -59,6 +65,9 @@ func startPostgresServer() (*postgresServer, error) {
 		"-c", "log_min_duration_statement=0")
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
+	postgresProc.SysProcAttr = &syscall.SysProcAttr{}
+	postgresProc.SysProcAttr.Setsid = true
+
 	if err = postgresProc.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start postgres: %w", err)
 	}
