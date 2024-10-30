@@ -25,7 +25,7 @@ func createTestServer(t *testing.T) *Server {
 	}
 
 	// create database for test
-	dbName := "db" + strconv.Itoa(int(testDbCount.Add(1)))
+	dbName := "db" + strconv.Itoa(int(testDBCount.Add(1)))
 	command := exec.Command("createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
