@@ -20,8 +20,8 @@ import (
 )
 
 var (
-	testMinioServer *minioServer
-	testBucketCount atomic.Int32
+	testMinioServer *minioServer //nolint:gochecknoglobals
+	testBucketCount atomic.Int32 //nolint:gochecknoglobals
 )
 
 type minioServer struct {
@@ -36,6 +36,7 @@ func randToken(n int) (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
+
 	return hex.EncodeToString(bytes), nil
 }
 
@@ -44,9 +45,11 @@ func randPort() (uint16, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	ln.Close()
 	time.Sleep(1 * time.Second)
-	return (uint16)(ln.Addr().(*net.TCPAddr).Port), nil
+
+	return (uint16)(ln.Addr().(*net.TCPAddr).Port), nil //nolint:gosec
 }
 
 func (s *minioServer) Client(t *testing.T) *minio.Client {
@@ -56,6 +59,7 @@ func (s *minioServer) Client(t *testing.T) *minio.Client {
 		Secure: false,
 	})
 	ok(t, err)
+
 	return minioClient
 }
 
@@ -65,17 +69,23 @@ func (s *minioServer) Cleanup() {
 	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
 	if err != nil {
 		slog.Error("failed to get pgid", "error", err)
+
 		return
 	}
+
 	err = syscall.Kill(pgid, syscall.SIGKILL)
 	if err != nil {
 		slog.Error("failed to kill minio", "error", err)
+
 		return
 	}
+
 	slog.Info("killed minio")
+
 	err = s.cmd.Wait()
 	if err != nil {
 		slog.Error("failed to wait for minio", "error", err)
+
 		return
 	}
 }
@@ -85,6 +95,7 @@ func startMinioServer() (*minioServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
+
 	defer func() {
 		if err != nil {
 			os.RemoveAll(tempDir)
@@ -96,6 +107,7 @@ func startMinioServer() (*minioServer, error) {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
+	//nolint:gosec
 	minioProc := exec.Command("minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
@@ -123,22 +135,27 @@ func startMinioServer() (*minioServer, error) {
 	for i := 0; i < 200; i++ {
 		var conn net.Conn
 		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+
 		if err == nil {
 			conn.Close()
+
 			break
 		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to minio server: %w", err)
 	}
+
 	server := &minioServer{
 		cmd:     minioProc,
 		tempDir: tempDir,
 		secret:  secret,
 		port:    port,
 	}
+
 	defer func() {
 		if err != nil {
 			server.Cleanup()
@@ -148,7 +165,7 @@ func startMinioServer() (*minioServer, error) {
 	return server, nil
 }
 
-// TODO: remove this test once we use minio in actual code
+// TODO: remove this test once we use minio in actual code.
 func TestServer_Miniotest(t *testing.T) {
 	server := createTestServer(t)
 	defer server.Close()

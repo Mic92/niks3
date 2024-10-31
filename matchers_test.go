@@ -19,7 +19,10 @@ func ok(tb testing.TB, err error) {
 func httpOkDepth(tb testing.TB, rr *httptest.ResponseRecorder, depth int) {
 	if rr.Code < 200 || rr.Code >= 300 {
 		_, file, line, _ := runtime.Caller(depth)
-		tb.Errorf("\033[31m%s:%d: unexpected http status=%d body=%s\033[39m\n\n", filepath.Base(file), line, rr.Code, rr.Body.String())
+		tb.Errorf(
+			"\033[31m%s:%d: unexpected http status=%d body=%s\033[39m\n\n",
+			filepath.Base(file), line, rr.Code, rr.Body.String(),
+		)
 		tb.FailNow()
 	}
 }

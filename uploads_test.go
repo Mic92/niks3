@@ -15,11 +15,13 @@ func TestServer_startUploadHandler(t *testing.T) {
 
 	invalidBody, err := json.Marshal(map[string]interface{}{})
 	ok(t, err)
+
 	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected http status 400, got %d", rr.Code)
 		}
 	}
+
 	testRequest(&TestRequest{
 		method:        "POST",
 		path:          "/pending_closure",
@@ -46,6 +48,7 @@ func TestServer_startUploadHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	slog.Info("create pending closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
+
 	if pendingClosureResponse.ID == "" {
 		t.Errorf("handler returned empty upload id")
 	}
@@ -74,6 +77,7 @@ func TestServer_startUploadHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
 	slog.Info("get closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
+
 	objects := closureResponse.Objects
 	if len(objects) != 2 {
 		t.Errorf("expected 2 objects, got %d", len(objects))
