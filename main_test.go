@@ -17,16 +17,21 @@ func innerTestMain(m *testing.M) int {
 
 	testPostgresServer, err = startPostgresServer()
 	defer testPostgresServer.Cleanup()
+
 	if err != nil {
 		slog.Error("failed to start postgres", "error", err)
+
 		return 1
 	}
+
 	testMinioServer, err = startMinioServer()
 	defer testMinioServer.Cleanup()
+
 	if err != nil {
 		slog.Error("failed to start minio", "error", err)
 		os.Exit(1)
 	}
+
 	return m.Run()
 }
 
