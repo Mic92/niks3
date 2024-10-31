@@ -19,12 +19,16 @@ type ClosureObject struct {
 }
 
 type Object struct {
-	Key            string `json:"key"`
-	ReferenceCount int32  `json:"reference_count"`
+	Key string `json:"key"`
 }
 
-type Upload struct {
-	ID         int64            `json:"id"`
-	StartedAt  pgtype.Timestamp `json:"started_at"`
-	ClosureKey string           `json:"closure_key"`
+type PendingClosure struct {
+	ID        int64            `json:"id"`
+	Key       string           `json:"key"`
+	StartedAt pgtype.Timestamp `json:"started_at"`
+}
+
+type PendingObject struct {
+	PendingClosureID int64  `json:"pending_closure_id"`
+	Key              string `json:"key"`
 }
