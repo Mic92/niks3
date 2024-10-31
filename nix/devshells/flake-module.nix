@@ -24,6 +24,8 @@
           pkgs.minio-client
           pkgs.awscli
           pkgs.minio
+          # for golangci-lint
+          pkgs.watchexec
         ];
 
         shellHook = ''

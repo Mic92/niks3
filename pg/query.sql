@@ -1,20 +1,17 @@
--- name: UpsertClosure :exec
-INSERT INTO closures (key, updated_at)
-VALUES ($1, $2)
-ON CONFLICT (key)
-DO UPDATE SET updated_at = $2;
+-- name: InsertPendingClosure :one
+INSERT INTO pending_closures (started_at, key) VALUES ($1, $2) RETURNING id;
 
--- name: InsertUpload :one
-INSERT INTO uploads (started_at, closure_key) VALUES ($1, $2) RETURNING id;
+-- name: InsertPendingObjects :copyfrom
+INSERT INTO pending_objects (pending_closure_id, key) VALUES ($1, $2);
 
--- name: UpsertObject :exec
-INSERT INTO objects (key, reference_count)
-VALUES ($1, 1)
-ON CONFLICT (key)
-DO UPDATE SET reference_count = objects.reference_count + 1;
+-- name: GetExistingObjects :many
+SELECT key FROM objects WHERE key = ANY($1::varchar[]);
 
--- name: InsertClosures :copyfrom
-INSERT INTO closure_objects (closure_key, object_key) VALUES ($1, $2);
+-- name: CommitPendingClosure :exec
+SELECT commit_pending_closure($1::bigint);
 
--- name: DeleteUpload :exec
-DELETE FROM uploads WHERE id = $1;
+-- name: GetClosure :one
+SELECT updated_at FROM closures WHERE key = $1 LIMIT 1;
+
+-- name: GetClosureObjects :many
+SELECT object_key FROM closure_objects WHERE closure_key = $1;

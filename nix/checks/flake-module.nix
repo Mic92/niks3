@@ -1,10 +1,8 @@
 {
   perSystem =
     {
-      inputs',
       self',
       lib,
-      system,
       ...
     }:
     {
