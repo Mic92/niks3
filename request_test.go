@@ -20,12 +20,14 @@ func createTestServer(t *testing.T) *Server {
 	if testPostgresServer == nil {
 		t.Fatal("postgres server not started")
 	}
+
 	if testMinioServer == nil {
 		t.Fatal("minio server not started")
 	}
 
 	// create database for test
 	dbName := "db" + strconv.Itoa(int(testDBCount.Add(1)))
+	//nolint:gosec
 	command := exec.Command("createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -68,16 +70,22 @@ type TestRequest struct {
 
 func testRequest(req *TestRequest, tb *testing.T) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(req.handler)
-	httpReq, err := http.NewRequest(req.method, req.path, bytes.NewBuffer(req.body))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, req.method, req.path, bytes.NewBuffer(req.body))
 	for k, v := range req.pathValues {
 		httpReq.SetPathValue(k, v)
 	}
+
 	for k, v := range req.header {
 		httpReq.Header.Set(k, v)
 	}
+
 	ok(tb, err)
-	handler.ServeHTTP(rr, httpReq)
+	req.handler.ServeHTTP(rr, httpReq)
+
 	if req.checkResponse == nil {
 		if rr.Code < 200 || rr.Code >= 300 {
 			httpOkDepth(tb, rr, 2)
@@ -85,5 +93,6 @@ func testRequest(req *TestRequest, tb *testing.T) *httptest.ResponseRecorder {
 	} else {
 		(*req.checkResponse)(tb, rr)
 	}
+
 	return rr
 }
