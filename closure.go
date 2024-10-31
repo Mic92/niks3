@@ -13,20 +13,25 @@ func (s *Server) getClosureHandler(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if key == "" {
 		http.Error(w, "missing key", http.StatusBadRequest)
+
 		return
 	}
 
 	closure, err := getClosure(r.Context(), s.pool, key)
 	if err != nil {
 		http.Error(w, "failed to get closure objects: "+err.Error(), http.StatusInternalServerError)
+
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+
 	err = json.NewEncoder(w).Encode(closure)
 	if err != nil {
 		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
+
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 }

@@ -20,17 +20,21 @@ func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*Cl
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
+
 	defer conn.Release()
+
 	queries := pg.New(conn)
 
 	closure, err := queries.GetClosure(ctx, closureKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get closure: %w", err)
 	}
+
 	objects, err := queries.GetClosureObjects(ctx, closureKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get closure objects: %w", err)
 	}
+
 	return &ClosureResponse{
 		Key:       closureKey,
 		UpdatedAt: closure.Time,

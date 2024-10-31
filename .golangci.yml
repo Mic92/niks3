@@ -28,7 +28,6 @@ linters:
     - revive
     - rowserrcheck
     - stylecheck
-    - tagliatelle
     - tenv
     - testpackage
     - unconvert

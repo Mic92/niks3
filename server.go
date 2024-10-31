@@ -9,7 +9,6 @@ import (
 
 	"github.com/Mic92/niks3/pg"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -60,11 +59,13 @@ func RunServer(opts *Options) error {
 	mux.HandleFunc("/closure/{key}", service.getClosureHandler)
 
 	server := &http.Server{
-		Addr:    opts.HTTPAddr,
-		Handler: mux,
+		Addr:              opts.HTTPAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 1 * time.Second,
 	}
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
+
 	return server.ListenAndServe()
 }
 
