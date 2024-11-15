@@ -132,7 +132,7 @@ func startMinioServer() (*minioServer, error) {
 	}
 
 	// wait for server to start
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		var conn net.Conn
 		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 
