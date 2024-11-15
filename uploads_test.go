@@ -19,18 +19,20 @@ func TestServer_startUploadHandler(t *testing.T) {
 	ok(t, err)
 
 	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected http status 400, got %d", rr.Code)
 		}
 	}
 
-	testRequest(&TestRequest{
+	testRequest(t, &TestRequest{
 		method:        "POST",
 		path:          "/pending_closure",
 		body:          invalidBody,
 		handler:       server.createPendingClosureHandler,
 		checkResponse: &val,
-	}, t)
+	})
 
 	closureKey := "00000000000000000000000000000000"
 	body, err := json.Marshal(map[string]interface{}{
@@ -39,12 +41,12 @@ func TestServer_startUploadHandler(t *testing.T) {
 	})
 	ok(t, err)
 
-	rr := testRequest(&TestRequest{
+	rr := testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    "/pending_closure",
 		body:    body,
 		handler: server.createPendingClosureHandler,
-	}, t)
+	})
 
 	var pendingClosureResponse PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
@@ -55,7 +57,7 @@ func TestServer_startUploadHandler(t *testing.T) {
 		t.Errorf("handler returned empty upload id")
 	}
 
-	testRequest(&TestRequest{
+	testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    fmt.Sprintf("/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
@@ -63,9 +65,9 @@ func TestServer_startUploadHandler(t *testing.T) {
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
 		},
-	}, t)
+	})
 
-	rr = testRequest(&TestRequest{
+	rr = testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/closures/" + closureKey,
 		body:    body,
@@ -73,7 +75,7 @@ func TestServer_startUploadHandler(t *testing.T) {
 		pathValues: map[string]string{
 			"key": closureKey,
 		},
-	}, t)
+	})
 
 	var closureResponse ClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
