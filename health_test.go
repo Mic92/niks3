@@ -5,6 +5,8 @@ import (
 )
 
 func TestServer_healthCheckHandler(t *testing.T) {
+	t.Parallel()
+
 	server := createTestServer(t)
 	defer server.Close()
 

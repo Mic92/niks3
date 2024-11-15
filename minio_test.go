@@ -58,6 +58,8 @@ func randPort() (uint16, error) {
 }
 
 func (s *minioServer) Client(t *testing.T) *minio.Client {
+	t.Parallel()
+
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4("minioadmin", s.secret, ""),
@@ -172,6 +174,8 @@ func startMinioServer() (*minioServer, error) {
 
 // TODO: remove this test once we use minio in actual code.
 func TestServer_Miniotest(t *testing.T) {
+	t.Parallel()
+
 	server := createTestServer(t)
 	defer server.Close()
 	_, err := server.minioClient.BucketExists(context.Background(), server.bucketName)
