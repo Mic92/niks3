@@ -129,9 +129,9 @@ func startMinioServer() (*minioServer, error) {
 
 	env := os.Environ()
 	env = append(env, "MINIO_ROOT_USER=minioadmin")
-	env = append(env, fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", secret))
+	env = append(env, "MINIO_ROOT_PASSWORD="+secret)
 	env = append(env, "AWS_ACCESS_KEY_ID=minioadmin")
-	env = append(env, fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", secret))
+	env = append(env, "AWS_SECRET_ACCESS_KEY="+secret)
 	minioProc.Env = env
 
 	if err = minioProc.Start(); err != nil {

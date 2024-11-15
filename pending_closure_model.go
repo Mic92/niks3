@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/Mic92/niks3/pg"
@@ -94,7 +95,7 @@ func createPendingClosure(
 	}
 
 	return &PendingClosureResponse{
-		ID:        fmt.Sprintf("%d", pendingClosureID),
+		ID:        strconv.FormatInt(pendingClosureID, 10),
 		StartedAt: now,
 	}, nil
 }
