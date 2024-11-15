@@ -58,7 +58,7 @@ func randPort() (uint16, error) {
 }
 
 func (s *minioServer) Client(t *testing.T) *minio.Client {
-	t.Parallel()
+	t.Helper()
 
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
 	minioClient, err := minio.New(endpoint, &minio.Options{

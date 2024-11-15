@@ -13,9 +13,9 @@ func TestServer_healthCheckHandler(t *testing.T) {
 	// check that health check works also with database closed
 	server.pool.Close()
 
-	testRequest(&TestRequest{
+	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
 		handler: server.healthCheckHandler,
-	}, t)
+	})
 }
