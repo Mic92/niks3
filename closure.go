@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // getClosureObjects handles the GET /closures/<key> endpoint.
@@ -20,6 +23,12 @@ func (s *Server) getClosureHandler(w http.ResponseWriter, r *http.Request) {
 
 	closure, err := getClosure(r.Context(), s.pool, key)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "closure not found", http.StatusNotFound)
+
+			return
+		}
+
 		http.Error(w, "failed to get closure objects: "+err.Error(), http.StatusInternalServerError)
 
 		return
