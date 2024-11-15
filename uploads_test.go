@@ -10,6 +10,8 @@ import (
 )
 
 func TestServer_startUploadHandler(t *testing.T) {
+	t.Parallel()
+
 	server := createTestServer(t)
 	defer server.Close()
 
