@@ -49,7 +49,12 @@ func randPort() (uint16, error) {
 	ln.Close()
 	time.Sleep(1 * time.Second)
 
-	return (uint16)(ln.Addr().(*net.TCPAddr).Port), nil //nolint:gosec
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("failed to get port: %w", err)
+	}
+
+	return (uint16)(addr.Port), nil //nolint:gosec
 }
 
 func (s *minioServer) Client(t *testing.T) *minio.Client {
