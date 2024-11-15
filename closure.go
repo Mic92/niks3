@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// getClosureObjects handles the GET /closure/<key> endpoint.
+// getClosureObjects handles the GET /closures/<key> endpoint.
 func (s *Server) getClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received get closure request", "method", r.Method, "url", r.URL)
 

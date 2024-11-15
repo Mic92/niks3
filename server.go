@@ -56,7 +56,7 @@ func RunServer(opts *Options) error {
 	mux.HandleFunc("/health", service.healthCheckHandler)
 	mux.HandleFunc("/pending_closures", service.createPendingClosureHandler)
 	mux.HandleFunc("/pending_closures/{id}/complete", service.commitPendingClosureHandler)
-	mux.HandleFunc("/closure/{key}", service.getClosureHandler)
+	mux.HandleFunc("/closures/{key}", service.getClosureHandler)
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,
