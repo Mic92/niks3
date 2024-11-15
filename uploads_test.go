@@ -82,4 +82,28 @@ func TestServer_startUploadHandler(t *testing.T) {
 	if len(objects) != 2 {
 		t.Errorf("expected 2 objects, got %d", len(objects))
 	}
+
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/closures?older-than=0",
+		handler: server.cleanupClosuresOlder,
+	})
+
+	isNotFound := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("expected http status 404, got %d (%s)", rr.Code, rr.Body.String())
+		}
+	}
+	testRequest(t, &TestRequest{
+		method:        "GET",
+		path:          "/closures/" + closureKey,
+		body:          body,
+		handler:       server.getClosureHandler,
+		checkResponse: &isNotFound,
+		pathValues: map[string]string{
+			"key": closureKey,
+		},
+	})
 }

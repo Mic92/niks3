@@ -20,6 +20,15 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 	return err
 }
 
+const deleteClosures = `-- name: DeleteClosures :exec
+DELETE FROM closures where updated_at < $1
+`
+
+func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) error {
+	_, err := q.db.Exec(ctx, deleteClosures, updatedAt)
+	return err
+}
+
 const getClosure = `-- name: GetClosure :one
 SELECT updated_at FROM closures WHERE key = $1 LIMIT 1
 `

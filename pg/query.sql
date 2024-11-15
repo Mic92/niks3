@@ -15,3 +15,7 @@ SELECT updated_at FROM closures WHERE key = $1 LIMIT 1;
 
 -- name: GetClosureObjects :many
 SELECT object_key FROM closure_objects WHERE closure_key = $1;
+
+-- name: DeleteClosures :exec
+DELETE FROM closures where updated_at < $1;
+
