@@ -34,7 +34,7 @@ type minioServer struct {
 func randToken(n int) (string, error) {
 	bytes := make([]byte, n)
 	if _, err := rand.Read(bytes); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
 	}
 
 	return hex.EncodeToString(bytes), nil
@@ -43,7 +43,7 @@ func randToken(n int) (string, error) {
 func randPort() (uint16, error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
 
 	ln.Close()

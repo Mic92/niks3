@@ -36,5 +36,5 @@ func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to migrate stored procedures: %w", err)
 	}
 
-	return pool, err
+	return pool, nil
 }
