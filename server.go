@@ -67,7 +67,11 @@ func RunServer(opts *Options) error {
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
 
-	return server.ListenAndServe()
+	if err = server.ListenAndServe(); err != nil {
+		return fmt.Errorf("failed to start server: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Server) Close() {
