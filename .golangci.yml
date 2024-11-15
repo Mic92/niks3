@@ -1,37 +1,18 @@
 linters:
-  enable:
-    - errname
-    - exhaustive
-    - gci
-    - gochecknoglobals
-    - gochecknoinits
-    - goconst
-    - godot
-    - gofumpt
-    - goheader
-    - goimports
-    - gosec
-    - importas
-    - ireturn
-    - lll
-    - makezero
-    - misspell
-    - nakedret
-    - nestif
-    - nilerr
-    - nilnil
-    - nlreturn
-    - noctx
-    - nolintlint
-    - prealloc
-    - predeclared
-    - revive
-    - rowserrcheck
-    - stylecheck
-    - tenv
-    - testpackage
-    - unconvert
-    - unparam
-    - wastedassign
-    - whitespace
-    - wsl
+  enable-all: true
+  disable:
+    - depguard
+    - execinquery
+    - exhaustruct
+    - exportloopref
+    - funlen
+    - godox
+    - gomnd
+    - mnd
+    - varnamelen
+linters-settings:
+  tagliatelle:
+    # Check the struct tag name case.
+    case:
+      rules:
+        json: snake
