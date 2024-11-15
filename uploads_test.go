@@ -67,7 +67,7 @@ func TestServer_startUploadHandler(t *testing.T) {
 
 	rr = testRequest(&TestRequest{
 		method:  "GET",
-		path:    fmt.Sprintf("/closures/%s", closureKey),
+		path:    "/closures/" + closureKey,
 		body:    body,
 		handler: server.getClosureHandler,
 		pathValues: map[string]string{
