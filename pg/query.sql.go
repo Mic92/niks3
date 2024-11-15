@@ -88,6 +88,32 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 	return items, nil
 }
 
+const getStaleObjects = `-- name: GetStaleObjects :many
+SELECT FROM objects WHERE key NOT IN (SELECT object_key FROM closure_objects)
+`
+
+type GetStaleObjectsRow struct{}
+
+func (q *Queries) GetStaleObjects(ctx context.Context) ([]GetStaleObjectsRow, error) {
+	rows, err := q.db.Query(ctx, getStaleObjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetStaleObjectsRow
+	for rows.Next() {
+		var i GetStaleObjectsRow
+		if err := rows.Scan(); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertPendingClosure = `-- name: InsertPendingClosure :one
 INSERT INTO pending_closures (started_at, key) VALUES ($1, $2) RETURNING id
 `
