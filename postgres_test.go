@@ -89,7 +89,7 @@ func startPostgresServer() (*postgresServer, error) {
 		}
 	}()
 
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		waitForPostgres := exec.Command("pg_isready", "-h", tempDir, "-U", "postgres")
 		waitForPostgres.Stdout = os.Stdout
 		waitForPostgres.Stderr = os.Stderr

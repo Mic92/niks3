@@ -35,7 +35,7 @@ CREATE TABLE objects
 -- closure_objects is a many-to-many relationship between closures and objects
 CREATE TABLE IF NOT EXISTS closure_objects
 (
-    closure_key varchar(1024) not null references closures (key),
+    closure_key varchar(1024) not null references closures (key) ON DELETE CASCADE,
     object_key  varchar(1024) not null references objects (key)
 );
 

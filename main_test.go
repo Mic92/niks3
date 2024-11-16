@@ -29,7 +29,8 @@ func innerTestMain(m *testing.M) int {
 
 	if err != nil {
 		slog.Error("failed to start minio", "error", err)
-		os.Exit(1)
+
+		return 1
 	}
 
 	return m.Run()

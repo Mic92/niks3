@@ -20,6 +20,15 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 	return err
 }
 
+const deleteClosures = `-- name: DeleteClosures :exec
+DELETE FROM closures where updated_at < $1
+`
+
+func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) error {
+	_, err := q.db.Exec(ctx, deleteClosures, updatedAt)
+	return err
+}
+
 const getClosure = `-- name: GetClosure :one
 SELECT updated_at FROM closures WHERE key = $1 LIMIT 1
 `
@@ -72,6 +81,32 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 			return nil, err
 		}
 		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getStaleObjects = `-- name: GetStaleObjects :many
+SELECT FROM objects WHERE key NOT IN (SELECT object_key FROM closure_objects)
+`
+
+type GetStaleObjectsRow struct{}
+
+func (q *Queries) GetStaleObjects(ctx context.Context) ([]GetStaleObjectsRow, error) {
+	rows, err := q.db.Query(ctx, getStaleObjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetStaleObjectsRow
+	for rows.Next() {
+		var i GetStaleObjectsRow
+		if err := rows.Scan(); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

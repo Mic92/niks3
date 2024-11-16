@@ -34,7 +34,7 @@ type minioServer struct {
 func randToken(n int) (string, error) {
 	bytes := make([]byte, n)
 	if _, err := rand.Read(bytes); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
 	}
 
 	return hex.EncodeToString(bytes), nil
@@ -43,16 +43,23 @@ func randToken(n int) (string, error) {
 func randPort() (uint16, error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
 
 	ln.Close()
 	time.Sleep(1 * time.Second)
 
-	return (uint16)(ln.Addr().(*net.TCPAddr).Port), nil //nolint:gosec
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("failed to get port: %w", err)
+	}
+
+	return (uint16)(addr.Port), nil //nolint:gosec
 }
 
 func (s *minioServer) Client(t *testing.T) *minio.Client {
+	t.Helper()
+
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4("minioadmin", s.secret, ""),
@@ -122,9 +129,9 @@ func startMinioServer() (*minioServer, error) {
 
 	env := os.Environ()
 	env = append(env, "MINIO_ROOT_USER=minioadmin")
-	env = append(env, fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", secret))
+	env = append(env, "MINIO_ROOT_PASSWORD="+secret)
 	env = append(env, "AWS_ACCESS_KEY_ID=minioadmin")
-	env = append(env, fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", secret))
+	env = append(env, "AWS_SECRET_ACCESS_KEY="+secret)
 	minioProc.Env = env
 
 	if err = minioProc.Start(); err != nil {
@@ -132,7 +139,7 @@ func startMinioServer() (*minioServer, error) {
 	}
 
 	// wait for server to start
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		var conn net.Conn
 		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 
@@ -167,6 +174,8 @@ func startMinioServer() (*minioServer, error) {
 
 // TODO: remove this test once we use minio in actual code.
 func TestServer_Miniotest(t *testing.T) {
+	t.Parallel()
+
 	server := createTestServer(t)
 	defer server.Close()
 	_, err := server.minioClient.BucketExists(context.Background(), server.bucketName)

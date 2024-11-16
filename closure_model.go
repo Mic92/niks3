@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/pg"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -18,7 +19,7 @@ type ClosureResponse struct {
 func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*ClosureResponse, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
 	}
 
 	defer conn.Release()
@@ -40,4 +41,27 @@ func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*Cl
 		UpdatedAt: closure.Time,
 		Objects:   objects,
 	}, nil
+}
+
+func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.Duration) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	defer conn.Release()
+
+	queries := pg.New(conn)
+
+	timeOlder := pgtype.Timestamp{
+		Time:  time.Now().UTC().Add(-age),
+		Valid: true,
+	}
+
+	err = queries.DeleteClosures(ctx, timeOlder)
+	if err != nil {
+		return fmt.Errorf("failed to delete older closures: %w", err)
+	}
+
+	return nil
 }
