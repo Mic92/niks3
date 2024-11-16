@@ -54,7 +54,7 @@ func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.D
 	queries := pg.New(conn)
 
 	timeOlder := pgtype.Timestamp{
-		Time:  time.Now().Add(-age),
+		Time:  time.Now().UTC().Add(-age),
 		Valid: true,
 	}
 
