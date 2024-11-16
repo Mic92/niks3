@@ -10,9 +10,9 @@ BEGIN
     -- Commit the pending closure and capture the inserted value
     WITH inserted_cte AS (
         INSERT INTO closures (updated_at, key)
-        SELECT NOW(), key FROM pending_closures WHERE id = closure_id
+        SELECT timezone('UTC', NOW()), key FROM pending_closures WHERE id = closure_id
         ON CONFLICT (key)
-        DO UPDATE SET updated_at = NOW()
+        DO UPDATE SET updated_at = timezone('UTC', NOW())
         RETURNING (xmax = 0) AS inserted, key
     )
     SELECT inserted, key INTO is_inserted, closure_key FROM inserted_cte;

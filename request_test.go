@@ -17,6 +17,8 @@ import (
 )
 
 func createTestServer(t *testing.T) *Server {
+	t.Helper()
+
 	if testPostgresServer == nil {
 		t.Fatal("postgres server not started")
 	}
@@ -68,7 +70,9 @@ type TestRequest struct {
 	pathValues    map[string]string
 }
 
-func testRequest(req *TestRequest, tb *testing.T) *httptest.ResponseRecorder {
+func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
+	t.Helper()
+
 	rr := httptest.NewRecorder()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -83,15 +87,15 @@ func testRequest(req *TestRequest, tb *testing.T) *httptest.ResponseRecorder {
 		httpReq.Header.Set(k, v)
 	}
 
-	ok(tb, err)
+	ok(t, err)
 	req.handler.ServeHTTP(rr, httpReq)
 
 	if req.checkResponse == nil {
 		if rr.Code < 200 || rr.Code >= 300 {
-			httpOkDepth(tb, rr, 2)
+			httpOkDepth(t, rr)
 		}
 	} else {
-		(*req.checkResponse)(tb, rr)
+		(*req.checkResponse)(t, rr)
 	}
 
 	return rr

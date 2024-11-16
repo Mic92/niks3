@@ -56,7 +56,8 @@ func RunServer(opts *Options) error {
 	mux.HandleFunc("/health", service.healthCheckHandler)
 	mux.HandleFunc("/pending_closures", service.createPendingClosureHandler)
 	mux.HandleFunc("/pending_closures/{id}/complete", service.commitPendingClosureHandler)
-	mux.HandleFunc("/closure/{key}", service.getClosureHandler)
+	mux.HandleFunc("GET /closures/{key}", service.getClosureHandler)
+	mux.HandleFunc("DELETE /closures", service.cleanupClosuresOlder)
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,
@@ -66,7 +67,11 @@ func RunServer(opts *Options) error {
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
 
-	return server.ListenAndServe()
+	if err = server.ListenAndServe(); err != nil {
+		return fmt.Errorf("failed to start server: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Server) Close() {
