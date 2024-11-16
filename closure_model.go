@@ -19,7 +19,7 @@ type ClosureResponse struct {
 func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*ClosureResponse, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
 	}
 
 	defer conn.Release()
@@ -46,7 +46,7 @@ func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*Cl
 func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.Duration) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to start transaction: %w", err)
+		return fmt.Errorf("failed to get database connection: %w", err)
 	}
 
 	defer conn.Release()
