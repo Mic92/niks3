@@ -64,9 +64,16 @@ func (s *Server) cleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = cleanupClosureOlderThan(r.Context(), s.pool, age)
-	if err != nil {
-		slog.Error("Failed to cleanup old closures", "error", err)
+	if err = cleanupClosureOlderThan(r.Context(), s.pool, age); err != nil {
+		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	if err = s.cleanupOrphanObjects(r.Context(), s.pool); err != nil {
+		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
+
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)

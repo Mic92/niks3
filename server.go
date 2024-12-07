@@ -32,8 +32,12 @@ type Server struct {
 	bucketName  string
 }
 
+const (
+	dbConnectionTimeout = 10 * time.Second
+)
+
 func RunServer(opts *Options) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
 	defer cancel()
 
 	pool, err := pg.Connect(ctx, opts.DBConnectionString)
@@ -54,7 +58,8 @@ func RunServer(opts *Options) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", service.healthCheckHandler)
-	mux.HandleFunc("/pending_closures", service.createPendingClosureHandler)
+	mux.HandleFunc("POST /pending_closures", service.createPendingClosureHandler)
+	mux.HandleFunc("DELETE /pending_closures", service.cleanupPendingClosuresHandler)
 	mux.HandleFunc("/pending_closures/{id}/complete", service.commitPendingClosureHandler)
 	mux.HandleFunc("GET /closures/{key}", service.getClosureHandler)
 	mux.HandleFunc("DELETE /closures", service.cleanupClosuresOlder)

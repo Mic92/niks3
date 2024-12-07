@@ -2,7 +2,7 @@
 
 -- +goose statementbegin
 CREATE OR REPLACE FUNCTION commit_pending_closure(closure_id bigint)
-RETURNS VOID AS $$
+RETURNS void AS $$
 DECLARE
     is_inserted BOOLEAN;
     closure_key VARCHAR;
