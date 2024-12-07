@@ -14,8 +14,16 @@ import (
 )
 
 type PendingClosureResponse struct {
-	ID        string    `json:"id"`
-	StartedAt time.Time `json:"started_at"`
+	ID             string    `json:"id"`
+	StartedAt      time.Time `json:"started_at"`
+	PendingObjects []string  `json:"pending_objects"`
+}
+
+type PendingClosure struct {
+	id             int64
+	startedAt      time.Time
+	pendingObjects []pg.InsertPendingObjectsParams
+	deletedObjects []string
 }
 
 func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *bool) {
@@ -32,14 +40,62 @@ func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *boo
 	}
 }
 
-func createPendingClosure(
+func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
+	var i int64
+
+	queries := pg.New(pool)
+
+	missingObjects := make(map[string]bool, len(inflightPaths))
+	for _, objectKey := range inflightPaths {
+		missingObjects[objectKey] = true
+	}
+
+	start := time.Now()
+
+	for len(inflightPaths) > 0 {
+		if time.Since(start) > 30*time.Second {
+			// Assuming deletion process is failed. We will override objectes marked as deleted.
+			slog.Warn("Deletion process is taking too long. Ignored objects marked as deleted",
+				"inflight_objects", len(inflightPaths))
+
+			break
+		}
+
+		time.Sleep(time.Duration(i) * time.Second)
+
+		i++
+
+		existingObjects, err := queries.GetExistingObjects(ctx, inflightPaths)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get existing objects: %w", err)
+		}
+
+		// reset inflightPaths
+		inflightPaths = inflightPaths[:0]
+
+		for _, existingObject := range existingObjects {
+			deletedAt, ok := existingObject.DeletedAt.(pgtype.Interval)
+			if !ok {
+				return nil, fmt.Errorf("deleted_at is not set for object: %s", existingObject.Key)
+			}
+
+			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*30 {
+				inflightPaths = append(inflightPaths, existingObject.Key)
+			} else {
+				delete(missingObjects, existingObject.Key)
+			}
+		}
+	}
+
+	return missingObjects, nil
+}
+
+func createPendingClosureInner(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
 	storePathSet map[string]bool,
-) (*PendingClosureResponse, error) {
-	now := time.Now().UTC()
-
+) (*PendingClosure, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -51,21 +107,15 @@ func createPendingClosure(
 
 	queries := pg.New(tx)
 
-	var pendingClosureID int64
+	var pendingClosure pg.PendingClosure
 
-	if pendingClosureID, err = queries.InsertPendingClosure(ctx, pg.InsertPendingClosureParams{
-		StartedAt: pgtype.Timestamp{
-			Time:  now,
-			Valid: true,
-		},
-		Key: closureKey,
-	}); err != nil {
+	if pendingClosure, err = queries.InsertPendingClosure(ctx, closureKey); err != nil {
 		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
 	keys := make([]string, 0, len(storePathSet))
-	for key := range storePathSet {
-		keys = append(keys, key)
+	for k := range storePathSet {
+		keys = append(keys, k)
 	}
 
 	existingObjects, err := queries.GetExistingObjects(ctx, keys)
@@ -73,15 +123,21 @@ func createPendingClosure(
 		return nil, fmt.Errorf("failed to get existing objects: %w", err)
 	}
 
+	deletedObjects := make([]string, 0, len(existingObjects))
+
 	for _, existingObject := range existingObjects {
-		delete(storePathSet, existingObject)
+		if existingObject.DeletedAt != nil {
+			deletedObjects = append(deletedObjects, existingObject.Key)
+		}
+
+		delete(storePathSet, existingObject.Key)
 	}
 
 	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(storePathSet))
 
 	for objectKey := range storePathSet {
 		pendingObjects = append(pendingObjects, pg.InsertPendingObjectsParams{
-			PendingClosureID: pendingClosureID,
+			PendingClosureID: pendingClosure.ID,
 			Key:              objectKey,
 		})
 	}
@@ -94,31 +150,78 @@ func createPendingClosure(
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return &PendingClosure{
+		id:             pendingClosure.ID,
+		startedAt:      pendingClosure.StartedAt.Time,
+		pendingObjects: pendingObjects,
+		deletedObjects: deletedObjects,
+	}, nil
+}
+
+func createPendingClosure(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	closureKey string,
+	storePathSet map[string]bool,
+) (*PendingClosureResponse, error) {
+	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, storePathSet)
+	if err != nil {
+		return nil, err
+	}
+
+	pendingObjects := make([]string, 0, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
+
+	for _, pendingObject := range pendingClosure.pendingObjects {
+		pendingObjects = append(pendingObjects, pendingObject.Key)
+	}
+
+	if len(pendingClosure.deletedObjects) == 0 {
+		slog.Info("Found objects not yet deleted. Waiting for deletion",
+			"pending_objects", len(pendingClosure.pendingObjects))
+
+		missingObjects, err := waitForDeletion(ctx, pool, pendingClosure.deletedObjects)
+		if err != nil {
+			return nil, err
+		}
+
+		pendingObjectsParams := make([]pg.InsertPendingObjectsParams, 0, len(missingObjects))
+		for objectKey := range missingObjects {
+			pendingObjectsParams = append(pendingObjectsParams, pg.InsertPendingObjectsParams{
+				PendingClosureID: pendingClosure.id,
+				Key:              objectKey,
+			})
+		}
+
+		queries := pg.New(pool)
+
+		if _, err = queries.InsertPendingObjects(ctx, pendingObjectsParams); err != nil {
+			return nil, fmt.Errorf("failed to insert pending objects: %w", err)
+		}
+
+		for _, pendingObject := range pendingObjectsParams {
+			pendingObjects = append(pendingObjects, pendingObject.Key)
+		}
+	}
+
 	return &PendingClosureResponse{
-		ID:        strconv.FormatInt(pendingClosureID, 10),
-		StartedAt: now,
+		ID:             strconv.FormatInt(pendingClosure.id, 10),
+		StartedAt:      pendingClosure.startedAt,
+		PendingObjects: pendingObjects,
 	}, nil
 }
 
 func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosureID int64) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start transaction: %w", err)
-	}
-
-	committed := false
-
-	defer rollbackOnError(ctx, &tx, &err, &committed)
-	queries := pg.New(tx)
-
-	if err = queries.CommitPendingClosure(ctx, pendingClosureID); err != nil {
+	if err := pg.New(pool).CommitPendingClosure(ctx, pendingClosureID); err != nil {
 		return fmt.Errorf("failed to commit pending closure: %w", err)
 	}
 
-	committed = true
+	return nil
+}
 
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, duration time.Duration) error {
+	seconds := int32(duration.Seconds())
+	if err := pg.New(pool).CleanupPendingClosures(ctx, seconds); err != nil {
+		return fmt.Errorf("failed to cleanup pending closure: %w", err)
 	}
 
 	return nil

@@ -9,7 +9,21 @@ import (
 	"testing"
 )
 
-func TestServer_startUploadHandler(t *testing.T) {
+func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
+	t.Parallel()
+
+	server := createTestServer(t)
+	defer server.Close()
+
+	// should be a no-op
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/pending_closure?older-than=0s",
+		handler: server.cleanupPendingClosuresHandler,
+	})
+}
+
+func TestServer_createPendingClosureHandler(t *testing.T) {
 	t.Parallel()
 
 	server := createTestServer(t)
@@ -47,7 +61,6 @@ func TestServer_startUploadHandler(t *testing.T) {
 		body:    body,
 		handler: server.createPendingClosureHandler,
 	})
-
 	var pendingClosureResponse PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	slog.Info("create pending closure", "response", rr.Body.String(), "status", rr.Code)
