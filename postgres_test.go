@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,24 +23,7 @@ type postgresServer struct {
 func (s *postgresServer) Cleanup() {
 	defer os.RemoveAll(s.tempDir)
 
-	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
-	if err != nil {
-		slog.Error("failed to get pgid", "error", err)
-
-		return
-	}
-
-	err = syscall.Kill(pgid, syscall.SIGKILL)
-	if err != nil {
-		slog.Error("failed to kill postgres", "error", err)
-
-		return
-	}
-
-	err = s.cmd.Wait()
-	if err != nil {
-		slog.Error("failed to wait for postgres", "error", err)
-	}
+	terminateProcess(s.cmd)
 }
 
 func startPostgresServer() (*postgresServer, error) {
@@ -51,7 +33,7 @@ func startPostgresServer() (*postgresServer, error) {
 	}
 
 	defer func() {
-		if err != nil {
+		if err != nil {)
 			os.RemoveAll(tempDir)
 		}
 	}()
