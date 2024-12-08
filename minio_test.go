@@ -70,31 +70,42 @@ func (s *minioServer) Client(t *testing.T) *minio.Client {
 	return minioClient
 }
 
-func (s *minioServer) Cleanup() {
-	defer os.RemoveAll(s.tempDir)
-
-	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
+func terminateProcess(cmd *exec.Cmd) {
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
 	if err != nil {
 		slog.Error("failed to get pgid", "error", err)
 
 		return
 	}
 
-	err = syscall.Kill(pgid, syscall.SIGKILL)
+	time.AfterFunc(10*time.Second, func() {
+		err = syscall.Kill(pgid, syscall.SIGKILL)
+		if err != nil {
+			slog.Error("failed to kill minio", "error", err)
+
+			return
+		}
+
+		slog.Info("killed minio")
+	})
+
+	err = syscall.Kill(pgid, syscall.SIGTERM)
 	if err != nil {
 		slog.Error("failed to kill minio", "error", err)
-
-		return
 	}
 
-	slog.Info("killed minio")
-
-	err = s.cmd.Wait()
+	err = cmd.Wait()
 	if err != nil {
 		slog.Error("failed to wait for minio", "error", err)
 
 		return
 	}
+}
+
+func (s *minioServer) Cleanup() {
+	defer os.RemoveAll(s.tempDir)
+
+	terminateProcess(s.cmd)
 }
 
 func startMinioServer() (*minioServer, error) {
