@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server/pg"
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -157,10 +157,10 @@ func createPendingClosureInner(
 	}, nil
 }
 
-func (s *Server) makePendingObject(ctx context.Context, objectKey string) (PendingObject, error) {
+func (s *Service) makePendingObject(ctx context.Context, objectKey string) (PendingObject, error) {
 	// TODO: multi-part uploads
-	presignedURL, err := s.minioClient.PresignedPutObject(ctx,
-		s.bucketName,
+	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
+		s.BucketName,
 		objectKey,
 		maxSignedURLDuration)
 	if err != nil {
@@ -172,7 +172,7 @@ func (s *Server) makePendingObject(ctx context.Context, objectKey string) (Pendi
 	}, nil
 }
 
-func (s *Server) createPendingClosure(
+func (s *Service) createPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,

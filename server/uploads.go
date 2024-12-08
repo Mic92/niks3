@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"encoding/json"
@@ -35,7 +35,7 @@ type CreatePendingClosureRequest struct {
 //		  "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo": "https://yours3endpoint?authkey=...",
 //	   }
 //	}
-func (s *Server) createPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
 	defer r.Body.Close()
 
@@ -64,7 +64,7 @@ func (s *Server) createPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 		storePathSet[object] = true
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.pool, *req.Closure, storePathSet)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, storePathSet)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
@@ -86,7 +86,7 @@ func (s *Server) createPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 // POST /pending_closures/{key}/commit
 // Request body: -
 // Response body: -.
-func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
 
 	pendingClosureValue := r.PathValue("id")
@@ -103,7 +103,7 @@ func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err = commitPendingClosure(r.Context(), s.pool, parsedUploadID); err != nil {
+	if err = commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)
 		}
@@ -123,7 +123,7 @@ func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 // DELETE /pending_closures?duration=1h
 // Request body: -
 // Response body: -.
-func (s *Server) cleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received cleanup request", "method", r.Method, "url", r.URL)
 
 	olderThanParam := r.URL.Query().Get("older-than")
@@ -138,7 +138,7 @@ func (s *Server) cleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := cleanupPendingClosures(r.Context(), s.pool, olderThan); err != nil {
+	if err := cleanupPendingClosures(r.Context(), s.Pool, olderThan); err != nil {
 		http.Error(w, fmt.Sprintf("failed to cleanup pending closures: %v", err), http.StatusInternalServerError)
 
 		return

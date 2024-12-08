@@ -1,4 +1,4 @@
-package main
+package server_test
 
 import (
 	"bytes"
@@ -12,11 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/pg"
 	minio "github.com/minio/minio-go/v7"
 )
 
-func createTestServer(t *testing.T) *Server {
+func createTestService(t *testing.T) *server.Service {
 	t.Helper()
 
 	if testPostgresServer == nil {
@@ -52,10 +53,10 @@ func createTestServer(t *testing.T) *Server {
 	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	ok(t, err)
 
-	return &Server{
-		pool:        pool,
-		bucketName:  bucketName,
-		minioClient: minioClient,
+	return &server.Service{
+		Pool:        pool,
+		BucketName:  bucketName,
+		MinioClient: minioClient,
 	}
 }
 
