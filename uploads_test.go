@@ -21,6 +21,51 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 		path:    "/pending_closure?older-than=0s",
 		handler: server.cleanupPendingClosuresHandler,
 	})
+
+	closureKey := "00000000000000000000000000000000"
+	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	body, err := json.Marshal(map[string]interface{}{
+		"closure": closureKey,
+		"objects": objects,
+	})
+	ok(t, err)
+
+	rr := testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/pending_closure",
+		body:    body,
+		handler: server.createPendingClosureHandler,
+	})
+
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/pending_closure?duration=0s",
+		handler: server.cleanupPendingClosuresHandler,
+	})
+
+	var pendingClosureResponse PendingClosureResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
+	ok(t, err)
+
+	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("expected http status 404, got %d", rr.Code)
+		}
+	}
+	rr = testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    fmt.Sprintf("/pending_closure/%s/complete", pendingClosureResponse.ID),
+		body:    body,
+		handler: server.commitPendingClosureHandler,
+		pathValues: map[string]string{
+			"id": pendingClosureResponse.ID,
+		},
+		checkResponse: &val,
+	})
+
+	slog.Info("commit pending closure", "response", rr.Body.String(), "status", rr.Code)
 }
 
 func TestServer_createPendingClosureHandler(t *testing.T) {
@@ -51,7 +96,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	closureKey := "00000000000000000000000000000000"
 	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	body, err := json.Marshal(map[string]interface{}{
-		"closure": "00000000000000000000000000000000",
+		"closure": closureKey,
 		"objects": objects,
 	})
 	ok(t, err)
@@ -65,7 +110,6 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	var pendingClosureResponse PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	slog.Info("create pending closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
 
 	if pendingClosureResponse.ID == "" {
