@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -112,6 +113,33 @@ func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 		}
 
 		http.Error(w, fmt.Sprintf("failed to complete upload: %v", err), http.StatusInternalServerError)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /pending_closures?duration=1h
+// Request body: -
+// Response body: -.
+func (s *Server) cleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Received cleanup request", "method", r.Method, "url", r.URL)
+
+	durationParam := r.URL.Query().Get("duration")
+	if durationParam == "" {
+		durationParam = "1h"
+	}
+
+	duration, err := time.ParseDuration(durationParam)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid duration: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
+	if err := cleanupPendingClosures(r.Context(), s.pool, duration); err != nil {
+		http.Error(w, fmt.Sprintf("failed to cleanup pending closures: %v", err), http.StatusInternalServerError)
 
 		return
 	}

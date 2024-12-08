@@ -22,21 +22,24 @@
 -- closures act as gcroots for our binary cache
 CREATE TABLE closures
 (
-    key   varchar(1024) primary key,
-    updated_at timestamp not null
+    key varchar(1024) PRIMARY KEY,
+    updated_at timestamp NOT NULL
 );
 
 -- objects are the actual files in the the s3 bucket (narinfo, nar, log, etc)
 CREATE TABLE objects
 (
-    key        varchar(1024) primary key
+    key varchar(1024) PRIMARY KEY,
+    deleted_at timestamp
 );
 
 -- closure_objects is a many-to-many relationship between closures and objects
 CREATE TABLE IF NOT EXISTS closure_objects
 (
-    closure_key varchar(1024) not null references closures (key) ON DELETE CASCADE,
-    object_key  varchar(1024) not null references objects (key)
+    closure_key varchar(1024) NOT NULL REFERENCES closures (
+        key
+    ) ON DELETE CASCADE,
+    object_key varchar(1024) NOT NULL REFERENCES objects (key)
 );
 
 CREATE INDEX closure_objects_closure_key_idx ON closure_objects (closure_key);
@@ -45,18 +48,21 @@ CREATE INDEX closure_objects_object_key_idx ON closure_objects (object_key);
 -- This is where track not yet uploaded closures
 CREATE TABLE pending_closures
 (
-    id          bigint generated always as identity primary key,
-    key         varchar(1024) not null,
-    started_at  timestamp not null
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    key varchar(1024) NOT NULL,
+    started_at timestamp NOT NULL
 );
 
 -- This is where track not yet uploaded objects associated with a pending closure
 CREATE TABLE pending_objects
 (
-    pending_closure_id bigint not null references pending_closures (id),
-    key        varchar(1024) primary key
+    pending_closure_id bigint NOT NULL REFERENCES pending_closures (id),
+    key varchar(1024) NOT NULL,
+    PRIMARY KEY (key, pending_closure_id)
 );
-CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (pending_closure_id);
+CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
+    pending_closure_id
+);
 -- +goose StatementEnd
 
 -- +goose Down
