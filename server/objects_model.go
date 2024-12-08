@@ -1,11 +1,11 @@
-package main
+package server
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 )
@@ -47,7 +47,7 @@ func getObjectsForDeletion(ctx context.Context,
 	}
 }
 
-func (s *Server) removeS3Objects(ctx context.Context,
+func (s *Service) removeS3Objects(ctx context.Context,
 	pool *pgxpool.Pool,
 	objectCh <-chan minio.ObjectInfo,
 	s3Error *error,
@@ -58,7 +58,7 @@ func (s *Server) removeS3Objects(ctx context.Context,
 
 	queries := pg.New(pool)
 
-	for result := range s.minioClient.RemoveObjectsWithResult(ctx, s.bucketName, objectCh, opts) {
+	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.BucketName, objectCh, opts) {
 		// if the object was not found, we can ignore it
 		if result.Err != nil {
 			if minio.ToErrorResponse(result.Err).Code == "NoSuchKey" {
@@ -110,7 +110,7 @@ func (s *Server) removeS3Objects(ctx context.Context,
 	}
 }
 
-func (s *Server) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool) error {
+func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool) error {
 	// limit channel size to 1000, as minio limits to 1000 in one request
 	objectCh := make(chan minio.ObjectInfo, DeletionBatchSize)
 

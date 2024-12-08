@@ -1,11 +1,11 @@
-package main
+package server
 
 import (
 	"log/slog"
 	"net/http"
 )
 
-func (s *Server) healthCheckHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *Service) HealthCheckHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_, err := w.Write([]byte("OK"))

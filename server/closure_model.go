@@ -1,11 +1,11 @@
-package main
+package server
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
