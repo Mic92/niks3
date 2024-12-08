@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"errors"
@@ -101,7 +101,7 @@ func parseArgs() (*Options, error) {
 	return &opts, nil
 }
 
-func main() {
+func Main() {
 	opts, err := parseArgs()
 	if err != nil {
 		log.Fatalf("Failed to parse args: %v", err)

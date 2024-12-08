@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server/pg"
 	minio "github.com/minio/minio-go/v7"
 )
 

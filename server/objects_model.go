@@ -1,11 +1,11 @@
-package main
+package server
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
 
-	"github.com/Mic92/niks3/pg"
+	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 )
