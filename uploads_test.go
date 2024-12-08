@@ -20,7 +20,7 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 	// should be a no-op
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/pending_closure?older-than=0s",
+		path:    "/api/pending_closure?older-than=0s",
 		handler: server.cleanupPendingClosuresHandler,
 	})
 
@@ -34,14 +34,14 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 
 	rr := testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/pending_closure",
+		path:    "/api/pending_closure",
 		body:    body,
 		handler: server.createPendingClosureHandler,
 	})
 
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/pending_closure?older-than=0s",
+		path:    "/api/pending_closure?older-than=0s",
 		handler: server.cleanupPendingClosuresHandler,
 	})
 
@@ -58,7 +58,7 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 	}
 	rr = testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    fmt.Sprintf("/pending_closure/%s/complete", pendingClosureResponse.ID),
+		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
 		handler: server.commitPendingClosureHandler,
 		pathValues: map[string]string{
@@ -92,7 +92,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:        "POST",
-		path:          "/pending_closure",
+		path:          "/api/pending_closure",
 		body:          invalidBody,
 		handler:       server.createPendingClosureHandler,
 		checkResponse: &val,
@@ -110,7 +110,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	rr := testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/pending_closure",
+		path:    "/api/pending_closure",
 		body:    body,
 		handler: server.createPendingClosureHandler,
 	})
@@ -145,7 +145,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    fmt.Sprintf("/pending_closure/%s/complete", pendingClosureResponse.ID),
+		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
 		handler: server.commitPendingClosureHandler,
 		pathValues: map[string]string{
@@ -155,7 +155,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	rr = testRequest(t, &TestRequest{
 		method:  "GET",
-		path:    "/closures/" + closureKey,
+		path:    "/api/closures/" + closureKey,
 		body:    body,
 		handler: server.getClosureHandler,
 		pathValues: map[string]string{
@@ -184,7 +184,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	rr = testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/pending_closure",
+		path:    "/api/pending_closure",
 		body:    body2,
 		handler: server.createPendingClosureHandler,
 	})
@@ -202,7 +202,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/closures?older-than=0",
+		path:    "/api/closures?older-than=0",
 		handler: server.cleanupClosuresOlder,
 	})
 
@@ -215,7 +215,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	}
 	testRequest(t, &TestRequest{
 		method:        "GET",
-		path:          "/closures/" + closureKey,
+		path:          "/api/closures/" + closureKey,
 		body:          body,
 		handler:       server.getClosureHandler,
 		checkResponse: &isNotFound,

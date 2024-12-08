@@ -57,12 +57,13 @@ func RunServer(opts *Options) error {
 	service := &Server{pool: pool, minioClient: minioClient, bucketName: opts.S3BucketName}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", service.healthCheckHandler)
-	mux.HandleFunc("POST /pending_closures", service.createPendingClosureHandler)
-	mux.HandleFunc("DELETE /pending_closures", service.cleanupPendingClosuresHandler)
-	mux.HandleFunc("/pending_closures/{id}/complete", service.commitPendingClosureHandler)
-	mux.HandleFunc("GET /closures/{key}", service.getClosureHandler)
-	mux.HandleFunc("DELETE /closures", service.cleanupClosuresOlder)
+	mux.HandleFunc("GET /health", service.healthCheckHandler)
+
+	mux.HandleFunc("POST /api/pending_closures", service.createPendingClosureHandler)
+	mux.HandleFunc("DELETE /api/pending_closures", service.cleanupPendingClosuresHandler)
+	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.commitPendingClosureHandler)
+	mux.HandleFunc("GET /api/closures/{key}", service.getClosureHandler)
+	mux.HandleFunc("DELETE /api/closures", service.cleanupClosuresOlder)
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,
