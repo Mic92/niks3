@@ -62,6 +62,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		body:    body,
 		handler: server.createPendingClosureHandler,
 	})
+
 	var pendingClosureResponse PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	slog.Info("create pending closure", "response", rr.Body.String(), "status", rr.Code)
