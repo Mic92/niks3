@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 type CreatePendingClosureRequest struct {
@@ -106,16 +104,18 @@ func (s *Server) commitPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err = commitPendingClosure(r.Context(), s.pool, parsedUploadID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "upload not found", http.StatusNotFound)
-
-			return
+		if errors.Is(err, errPendingClosureNotFound) {
+			http.Error(w, "pending closure not found", http.StatusNotFound)
 		}
+
+		slog.Error("Failed to complete upload", "id", parsedUploadID, "error", err)
 
 		http.Error(w, fmt.Sprintf("failed to complete upload: %v", err), http.StatusInternalServerError)
 
 		return
 	}
+
+	slog.Info("Completed upload", "id", parsedUploadID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
