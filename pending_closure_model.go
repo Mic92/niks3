@@ -44,8 +44,6 @@ func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *boo
 }
 
 func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
-	var i int64
-
 	queries := pg.New(pool)
 
 	missingObjects := make(map[string]bool, len(inflightPaths))
@@ -53,20 +51,8 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 		missingObjects[objectKey] = true
 	}
 
-	start := time.Now()
-
 	for len(inflightPaths) > 0 {
-		if time.Since(start) > 30*time.Second {
-			// Assuming deletion process is failed. We will override objectes marked as deleted.
-			slog.Warn("Deletion process is taking too long. Ignored objects marked as deleted",
-				"inflight_objects", len(inflightPaths))
-
-			break
-		}
-
-		time.Sleep(time.Duration(i) * time.Second)
-
-		i++
+		time.Sleep(time.Duration(1) * time.Second)
 
 		existingObjects, err := queries.GetExistingObjects(ctx, inflightPaths)
 		if err != nil {
@@ -131,9 +117,9 @@ func createPendingClosureInner(
 	for _, existingObject := range existingObjects {
 		if existingObject.DeletedAt != nil {
 			deletedObjects = append(deletedObjects, existingObject.Key)
+		} else {
+			delete(storePathSet, existingObject.Key)
 		}
-
-		delete(storePathSet, existingObject.Key)
 	}
 
 	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(storePathSet))
@@ -180,9 +166,9 @@ func createPendingClosure(
 		pendingObjects = append(pendingObjects, pendingObject.Key)
 	}
 
-	if len(pendingClosure.deletedObjects) == 0 {
+	if len(pendingClosure.deletedObjects) > 0 {
 		slog.Info("Found objects not yet deleted. Waiting for deletion",
-			"pending_objects", len(pendingClosure.pendingObjects))
+			"pending_objects", len(pendingClosure.deletedObjects))
 
 		missingObjects, err := waitForDeletion(ctx, pool, pendingClosure.deletedObjects)
 		if err != nil {

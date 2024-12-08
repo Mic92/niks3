@@ -5,17 +5,16 @@ CREATE OR REPLACE FUNCTION commit_pending_closure(closure_id bigint)
 RETURNS void AS $$
 DECLARE
     is_inserted BOOLEAN;
+    inserted_count INTEGER;
     closure_key VARCHAR;
 BEGIN
     -- Commit the pending closure and capture the inserted value
-    WITH inserted_cte AS (
-        INSERT INTO closures (updated_at, key)
-        SELECT timezone('UTC', NOW()), key FROM pending_closures WHERE id = closure_id
-        ON CONFLICT (key)
-        DO UPDATE SET updated_at = timezone('UTC', NOW())
-        RETURNING (xmax = 0) AS inserted, key
-    )
-    SELECT inserted, key INTO is_inserted, closure_key FROM inserted_cte;
+    INSERT INTO closures (updated_at, key)
+    SELECT timezone('UTC', NOW()), key FROM pending_closures WHERE id = closure_id
+    ON CONFLICT (key)
+    DO UPDATE SET updated_at = timezone('UTC', NOW())
+    RETURNING (xmax = 0) AS is_inserted, key AS closure_key
+    INTO is_inserted, closure_key;
 
     if closure_key is null then
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
