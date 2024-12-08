@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	minio "github.com/minio/minio-go/v7"
 )
 
 func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
@@ -39,7 +43,7 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/pending_closure?duration=0s",
+		path:    "/pending_closure?older-than=0s",
 		handler: server.cleanupPendingClosuresHandler,
 	})
 
@@ -69,6 +73,9 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 }
 
 func TestServer_createPendingClosureHandler(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	t.Parallel()
 
 	server := createTestServer(t)
@@ -94,7 +101,9 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	})
 
 	closureKey := "00000000000000000000000000000000"
-	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	firstObject := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	secondObject := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	objects := []string{firstObject, secondObject}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
 		"objects": objects,
@@ -119,6 +128,12 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	if len(pendingClosureResponse.PendingObjects) != len(objects) {
 		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
+
+	_, err = server.minioClient.PutObject(ctx, server.bucketName, firstObject, nil, 0, minio.PutObjectOptions{})
+	ok(t, err)
+
+	_, err = server.minioClient.PutObject(ctx, server.bucketName, secondObject, nil, 0, minio.PutObjectOptions{})
+	ok(t, err)
 
 	testRequest(t, &TestRequest{
 		method:  "POST",
@@ -148,6 +163,32 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	objects = closureResponse.Objects
 	if len(objects) != 2 {
 		t.Errorf("expected 2 objects, got %d", len(objects))
+	}
+
+	thirdObject := "cccccccccccccccccccccccccccccccc"
+
+	objects2 := []string{firstObject, secondObject, thirdObject}
+	body2, err := json.Marshal(map[string]interface{}{
+		"closure": "11111111111111111111111111111111",
+		"objects": objects2,
+	})
+	ok(t, err)
+
+	rr = testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/pending_closure",
+		body:    body2,
+		handler: server.createPendingClosureHandler,
+	})
+
+	ok(t, err)
+
+	var pendingClosureResponse2 PendingClosureResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
+	ok(t, err)
+
+	if len(pendingClosureResponse2.PendingObjects) != 1 || pendingClosureResponse2.PendingObjects[0] != thirdObject {
+		t.Errorf("expected 1 object, got %v", pendingClosureResponse2)
 	}
 
 	testRequest(t, &TestRequest{
