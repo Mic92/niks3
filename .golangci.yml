@@ -1,15 +1,19 @@
+run:
+  timeout: 2m
 linters:
   enable-all: true
   disable:
     - depguard
-    - execinquery
     - exhaustruct
     - exportloopref
     - funlen
     - godox
-    - gomnd
-    - mnd
     - varnamelen
+    - gocognit
+    - cyclop
+    - err113
+    - gomnd
+    - execinquery
 linters-settings:
   tagliatelle:
     # Check the struct tag name case.

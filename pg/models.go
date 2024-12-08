@@ -19,7 +19,8 @@ type ClosureObject struct {
 }
 
 type Object struct {
-	Key string `json:"key"`
+	Key       string           `json:"key"`
+	DeletedAt pgtype.Timestamp `json:"deleted_at"`
 }
 
 type PendingClosure struct {
