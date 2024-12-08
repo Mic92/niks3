@@ -49,9 +49,10 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	})
 
 	closureKey := "00000000000000000000000000000000"
+	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": "00000000000000000000000000000000",
-		"objects": []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		"objects": objects,
 	})
 	ok(t, err)
 
@@ -68,6 +69,10 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 
 	if pendingClosureResponse.ID == "" {
 		t.Errorf("handler returned empty upload id")
+	}
+
+	if len(pendingClosureResponse.PendingObjects) != len(objects) {
+		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
 
 	testRequest(t, &TestRequest{
@@ -95,7 +100,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	slog.Info("get closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
 
-	objects := closureResponse.Objects
+	objects = closureResponse.Objects
 	if len(objects) != 2 {
 		t.Errorf("expected 2 objects, got %d", len(objects))
 	}
