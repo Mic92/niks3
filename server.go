@@ -16,7 +16,6 @@ import (
 type Options struct {
 	DBConnectionString string
 	HTTPAddr           string
-	MigrateDB          bool
 
 	// TODO: Document how to use this with AWS.
 	S3Endpoint   string
