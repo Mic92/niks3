@@ -150,6 +150,8 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	committed = true
+
 	return &PendingClosure{
 		id:             pendingClosure.ID,
 		startedAt:      pendingClosure.StartedAt.Time,
