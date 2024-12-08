@@ -4,7 +4,7 @@
     {
       packages.niks3 = pkgs.buildGoModule {
         name = "niks3";
-        src = ../..;
+        src = ../../server;
 
         vendorHash = "sha256-Vqll61QhSmpN6GdL7L2ghUHtzpT9mhxfhyRgTNFVQyo=";
 
