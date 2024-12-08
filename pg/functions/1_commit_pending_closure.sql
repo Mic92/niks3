@@ -17,6 +17,12 @@ BEGIN
     )
     SELECT inserted, key INTO is_inserted, closure_key FROM inserted_cte;
 
+    if closure_key is null then
+        RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
+    end if;
+
+    -- log the closure key
+
     -- If the closure was inserted, commit the pending objects
     IF is_inserted THEN
         -- Commit the pending objects that we don't already have
