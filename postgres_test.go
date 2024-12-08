@@ -15,6 +15,10 @@ var (
 	testDBCount        atomic.Int32    //nolint:gochecknoglobals
 )
 
+const (
+	debugPostgres = false
+)
+
 type postgresServer struct {
 	cmd     *exec.Cmd
 	tempDir string
@@ -47,10 +51,13 @@ func startPostgresServer() (*postgresServer, error) {
 		return nil, fmt.Errorf("failed to run initdb: %w", err)
 	}
 
-	postgresProc := exec.Command("postgres", "-D", dbPath, "-k", tempDir,
-		"-c", "listen_addresses=",
-		"-c", "log_statement=all",
-		"-c", "log_min_duration_statement=0")
+	args := []string{"-D", dbPath, "-k", tempDir, "-c", "listen_addresses="}
+
+	if debugPostgres {
+		args = append(args, "-c", "log_statement=all", "-c", "log_min_duration_statement=0")
+	}
+
+	postgresProc := exec.Command("postgres", args...)
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
 	postgresProc.SysProcAttr = &syscall.SysProcAttr{}
