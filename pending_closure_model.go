@@ -16,10 +16,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	maxSignedURLDuration = time.Duration(5) * time.Hour
+)
+
+type PendingObject struct {
+	PresignedURL string `json:"presigned_url"`
+}
+
 type PendingClosureResponse struct {
-	ID             string    `json:"id"`
-	StartedAt      time.Time `json:"started_at"`
-	PendingObjects []string  `json:"pending_objects"`
+	ID             string                   `json:"id"`
+	StartedAt      time.Time                `json:"started_at"`
+	PendingObjects map[string]PendingObject `json:"pending_objects"`
 }
 
 type PendingClosure struct {
@@ -149,7 +157,22 @@ func createPendingClosureInner(
 	}, nil
 }
 
-func createPendingClosure(
+func (s *Server) makePendingObject(ctx context.Context, objectKey string) (PendingObject, error) {
+	// TODO: multi-part uploads
+	presignedURL, err := s.minioClient.PresignedPutObject(ctx,
+		s.bucketName,
+		objectKey,
+		maxSignedURLDuration)
+	if err != nil {
+		return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
+	}
+
+	return PendingObject{
+		PresignedURL: presignedURL.String(),
+	}, nil
+}
+
+func (s *Server) createPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
@@ -160,10 +183,15 @@ func createPendingClosure(
 		return nil, err
 	}
 
-	pendingObjects := make([]string, 0, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
+	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
 
 	for _, pendingObject := range pendingClosure.pendingObjects {
-		pendingObjects = append(pendingObjects, pendingObject.Key)
+		po, err := s.makePendingObject(ctx, pendingObject.Key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pending object: %w", err)
+		}
+
+		pendingObjects[pendingObject.Key] = po
 	}
 
 	if len(pendingClosure.deletedObjects) > 0 {
@@ -190,7 +218,12 @@ func createPendingClosure(
 		}
 
 		for _, pendingObject := range pendingObjectsParams {
-			pendingObjects = append(pendingObjects, pendingObject.Key)
+			po, err := s.makePendingObject(ctx, pendingObject.Key)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create pending object: %w", err)
+			}
+
+			pendingObjects[pendingObject.Key] = po
 		}
 	}
 

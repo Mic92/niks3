@@ -9,8 +9,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	minio "github.com/minio/minio-go/v7"
 )
 
 func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
@@ -129,11 +127,21 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
 
-	_, err = server.minioClient.PutObject(ctx, server.bucketName, firstObject, nil, 0, minio.PutObjectOptions{})
-	ok(t, err)
+	httpClient := &http.Client{}
 
-	_, err = server.minioClient.PutObject(ctx, server.bucketName, secondObject, nil, 0, minio.PutObjectOptions{})
-	ok(t, err)
+	for _, pendingObject := range pendingClosureResponse.PendingObjects {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, pendingObject.PresignedURL, nil)
+		ok(t, err)
+
+		resp, err := httpClient.Do(req)
+		ok(t, err)
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected http status 200, got %d", resp.StatusCode)
+		}
+	}
 
 	testRequest(t, &TestRequest{
 		method:  "POST",
@@ -187,7 +195,8 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
 	ok(t, err)
 
-	if len(pendingClosureResponse2.PendingObjects) != 1 || pendingClosureResponse2.PendingObjects[0] != thirdObject {
+	v, ok := pendingClosureResponse2.PendingObjects[thirdObject]
+	if len(pendingClosureResponse2.PendingObjects) != 1 || !ok || v.PresignedURL == "" {
 		t.Errorf("expected 1 object, got %v", pendingClosureResponse2)
 	}
 
