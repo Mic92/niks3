@@ -64,7 +64,7 @@ func (s *Server) createPendingClosureHandler(w http.ResponseWriter, r *http.Requ
 		storePathSet[object] = true
 	}
 
-	upload, err := createPendingClosure(r.Context(), s.pool, *req.Closure, storePathSet)
+	upload, err := s.createPendingClosure(r.Context(), s.pool, *req.Closure, storePathSet)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
