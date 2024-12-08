@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"strconv"
 	"time"
+	"strings"
+	"errors"
 
 	"github.com/Mic92/niks3/pg"
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -212,8 +215,17 @@ func createPendingClosure(
 	}, nil
 }
 
+var (
+	pendingCommitNotFound = errors.New("not found")
+)
+
 func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosureID int64) error {
 	if err := pg.New(pool).CommitPendingClosure(ctx, pendingClosureID); err != nil {
+		msg := "Closure does not exist:"
+		err, ok := err.(*pgconn.PgError)
+		if ok && strings.Contains(err.Message, msg) {
+			return fmt.Errorf("failed to commit pending closure: %w", pendingCommitNotFound)
+		}
 		return fmt.Errorf("failed to commit pending closure: %w", err)
 	}
 
