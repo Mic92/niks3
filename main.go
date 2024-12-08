@@ -16,11 +16,16 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+const (
+	minAPITokenLength = 36
+)
+
 func parseArgs() (*Options, error) {
 	var opts Options
 
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
+	apiTokenPath := ""
 
 	flag.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIKS3_DB", ""),
 		"Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters")
@@ -34,6 +39,8 @@ func parseArgs() (*Options, error) {
 		"Path to file containing S3 access key")
 	flag.StringVar(&s3SecretKeyPath, "s3-secret-key-path", getEnvOrDefault("NIKS3_S3_SECRET_KEY_PATH", ""),
 		"Path to file containing S3 secret key")
+	flag.StringVar(&opts.APIToken, "api-token", getEnvOrDefault("NIKS3_API_TOKEN", ""), "API token for authentication")
+	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
 	flag.Parse()
 
 	if opts.DBConnectionString == "" {
@@ -58,16 +65,37 @@ func parseArgs() (*Options, error) {
 		opts.S3SecretKey = string(secretKey)
 	}
 
+	if apiTokenPath != "" {
+		apiToken, err := os.ReadFile(apiTokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read API token file: %w", err)
+		}
+
+		opts.APIToken = string(apiToken)
+	}
+
 	if opts.S3Endpoint == "" {
 		return nil, errors.New("missing required flag: --s3-endpoint")
 	}
 
 	if opts.S3AccessKey == "" {
-		return nil, errors.New("missing required flag: --s3-access-key")
+		return nil, errors.New("missing required flag: --s3-access-key or --s3-access-key-path")
 	}
 
 	if opts.S3SecretKey == "" {
-		return nil, errors.New("missing required flag: --s3-secret-key")
+		return nil, errors.New("missing required flag: --s3-secret-key or --s3-secret-key-path")
+	}
+
+	if opts.S3BucketName == "" {
+		return nil, errors.New("missing required flag: --s3-bucket-name")
+	}
+
+	if opts.APIToken == "" {
+		return nil, errors.New("missing required flag: --api-token or --api-token-path")
+	}
+
+	if len(opts.APIToken) < minAPITokenLength {
+		return nil, errors.New("API token must be at least 36 characters long")
 	}
 
 	return &opts, nil

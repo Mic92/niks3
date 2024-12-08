@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Mic92/niks3/pg"
@@ -23,17 +25,47 @@ type Options struct {
 	S3SecretKey  string
 	S3UseSSL     bool
 	S3BucketName string
+
+	APIToken string
 }
 
 type Server struct {
 	pool        *pgxpool.Pool
 	minioClient *minio.Client
 	bucketName  string
+	apiToken    string
 }
 
 const (
 	dbConnectionTimeout = 10 * time.Second
 )
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authToken := r.Header.Get("Authorization")
+		if authToken == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+			return
+		}
+
+		bearerPrefix := "Bearer "
+		if !strings.HasPrefix(authToken, bearerPrefix) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+			return
+		}
+
+		authToken = authToken[len(bearerPrefix):]
+		if subtle.ConstantTimeCompare([]byte(authToken), []byte(s.apiToken)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
 
 func RunServer(opts *Options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
@@ -53,16 +85,16 @@ func RunServer(opts *Options) error {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
 	}
 
-	service := &Server{pool: pool, minioClient: minioClient, bucketName: opts.S3BucketName}
+	service := &Server{pool: pool, minioClient: minioClient, bucketName: opts.S3BucketName, apiToken: opts.APIToken}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.healthCheckHandler)
 
-	mux.HandleFunc("POST /api/pending_closures", service.createPendingClosureHandler)
-	mux.HandleFunc("DELETE /api/pending_closures", service.cleanupPendingClosuresHandler)
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.commitPendingClosureHandler)
-	mux.HandleFunc("GET /api/closures/{key}", service.getClosureHandler)
-	mux.HandleFunc("DELETE /api/closures", service.cleanupClosuresOlder)
+	mux.HandleFunc("POST /api/pending_closures", service.authMiddleware(service.createPendingClosureHandler))
+	mux.HandleFunc("DELETE /api/pending_closures", service.authMiddleware(service.cleanupPendingClosuresHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.authMiddleware(service.commitPendingClosureHandler))
+	mux.HandleFunc("GET /api/closures/{key}", service.authMiddleware(service.getClosureHandler))
+	mux.HandleFunc("DELETE /api/closures", service.authMiddleware(service.cleanupClosuresOlder))
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,
