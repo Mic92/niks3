@@ -1,4 +1,4 @@
-package main
+package server_test
 
 import (
 	"context"
@@ -184,11 +184,11 @@ func startMinioServer() (*minioServer, error) {
 }
 
 // TODO: remove this test once we use minio in actual code.
-func TestServer_Miniotest(t *testing.T) {
+func TestService_Miniotest(t *testing.T) {
 	t.Parallel()
 
-	server := createTestServer(t)
+	server := createTestService(t)
 	defer server.Close()
-	_, err := server.minioClient.BucketExists(context.Background(), server.bucketName)
+	_, err := server.MinioClient.BucketExists(context.Background(), server.BucketName)
 	ok(t, err)
 }
