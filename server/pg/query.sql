@@ -7,13 +7,18 @@ RETURNING *;
 INSERT INTO pending_objects (pending_closure_id, key) VALUES ($1, $2);
 
 -- name: GetExistingObjects :many
+WITH ct AS (
+    SELECT timezone('UTC', now()) AS now
+)
+
 SELECT
-    key,
+    o.key AS key,
     CASE
-        WHEN deleted_at IS NULL THEN NULL ELSE
-            timezone('UTC', now()) - deleted_at
+        WHEN o.deleted_at IS NULL THEN NULL
+        ELSE ct.now - o.deleted_at
     END AS deleted_at
-FROM objects WHERE key = any($1::varchar []);
+FROM objects AS o, ct
+WHERE key = any($1::varchar []);
 
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
@@ -31,28 +36,36 @@ SELECT object_key FROM closure_objects WHERE closure_key = $1;
 DELETE FROM closures WHERE updated_at < $1;
 
 -- name: MarkObjectsForDeletion :many
-WITH stale_objects AS (
-    SELECT o.key FROM objects AS o
+WITH ct AS (
+    SELECT timezone('UTC', now()) AS now
+),
+
+stale_objects AS (
+    SELECT o.key
+    FROM objects AS o, ct
     WHERE
-        o.key NOT IN (
-            SELECT co.object_key
+        NOT EXISTS (
+            SELECT 1
             FROM closure_objects AS co
             WHERE co.object_key = o.key
-        ) AND (
-            o.key NOT IN (
-                SELECT po.key FROM pending_objects AS po WHERE po.key = o.key
-            )
-        ) AND (
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pending_objects AS po
+            WHERE po.key = o.key
+        )
+        AND (
             o.deleted_at IS NULL
-            -- Re-uploads are allowed after 30s, so we give it a 1h grace period
-            OR o.deleted_at < timezone('UTC', now()) - interval '1 hour'
+            OR o.deleted_at < ct.now - interval '1 hour'
         )
     FOR UPDATE
     LIMIT $1
 )
 
-UPDATE objects SET deleted_at = timezone('UTC', now())
-FROM stale_objects
+UPDATE objects
+SET deleted_at = ct.now
+FROM stale_objects, ct
+WHERE objects.key = stale_objects.key
 RETURNING objects.key;
 
 -- name: MarkObjectsAsActive :exec
