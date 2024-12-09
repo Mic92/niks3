@@ -85,7 +85,10 @@ func (q *Queries) GetClosureObjects(ctx context.Context, closureKey string) ([]s
 const getExistingObjects = `-- name: GetExistingObjects :many
 SELECT
     key,
-    CASE WHEN deleted_at IS NULL THEN NULL ELSE timezone('UTC', now()) - deleted_at END AS deleted_at
+    CASE
+        WHEN deleted_at IS NULL THEN NULL ELSE
+            timezone('UTC', now()) - deleted_at
+    END AS deleted_at
 FROM objects WHERE key = any($1::varchar [])
 `
 
