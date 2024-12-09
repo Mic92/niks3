@@ -83,13 +83,18 @@ func (q *Queries) GetClosureObjects(ctx context.Context, closureKey string) ([]s
 }
 
 const getExistingObjects = `-- name: GetExistingObjects :many
+WITH ct AS (
+    SELECT timezone('UTC', now()) AS now
+)
+
 SELECT
-    key,
+    o.key AS key,
     CASE
-        WHEN deleted_at IS NULL THEN NULL ELSE
-            timezone('UTC', now()) - deleted_at
+        WHEN o.deleted_at IS NULL THEN NULL
+        ELSE ct.now - o.deleted_at
     END AS deleted_at
-FROM objects WHERE key = any($1::varchar [])
+FROM objects AS o, ct
+WHERE key = any($1::varchar [])
 `
 
 type GetExistingObjectsRow struct {
@@ -145,28 +150,36 @@ func (q *Queries) MarkObjectsAsActive(ctx context.Context, dollar_1 []string) er
 }
 
 const markObjectsForDeletion = `-- name: MarkObjectsForDeletion :many
-WITH stale_objects AS (
-    SELECT o.key FROM objects AS o
+WITH ct AS (
+    SELECT timezone('UTC', now()) AS current_utc
+),
+stale_objects AS (
+    SELECT o.key
+    FROM objects AS o, ct
     WHERE
         o.key NOT IN (
             SELECT co.object_key
             FROM closure_objects AS co
             WHERE co.object_key = o.key
-        ) AND (
+        )
+        AND (
             o.key NOT IN (
-                SELECT po.key FROM pending_objects AS po WHERE po.key = o.key
+                SELECT po.key
+                FROM pending_objects AS po
+                WHERE po.key = o.key
             )
-        ) AND (
+        )
+        AND (
             o.deleted_at IS NULL
-            -- Re-uploads are allowed after 30s, so we give it a 1h grace period
-            OR o.deleted_at < timezone('UTC', now()) - interval '1 hour'
+            OR o.deleted_at < ct.current_utc - INTERVAL '1 hour'
         )
     FOR UPDATE
     LIMIT $1
 )
-
-UPDATE objects SET deleted_at = timezone('UTC', now())
-FROM stale_objects
+UPDATE objects
+SET deleted_at = ct.current_utc
+FROM stale_objects, ct
+WHERE objects.key = stale_objects.key
 RETURNING objects.key
 `
 
