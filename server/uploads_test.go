@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -68,8 +67,6 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 		},
 		checkResponse: &val,
 	})
-
-	slog.Info("commit pending closure", "response", rr.Body.String(), "status", rr.Code)
 }
 
 func TestService_createPendingClosureHandler(t *testing.T) {
@@ -167,7 +164,6 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	var closureResponse server.ClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
-	slog.Info("get closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
 
 	objects = closureResponse.Objects
