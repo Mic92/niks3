@@ -1,27 +1,28 @@
-package main
+package server_test
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Mic92/niks3/server"
 )
 
-func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
+func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	t.Parallel()
 
-	server := createTestServer(t)
-	defer server.Close()
+	service := createTestService(t)
+	defer service.Close()
 
 	// should be a no-op
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
 		path:    "/api/pending_closure?older-than=0s",
-		handler: server.cleanupPendingClosuresHandler,
+		handler: service.CleanupPendingClosuresHandler,
 	})
 
 	closureKey := "00000000000000000000000000000000"
@@ -36,16 +37,16 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 		method:  "POST",
 		path:    "/api/pending_closure",
 		body:    body,
-		handler: server.createPendingClosureHandler,
+		handler: service.CreatePendingClosureHandler,
 	})
 
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
 		path:    "/api/pending_closure?older-than=0s",
-		handler: server.cleanupPendingClosuresHandler,
+		handler: service.CleanupPendingClosuresHandler,
 	})
 
-	var pendingClosureResponse PendingClosureResponse
+	var pendingClosureResponse server.PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
@@ -56,28 +57,26 @@ func TestServer_cleanupPendingClosuresHandler(t *testing.T) {
 			t.Errorf("expected http status 404, got %d", rr.Code)
 		}
 	}
-	rr = testRequest(t, &TestRequest{
+	testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
-		handler: server.commitPendingClosureHandler,
+		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
 		},
 		checkResponse: &val,
 	})
-
-	slog.Info("commit pending closure", "response", rr.Body.String(), "status", rr.Code)
 }
 
-func TestServer_createPendingClosureHandler(t *testing.T) {
+func TestService_createPendingClosureHandler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	t.Parallel()
 
-	server := createTestServer(t)
-	defer server.Close()
+	service := createTestService(t)
+	defer service.Close()
 
 	invalidBody, err := json.Marshal(map[string]interface{}{})
 	ok(t, err)
@@ -94,7 +93,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:        "POST",
 		path:          "/api/pending_closure",
 		body:          invalidBody,
-		handler:       server.createPendingClosureHandler,
+		handler:       service.CreatePendingClosureHandler,
 		checkResponse: &val,
 	})
 
@@ -112,10 +111,10 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:  "POST",
 		path:    "/api/pending_closure",
 		body:    body,
-		handler: server.createPendingClosureHandler,
+		handler: service.CreatePendingClosureHandler,
 	})
 
-	var pendingClosureResponse PendingClosureResponse
+	var pendingClosureResponse server.PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
@@ -147,7 +146,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:  "POST",
 		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
 		body:    body,
-		handler: server.commitPendingClosureHandler,
+		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
 		},
@@ -157,15 +156,14 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:  "GET",
 		path:    "/api/closures/" + closureKey,
 		body:    body,
-		handler: server.getClosureHandler,
+		handler: service.GetClosureHandler,
 		pathValues: map[string]string{
 			"key": closureKey,
 		},
 	})
 
-	var closureResponse ClosureResponse
+	var closureResponse server.ClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
-	slog.Info("get closure", "response", rr.Body.String(), "status", rr.Code)
 	ok(t, err)
 
 	objects = closureResponse.Objects
@@ -186,12 +184,12 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:  "POST",
 		path:    "/api/pending_closure",
 		body:    body2,
-		handler: server.createPendingClosureHandler,
+		handler: service.CreatePendingClosureHandler,
 	})
 
 	ok(t, err)
 
-	var pendingClosureResponse2 PendingClosureResponse
+	var pendingClosureResponse2 server.PendingClosureResponse
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
 	ok(t, err)
 
@@ -203,7 +201,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
 		path:    "/api/closures?older-than=0",
-		handler: server.cleanupClosuresOlder,
+		handler: service.CleanupClosuresOlder,
 	})
 
 	isNotFound := func(t *testing.T, rr *httptest.ResponseRecorder) {
@@ -217,7 +215,7 @@ func TestServer_createPendingClosureHandler(t *testing.T) {
 		method:        "GET",
 		path:          "/api/closures/" + closureKey,
 		body:          body,
-		handler:       server.getClosureHandler,
+		handler:       service.GetClosureHandler,
 		checkResponse: &isNotFound,
 		pathValues: map[string]string{
 			"key": closureKey,

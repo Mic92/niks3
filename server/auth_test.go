@@ -1,4 +1,4 @@
-package main
+package server_test
 
 import (
 	"net/http"
@@ -6,23 +6,23 @@ import (
 	"testing"
 )
 
-func TestServer_authMiddleware(t *testing.T) {
+func TestService_AuthMiddleware(t *testing.T) {
 	t.Parallel()
 
-	server := createTestServer(t)
-	defer server.Close()
+	service := createTestService(t)
+	defer service.Close()
 
 	// check that health check works also with database closed
-	server.pool.Close()
+	service.Pool.Close()
 
-	server.apiToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	service.APIToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: server.authMiddleware(server.healthCheckHandler),
+		handler: service.AuthMiddleware(service.HealthCheckHandler),
 		header: map[string]string{
-			"Authorization": "Bearer " + server.apiToken,
+			"Authorization": "Bearer " + service.APIToken,
 		},
 	})
 
@@ -37,7 +37,7 @@ func TestServer_authMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: server.authMiddleware(server.healthCheckHandler),
+		handler: service.AuthMiddleware(service.HealthCheckHandler),
 		// checkResponse *func(*testing.T, *httptest.ResponseRecorder)
 		checkResponse: &checkResponse,
 		header: map[string]string{
