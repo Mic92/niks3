@@ -24,7 +24,42 @@ WHERE key = any($1::varchar []);
 SELECT commit_pending_closure($1::bigint);
 
 -- name: CleanupPendingClosures :exec
-SELECT cleanup_pending_closures($1::int);
+WITH cutoff_time AS (
+    SELECT timezone('UTC', now()) - interval '1 second' * $1 AS time
+),
+
+old_closures AS (
+    SELECT id
+    FROM pending_closures, cutoff_time
+    WHERE started_at < cutoff_time.time
+),
+
+-- Insert pending objects into objects table if they don't already exist
+-- We mark them as deleted so they can be cleaned up later
+inserted_objects AS (
+    INSERT INTO objects (key, deleted_at)
+    SELECT
+        po.key,
+        cutoff_time.time
+    FROM pending_objects AS po
+    JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
+    ON CONFLICT (key) DO NOTHING
+    RETURNING key
+),
+
+-- Delete pending objects that were inserted into the objects table
+deleted_pending_objects AS (
+    DELETE FROM pending_objects
+    USING old_closures
+    WHERE pending_objects.pending_closure_id = old_closures.id
+    RETURNING pending_closure_id
+)
+
+-- Delete pending closures older than the specified interval
+-- This will cascade to pending_objects
+DELETE FROM pending_closures
+USING old_closures
+WHERE pending_closures.id = old_closures.id;
 
 -- name: GetClosure :one
 SELECT updated_at FROM closures WHERE key = $1 LIMIT 1;
