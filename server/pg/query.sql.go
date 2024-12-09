@@ -12,10 +12,39 @@ import (
 )
 
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :exec
-SELECT cleanup_pending_closures($1::int)
+WITH cutoff_time AS (
+    SELECT timezone('UTC', NOW()) - interval '1 second' * $1 AS time
+),
+old_closures AS (
+    SELECT id
+    FROM pending_closures, cutoff_time
+    WHERE started_at < cutoff_time.time
+),
+inserted_objects AS (
+    INSERT INTO objects (key, deleted_at)
+    SELECT po.key, cutoff_time.time
+    FROM pending_objects as po
+    JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
+    ON CONFLICT (key) DO NOTHING
+    RETURNING key
+),
+deleted_pending_objects AS (
+    DELETE FROM pending_objects
+    USING old_closures
+    WHERE pending_objects.pending_closure_id = old_closures.id
+    RETURNING pending_closure_id
+)
+DELETE FROM pending_closures
+USING old_closures
+WHERE pending_closures.id = old_closures.id
 `
 
-func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 int32) error {
+// Insert pending objects into objects table if they don't already exist
+// We mark them as deleted so they can be cleaned up later
+// Delete pending objects that were inserted into the objects table
+// Delete pending closures older than the specified interval
+// This will cascade to pending_objects
+func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 interface{}) error {
 	_, err := q.db.Exec(ctx, cleanupPendingClosures, dollar_1)
 	return err
 }

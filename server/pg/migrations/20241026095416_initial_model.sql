@@ -53,11 +53,12 @@ CREATE TABLE pending_closures
     key varchar(1024) NOT NULL,
     started_at timestamp NOT NULL
 );
+CREATE INDEX pending_closures_started_at_idx ON pending_closures (started_at);
 
 -- This is where track not yet uploaded objects associated with a pending closure
 CREATE TABLE pending_objects
 (
-    pending_closure_id bigint NOT NULL REFERENCES pending_closures (id),
+    pending_closure_id bigint NOT NULL REFERENCES pending_closures (id) ON DELETE CASCADE,
     key varchar(1024) NOT NULL,
     PRIMARY KEY (key, pending_closure_id)
 );
@@ -73,6 +74,7 @@ DROP INDEX closure_objects_closure_key_idx;
 DROP INDEX pending_objects_pending_closure_id_idx;
 DROP INDEX closure_objects_object_key_idx;
 DROP INDEX closures_updated_at_idx;
+DROP INDEX pending_closures_started_at_idx;
 
 DROP TABLE closures;
 DROP TABLE objects;
