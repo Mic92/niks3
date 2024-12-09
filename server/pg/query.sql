@@ -39,29 +39,29 @@ DELETE FROM closures WHERE updated_at < $1;
 WITH ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
+
 stale_objects AS (
     SELECT o.key
     FROM objects AS o, ct
     WHERE
-        o.key NOT IN (
-            SELECT co.object_key
+        NOT EXISTS (
+            SELECT 1
             FROM closure_objects AS co
             WHERE co.object_key = o.key
         )
-        AND (
-            o.key NOT IN (
-                SELECT po.key
-                FROM pending_objects AS po
-                WHERE po.key = o.key
-            )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pending_objects AS po
+            WHERE po.key = o.key
         )
         AND (
             o.deleted_at IS NULL
-            OR o.deleted_at < ct.now - INTERVAL '1 hour'
+            OR o.deleted_at < ct.now - interval '1 hour'
         )
     FOR UPDATE
     LIMIT $1
 )
+
 UPDATE objects
 SET deleted_at = ct.now
 FROM stale_objects, ct
