@@ -25,6 +25,7 @@ CREATE TABLE closures
     key varchar(1024) PRIMARY KEY,
     updated_at timestamp NOT NULL
 );
+CREATE INDEX closures_updated_at_idx ON closures (updated_at);
 
 -- objects are the actual files in the the s3 bucket (narinfo, nar, log, etc)
 CREATE TABLE objects
@@ -70,6 +71,8 @@ CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
 
 DROP INDEX closure_objects_closure_key_idx;
 DROP INDEX pending_objects_pending_closure_id_idx;
+DROP INDEX closure_objects_object_key_idx;
+DROP INDEX closures_updated_at_idx;
 
 DROP TABLE closures;
 DROP TABLE objects;
