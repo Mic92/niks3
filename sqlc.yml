@@ -2,10 +2,10 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "server/pg/query.sql"
-    schema: "server/erpg/migrations"
+    schema: "server/pg/migrations"
     gen:
       go:
         out: "server/pg"
-        package: "server/pg"
+        package: "pg"
         sql_package: "pgx/v5"
         emit_json_tags: true
