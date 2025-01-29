@@ -55,7 +55,7 @@ func createTestService(t *testing.T) *server.Service {
 
 	return &server.Service{
 		Pool:        pool,
-		BucketName:  bucketName,
+		Bucket:  bucketName,
 		MinioClient: minioClient,
 	}
 }

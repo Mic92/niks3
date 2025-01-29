@@ -24,7 +24,7 @@ type Options struct {
 	S3AccessKey  string
 	S3SecretKey  string
 	S3UseSSL     bool
-	S3BucketName string
+	S3Bucket     string
 
 	APIToken string
 }
@@ -32,7 +32,7 @@ type Options struct {
 type Service struct {
 	Pool        *pgxpool.Pool
 	MinioClient *minio.Client
-	BucketName  string
+	Bucket  string
 	APIToken    string
 }
 
@@ -85,7 +85,7 @@ func RunServer(opts *Options) error {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
 	}
 
-	service := &Service{Pool: pool, MinioClient: minioClient, BucketName: opts.S3BucketName, APIToken: opts.APIToken}
+	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
