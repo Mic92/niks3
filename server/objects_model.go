@@ -58,7 +58,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 	queries := pg.New(pool)
 
-	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.BucketName, objectCh, opts) {
+	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
 		// if the object was not found, we can ignore it
 		if result.Err != nil {
 			if minio.ToErrorResponse(result.Err).Code == "NoSuchKey" {

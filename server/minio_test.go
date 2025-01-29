@@ -189,6 +189,6 @@ func TestService_Miniotest(t *testing.T) {
 
 	server := createTestService(t)
 	defer server.Close()
-	_, err := server.MinioClient.BucketExists(context.Background(), server.BucketName)
+	_, err := server.MinioClient.BucketExists(context.Background(), server.Bucket)
 	ok(t, err)
 }

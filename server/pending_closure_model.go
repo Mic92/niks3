@@ -160,7 +160,7 @@ func createPendingClosureInner(
 func (s *Service) makePendingObject(ctx context.Context, objectKey string) (PendingObject, error) {
 	// TODO: multi-part uploads
 	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
-		s.BucketName,
+		s.Bucket,
 		objectKey,
 		maxSignedURLDuration)
 	if err != nil {
