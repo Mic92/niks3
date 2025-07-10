@@ -30,4 +30,3 @@ async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
