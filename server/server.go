@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"fmt"
@@ -87,6 +88,11 @@ func RunServer(opts *Options) error {
 
 	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
 
+	// Initialize the bucket with nix-cache-info if it doesn't exist
+	if err := service.InitializeBucket(context.Background()); err != nil {
+		return fmt.Errorf("failed to initialize bucket: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
 
@@ -113,4 +119,32 @@ func RunServer(opts *Options) error {
 
 func (s *Service) Close() {
 	s.Pool.Close()
+}
+
+// InitializeBucket ensures the bucket has the required nix-cache-info file
+func (s *Service) InitializeBucket(ctx context.Context) error {
+	// Check if nix-cache-info already exists
+	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
+	if err == nil {
+		// File already exists
+		return nil
+	}
+
+	// Create nix-cache-info content
+	// Priority 30 is higher than the default nixos.org cache (priority 40)
+	cacheInfo := []byte(`StoreDir: /nix/store
+WantMassQuery: 1
+Priority: 30
+`)
+
+	// Upload nix-cache-info to the bucket
+	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
+		bytes.NewReader(cacheInfo), int64(len(cacheInfo)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+	if err != nil {
+		return fmt.Errorf("failed to create nix-cache-info: %w", err)
+	}
+
+	slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
+	return nil
 }
