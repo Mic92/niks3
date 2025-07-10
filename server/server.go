@@ -20,11 +20,11 @@ type Options struct {
 	HTTPAddr           string
 
 	// TODO: Document how to use this with AWS.
-	S3Endpoint   string
-	S3AccessKey  string
-	S3SecretKey  string
-	S3UseSSL     bool
-	S3Bucket     string
+	S3Endpoint  string
+	S3AccessKey string
+	S3SecretKey string
+	S3UseSSL    bool
+	S3Bucket    string
 
 	APIToken string
 }
@@ -32,7 +32,7 @@ type Options struct {
 type Service struct {
 	Pool        *pgxpool.Pool
 	MinioClient *minio.Client
-	Bucket  string
+	Bucket      string
 	APIToken    string
 }
 
