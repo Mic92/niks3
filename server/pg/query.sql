@@ -62,13 +62,16 @@ USING old_closures
 WHERE pending_closures.id = old_closures.id;
 
 -- name: GetClosure :one
-SELECT updated_at FROM closures WHERE key = $1 LIMIT 1;
+SELECT updated_at FROM closures
+WHERE key = $1 LIMIT 1;
 
 -- name: GetClosureObjects :many
-SELECT object_key FROM closure_objects WHERE closure_key = $1;
+SELECT object_key FROM closure_objects
+WHERE closure_key = $1;
 
 -- name: DeleteClosures :exec
-DELETE FROM closures WHERE updated_at < $1;
+DELETE FROM closures
+WHERE updated_at < $1;
 
 -- name: MarkObjectsForDeletion :many
 WITH ct AS (
@@ -104,7 +107,9 @@ WHERE objects.key = stale_objects.key
 RETURNING objects.key;
 
 -- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL WHERE key = any($1::varchar []);
+UPDATE objects SET deleted_at = NULL
+WHERE key = any($1::varchar []);
 
 -- name: DeleteObjects :exec
-DELETE FROM objects WHERE key = any($1::varchar []);
+DELETE FROM objects
+WHERE key = any($1::varchar []);
