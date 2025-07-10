@@ -26,6 +26,11 @@
           pkgs.minio
           # for golangci-lint
           pkgs.watchexec
+
+          pkgs.rustc
+          pkgs.cargo
+          pkgs.rustfmt
+          pkgs.clippy
         ];
 
         shellHook = ''

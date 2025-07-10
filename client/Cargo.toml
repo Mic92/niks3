@@ -1,0 +1,23 @@
+[package]
+name = "niks3"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.97"
+clap = { version = "4", default-features = false, features = [
+  "std",
+  "cargo",
+  "derive",
+  "help",
+  "env",
+] }
+tokio = { version = "1", features = ["io-util", "fs", "macros", "rt-multi-thread"] }
+base64 = "0.22"
+ed25519-dalek = { version = "2.0", features = ["pem", "rand_core"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
