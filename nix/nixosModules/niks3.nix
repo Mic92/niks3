@@ -28,16 +28,19 @@ in
     database = {
       connectionString = lib.mkOption {
         type = lib.types.str;
+        default = "postgres:///niks3?user=niks3";
+        defaultText = lib.literalExpression ''"postgres:///niks3?user=niks3"'';
         example = "postgres://niks3:password@localhost/niks3?sslmode=disable";
         description = ''
           Postgres connection string.
+          When createLocally is true, the default uses Unix socket authentication.
           See https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters
         '';
       };
 
       createLocally = lib.mkOption {
         type = lib.types.bool;
-        default = false;
+        default = true;
         description = ''
           Whether to create the database locally.
           This will create a PostgreSQL database named 'niks3' with a user 'niks3'.
@@ -137,6 +140,10 @@ in
           ensureDBOwnership = true;
         }
       ];
+      # Allow local Unix socket connections
+      authentication = ''
+        local all niks3 peer
+      '';
     };
 
     systemd.services.niks3 = {
@@ -190,10 +197,6 @@ in
         # State directory
         StateDirectory = "niks3";
         StateDirectoryMode = "0700";
-      };
-
-      environment = {
-        HOME = "/var/lib/niks3";
       };
     };
   };
