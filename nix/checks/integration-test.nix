@@ -13,11 +13,6 @@ pkgs.nixosTest {
           enable = true;
           httpAddr = "0.0.0.0:5751";
 
-          database = {
-            createLocally = true;
-            connectionString = "postgres://niks3@localhost/niks3?sslmode=disable";
-          };
-
           s3 = {
             endpoint = "localhost:9000";
             bucket = "niks3-test";
@@ -95,7 +90,6 @@ pkgs.nixosTest {
 
   testScript = ''
     import json
-    import time
 
     start_all()
 
