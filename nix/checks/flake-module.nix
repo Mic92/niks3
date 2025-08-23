@@ -27,6 +27,10 @@
               touch $out
             '';
           });
+
+          niks3-integration = import ./integration-test.nix {
+            inherit pkgs;
+          };
         };
     };
 }
