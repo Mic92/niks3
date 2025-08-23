@@ -17,7 +17,7 @@
         packages
         // devShells
         // {
-          golangci-lint = config.packages.niks3.overrideAttrs (old: {
+          golangci-lint = config.packages.niks3-server.overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
             buildPhase = ''
               HOME=$TMPDIR
