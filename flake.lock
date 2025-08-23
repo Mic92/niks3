@@ -1,5 +1,20 @@
 {
   "nodes": {
+    "crane": {
+      "locked": {
+        "lastModified": 1755537552,
+        "narHash": "sha256-Tg+P8kFIneqnQLT8E0QqlCrldtdLo1n1y619/mxRD44=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "3c40c97e1881fff381e4615e82557b333edf65c4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -53,6 +68,7 @@
     },
     "root": {
       "inputs": {
+        "crane": "crane",
         "flake-parts": "flake-parts",
         "nixpkgs": "nixpkgs",
         "process-compose": "process-compose",
