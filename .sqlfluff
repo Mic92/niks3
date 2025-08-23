@@ -1,2 +1,8 @@
 [sqlfluff]
 exclude_rules = LT05
+templater = placeholder
+# Ignore sqlc query files as they contain syntax that sqlfluff doesn't support
+exclude = server/pg/query.sql
+
+[sqlfluff:templater:placeholder]
+param_style = numeric_dollar
