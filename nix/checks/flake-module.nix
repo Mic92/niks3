@@ -28,6 +28,8 @@
             '';
           });
 
+          niks3-clippy = config.packages.niks3.clippy;
+
           niks3-integration = import ./integration-test.nix {
             inherit pkgs;
           };
