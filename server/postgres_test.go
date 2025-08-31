@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,12 @@ type postgresServer struct {
 }
 
 func (s *postgresServer) Cleanup() {
-	defer os.RemoveAll(s.tempDir)
+	defer func() {
+		if err := os.RemoveAll(s.tempDir); err != nil {
+			// Use standard log for test files since slog might not be appropriate in test cleanup
+			log.Printf("Failed to remove postgres temp directory: %v", err)
+		}
+	}()
 
 	terminateProcess(s.cmd)
 }
@@ -38,7 +44,10 @@ func startPostgresServer() (*postgresServer, error) {
 
 	defer func() {
 		if err != nil {
-			os.RemoveAll(tempDir)
+			err = os.RemoveAll(tempDir)
+			if err != nil {
+				log.Printf("Failed to remove temp dir: %v", err)
+			}
 		}
 	}()
 	// initialize the database

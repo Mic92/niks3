@@ -10,6 +10,8 @@
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
 
     process-compose.url = "github:Platonic-Systems/process-compose-flake";
+
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -26,6 +28,7 @@
         ./nix/packages/flake-module.nix
         ./nix/formatter/flake-module.nix
         ./nix/checks/flake-module.nix
+        ./nix/nixosModules/flake-module.nix
       ];
     };
 }

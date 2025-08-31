@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"os"
@@ -46,7 +47,8 @@ func randPort() (uint16, error) {
 		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
 
-	ln.Close()
+	_ = ln.Close()
+
 	time.Sleep(1 * time.Second)
 
 	addr, ok := ln.Addr().(*net.TCPAddr)
@@ -103,7 +105,11 @@ func terminateProcess(cmd *exec.Cmd) {
 }
 
 func (s *minioServer) Cleanup() {
-	defer os.RemoveAll(s.tempDir)
+	defer func() {
+		if err := os.RemoveAll(s.tempDir); err != nil {
+			log.Printf("Failed to remove minio temp directory: %v", err)
+		}
+	}()
 
 	terminateProcess(s.cmd)
 }
@@ -116,7 +122,9 @@ func startMinioServer() (*minioServer, error) {
 
 	defer func() {
 		if err != nil {
-			os.RemoveAll(tempDir)
+			if err := os.RemoveAll(tempDir); err != nil {
+				log.Printf("Failed to remove temp directory during startup cleanup: %v", err)
+			}
 		}
 	}()
 
@@ -152,10 +160,10 @@ func startMinioServer() (*minioServer, error) {
 	// wait for server to start
 	for range 200 {
 		var conn net.Conn
-		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 
+		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 
 			break
 		}
@@ -189,6 +197,7 @@ func TestService_Miniotest(t *testing.T) {
 
 	server := createTestService(t)
 	defer server.Close()
-	_, err := server.MinioClient.BucketExists(context.Background(), server.BucketName)
+
+	_, err := server.MinioClient.BucketExists(context.Background(), server.Bucket)
 	ok(t, err)
 }

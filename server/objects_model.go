@@ -24,11 +24,7 @@ func getObjectsForDeletion(ctx context.Context,
 
 	queries := pg.New(pool)
 
-	for {
-		if *s3Error != nil {
-			break
-		}
-
+	for *s3Error == nil {
 		objs, err := queries.MarkObjectsForDeletion(ctx, DeletionBatchSize)
 		if err != nil {
 			*queryErr = fmt.Errorf("failed to mark objects for deletion: %w", err)
@@ -58,7 +54,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 	queries := pg.New(pool)
 
-	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.BucketName, objectCh, opts) {
+	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
 		// if the object was not found, we can ignore it
 		if result.Err != nil {
 			if minio.ToErrorResponse(result.Err).Code == "NoSuchKey" {
