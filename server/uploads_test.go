@@ -47,6 +47,7 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	})
 
 	var pendingClosureResponse server.PendingClosureResponse
+
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
@@ -115,6 +116,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	})
 
 	var pendingClosureResponse server.PendingClosureResponse
+
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
@@ -135,7 +137,11 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		resp, err := httpClient.Do(req)
 		ok(t, err)
 
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Logf("Failed to close response body: %v", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected http status 200, got %d", resp.StatusCode)
@@ -163,6 +169,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	})
 
 	var closureResponse server.ClosureResponse
+
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
 	ok(t, err)
 
@@ -190,6 +197,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	ok(t, err)
 
 	var pendingClosureResponse2 server.PendingClosureResponse
+
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
 	ok(t, err)
 

@@ -10,10 +10,10 @@ func innerTestMain(m *testing.M) int {
 	var err error
 
 	// unload environment variables from the devenv
-	os.Unsetenv("DATABASE_URL")
-	os.Unsetenv("PGDATABASE")
-	os.Unsetenv("PGUSER")
-	os.Unsetenv("PGHOST")
+	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("PGDATABASE")
+	_ = os.Unsetenv("PGUSER")
+	_ = os.Unsetenv("PGHOST")
 
 	testPostgresServer, err = startPostgresServer()
 	defer testPostgresServer.Cleanup()

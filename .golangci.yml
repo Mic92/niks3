@@ -11,6 +11,9 @@ linters:
     - godox
     - mnd
     - varnamelen
+    - noinlineerr
+    - lll
+    - wsl
   settings:
     tagliatelle:
       case:

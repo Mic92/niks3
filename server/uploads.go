@@ -37,7 +37,12 @@ type CreatePendingClosureRequest struct {
 //	}
 func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
-	defer r.Body.Close()
+
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			slog.Error("Failed to close request body", "error", err)
+		}
+	}()
 
 	req := &CreatePendingClosureRequest{}
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
@@ -79,8 +84,6 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // POST /pending_closures/{key}/commit
