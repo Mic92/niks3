@@ -11,24 +11,19 @@ nixosTest {
   name = "nixos-test-niks3";
 
   nodes = {
-    server =
-      { pkgs, ... }:
-      {
-        imports = [ ../nixosModules/niks3.nix ];
+    server = {
+      imports = [ ../nixosModules/niks3.nix ];
 
-        services.niks3 = {
-          enable = true;
-          httpAddr = "0.0.0.0:5751";
+      services.niks3 = {
+        enable = true;
+        httpAddr = "0.0.0.0:5751";
 
-          s3 = {
-            endpoint = "localhost:9000";
-            bucket = "niks3-test";
-            useSSL = false;
-            accessKeyFile = writeText "s3-access-key" "minioadmin";
-            secretKeyFile = writeText "s3-secret-key" "minioadmin";
-          };
-
-          apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
+        s3 = {
+          endpoint = "localhost:9000";
+          bucket = "niks3-test";
+          useSSL = false;
+          accessKeyFile = writeText "s3-access-key" "minioadmin";
+          secretKeyFile = writeText "s3-secret-key" "minioadmin";
         };
 
         apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
@@ -51,18 +46,34 @@ nixosTest {
         before = [ "niks3.service" ];
         wantedBy = [ "multi-user.target" ];
 
-        networking.firewall.allowedTCPPorts = [
-          5751
-          9000
+        path = [
+          minio-client
+          getent
         ];
-      };
 
-    client =
-      { pkgs, ... }:
-      {
-        environment.systemPackages = [
-          niks3
-        ];
+        script = ''
+          set -e
+
+          # Wait for MinIO to be ready
+          for i in {1..60}; do
+            if mc alias set local http://localhost:9000 minioadmin minioadmin; then
+              echo "MinIO is ready!"
+              break
+            fi
+            echo "Waiting for MinIO to start... ($i/60)"
+            sleep 2
+          done
+
+          # Create the bucket if it doesn't exist
+          mc mb local/niks3-test || true
+
+          echo "MinIO bucket setup complete"
+        '';
+
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
       };
 
       # Ensure niks3 starts after minio-setup
@@ -96,28 +107,22 @@ nixosTest {
 
     # Create a test derivation to upload
     print("Creating test store path...")
-    client.succeed("echo 'test content' > /tmp/test-file")
-    test_path = client.succeed("nix-store --add /tmp/test-file").strip()
+    server.succeed("echo 'test content' > /tmp/test-file")
+    test_path = server.succeed("nix-store --add /tmp/test-file").strip()
     print(f"Test store path: {test_path}")
 
     # Test pushing a store path using the niks3 client
-    print("Testing niks3 push command...")
-    client.succeed(f"""
+    server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
       NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
       ${niks3}/bin/niks3 push {test_path}
     """)
 
-    print("Successfully pushed store path!")
-
     # Test with invalid auth token (should fail)
-    print("Testing unauthorized access...")
-    client.fail(f"""
+    server.fail(f"""
       NIKS3_SERVER_URL=http://server:5751 \
       NIKS3_AUTH_TOKEN=invalid-token \
       ${niks3}/bin/niks3 push {test_path}
     """)
-
-    print("All tests passed!")
   '';
 }
