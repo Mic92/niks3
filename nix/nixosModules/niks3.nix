@@ -180,6 +180,7 @@ in
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
         RestrictAddressFamilies = [
+          "AF_UNIX"
           "AF_INET"
           "AF_INET6"
         ];

@@ -8,7 +8,7 @@ let
 
   # Filter source to include only rust-related files for the client
   src = lib.fileset.toSource {
-    root = ../..;
+    root = ../../client;
     fileset = lib.fileset.unions [
       ../../client/Cargo.toml
       ../../client/Cargo.lock
@@ -21,8 +21,9 @@ let
     pname = "niks3";
     version = "0.1.0";
     strictDeps = true;
-    cargoLock = ../../client/Cargo.lock;
-    sourceRoot = "source/client";
+
+    buildInputs = [ pkgs.openssl ];
+    nativeBuildInputs = [ pkgs.pkg-config ];
   };
 
   # Build *just* the cargo dependencies
