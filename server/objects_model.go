@@ -24,11 +24,7 @@ func getObjectsForDeletion(ctx context.Context,
 
 	queries := pg.New(pool)
 
-	for {
-		if *s3Error != nil {
-			break
-		}
-
+	for *s3Error == nil {
 		objs, err := queries.MarkObjectsForDeletion(ctx, DeletionBatchSize)
 		if err != nil {
 			*queryErr = fmt.Errorf("failed to mark objects for deletion: %w", err)

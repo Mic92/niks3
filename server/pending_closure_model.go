@@ -241,8 +241,8 @@ func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosur
 		msg := "Closure does not exist:"
 
 		var pgError *pgconn.PgError
-		ok := errors.As(err, &pgError)
 
+		ok := errors.As(err, &pgError)
 		if ok && strings.Contains(pgError.Message, msg) {
 			return fmt.Errorf("failed to commit pending closure: %w", errPendingClosureNotFound)
 		}

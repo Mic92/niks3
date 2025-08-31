@@ -92,7 +92,7 @@ func RunServer(opts *Options) error {
 	// Use a 30-second timeout to prevent hanging indefinitely
 	initCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := service.InitializeBucket(initCtx); err != nil {
 		return fmt.Errorf("failed to initialize bucket: %w", err)
 	}
@@ -125,7 +125,7 @@ func (s *Service) Close() {
 	s.Pool.Close()
 }
 
-// InitializeBucket ensures the bucket has the required nix-cache-info file
+// InitializeBucket ensures the bucket has the required nix-cache-info file.
 func (s *Service) InitializeBucket(ctx context.Context) error {
 	// Check if nix-cache-info already exists
 	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
@@ -157,5 +157,6 @@ Priority: 30
 	}
 
 	slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
+
 	return nil
 }
