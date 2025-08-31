@@ -31,6 +31,8 @@ pub fn get_path_info_recursive(store_paths: &[PathBuf]) -> Result<HashMap<String
     }
 
     let output = Command::new("nix")
+        .arg("--extra-experimental-features")
+        .arg("nix-command")
         .args(&args)
         .output()
         .context("Failed to run nix path-info")?;
