@@ -131,11 +131,7 @@ async fn create_narinfo(
         // References should be full store paths, not just hashes
         // Remove the /nix/store/ prefix
         let store_prefix = "/nix/store/";
-        let ref_path = if reference.starts_with(store_prefix) {
-            &reference[store_prefix.len()..]
-        } else {
-            reference
-        };
+        let ref_path = reference.strip_prefix(store_prefix).unwrap_or(reference);
         write!(&mut narinfo, " {}", ref_path)?;
     }
     writeln!(&mut narinfo)?;
@@ -144,11 +140,7 @@ async fn create_narinfo(
     if let Some(deriver) = &path_info.deriver {
         // Remove the /nix/store/ prefix from deriver too
         let store_prefix = "/nix/store/";
-        let deriver_path = if deriver.starts_with(store_prefix) {
-            &deriver[store_prefix.len()..]
-        } else {
-            deriver
-        };
+        let deriver_path = deriver.strip_prefix(store_prefix).unwrap_or(deriver);
         writeln!(&mut narinfo, "Deriver: {}", deriver_path)?;
     }
 
