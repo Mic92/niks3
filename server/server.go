@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"fmt"
@@ -20,11 +21,11 @@ type Options struct {
 	HTTPAddr           string
 
 	// TODO: Document how to use this with AWS.
-	S3Endpoint   string
-	S3AccessKey  string
-	S3SecretKey  string
-	S3UseSSL     bool
-	S3BucketName string
+	S3Endpoint  string
+	S3AccessKey string
+	S3SecretKey string
+	S3UseSSL    bool
+	S3Bucket    string
 
 	APIToken string
 }
@@ -32,7 +33,7 @@ type Options struct {
 type Service struct {
 	Pool        *pgxpool.Pool
 	MinioClient *minio.Client
-	BucketName  string
+	Bucket      string
 	APIToken    string
 }
 
@@ -85,7 +86,16 @@ func RunServer(opts *Options) error {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
 	}
 
-	service := &Service{Pool: pool, MinioClient: minioClient, BucketName: opts.S3BucketName, APIToken: opts.APIToken}
+	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
+
+	// Initialize the bucket with nix-cache-info if it doesn't exist
+	// Use a 30-second timeout to prevent hanging indefinitely
+	initCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := service.InitializeBucket(initCtx); err != nil {
+		return fmt.Errorf("failed to initialize bucket: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
@@ -113,4 +123,40 @@ func RunServer(opts *Options) error {
 
 func (s *Service) Close() {
 	s.Pool.Close()
+}
+
+// InitializeBucket ensures the bucket has the required nix-cache-info file.
+func (s *Service) InitializeBucket(ctx context.Context) error {
+	// Check if nix-cache-info already exists
+	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
+	if err == nil {
+		// File already exists
+		return nil
+	}
+
+	// Check if this is a "not found" error vs other errors
+	errResp := minio.ToErrorResponse(err)
+	if errResp.Code != "NoSuchKey" {
+		// This is not a "not found" error - could be network, permissions, etc.
+		return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
+	}
+
+	// Object doesn't exist, create it
+	// Priority 30 is higher than the default nixos.org cache (priority 40)
+	cacheInfo := []byte(`StoreDir: /nix/store
+WantMassQuery: 1
+Priority: 30
+`)
+
+	// Upload nix-cache-info to the bucket
+	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
+		bytes.NewReader(cacheInfo), int64(len(cacheInfo)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+	if err != nil {
+		return fmt.Errorf("failed to create nix-cache-info: %w", err)
+	}
+
+	slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
+
+	return nil
 }

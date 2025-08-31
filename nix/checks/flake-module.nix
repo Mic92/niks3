@@ -6,6 +6,7 @@
       lib,
       pkgs,
       config,
+      system,
       ...
     }:
     {
@@ -17,7 +18,7 @@
         packages
         // devShells
         // {
-          golangci-lint = config.packages.niks3.overrideAttrs (old: {
+          golangci-lint = config.packages.niks3-server.overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
             buildPhase = ''
               HOME=$TMPDIR
@@ -27,6 +28,13 @@
               touch $out
             '';
           });
+
+          niks3-clippy = config.packages.niks3.clippy;
+        }
+        // lib.optionalAttrs (lib.hasSuffix "linux" system) {
+          nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {
+            niks3 = config.packages.niks3;
+          };
         };
     };
 }

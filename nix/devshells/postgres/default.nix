@@ -39,9 +39,9 @@
               echo "CREATE DATABASE ''${PGUSER:-$(id -nu)};" | postgres --single -E postgres
 
               # execute init scripts
-              ${
-                lib.concatStringsSep "\n" (map (script: "postgres --single -E postgres < ${script}") initdb.scripts)
-              }
+              ${lib.concatStringsSep "\n" (
+                map (script: "postgres --single -E postgres < ${script}") initdb.scripts
+              )}
             fi
           '';
           settings = {

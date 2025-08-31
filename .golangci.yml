@@ -1,22 +1,42 @@
-run:
-  timeout: 2m
+version: "2"
 linters:
-  enable-all: true
+  default: all
   disable:
-    - depguard
-    - exhaustruct
-    - exportloopref
-    - funlen
-    - godox
-    - varnamelen
-    - gocognit
     - cyclop
+    - depguard
     - err113
-    - gomnd
-    - execinquery
-linters-settings:
-  tagliatelle:
-    # Check the struct tag name case.
-    case:
-      rules:
-        json: snake
+    - exhaustruct
+    - funlen
+    - gocognit
+    - godox
+    - mnd
+    - varnamelen
+    - noinlineerr
+    - lll
+    - wsl
+  settings:
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofumpt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
