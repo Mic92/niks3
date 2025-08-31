@@ -125,6 +125,11 @@ async fn create_narinfo(
     writeln!(&mut narinfo, "NarHash: {}", path_info.nar_hash)?;
     writeln!(&mut narinfo, "NarSize: {}", path_info.nar_size)?;
 
+    // For uncompressed files, FileHash and FileSize equal NarHash and NarSize
+    // TODO: once we support compression, this will need to change
+    writeln!(&mut narinfo, "FileHash: {}", path_info.nar_hash)?;
+    writeln!(&mut narinfo, "FileSize: {}", path_info.nar_size)?;
+
     // References
     write!(&mut narinfo, "References:")?;
     for reference in &path_info.references {
