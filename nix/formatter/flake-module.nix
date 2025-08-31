@@ -20,6 +20,8 @@
         programs.sqlfluff.dialect = "postgres";
         # Ignore sqlc query files as they contain syntax that sqlfluff doesn't support
         programs.sqlfluff.excludes = [ "server/pg/query.sql" ];
+        programs.rustfmt.enable = true;
+        programs.rustfmt.edition = "2021";
       };
   };
 }
