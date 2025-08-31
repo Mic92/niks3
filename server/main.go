@@ -87,7 +87,7 @@ func parseArgs() (*Options, error) {
 	}
 
 	if opts.S3Bucket == "" {
-		return nil, errors.New("missing required flag: --s3-bucket-name")
+		return nil, errors.New("missing required flag: --s3-bucket")
 	}
 
 	if opts.APIToken == "" {

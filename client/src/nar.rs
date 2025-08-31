@@ -4,7 +4,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use tokio::fs;
-use tokio::io::{self, AsyncWrite, AsyncWriteExt};
+use tokio::io::{self, AsyncWrite, AsyncWriteExt, BufReader};
 
 const NAR_VERSION_MAGIC_1: &str = "nix-archive-1";
 
@@ -77,10 +77,37 @@ async fn dump_path_inner<W: AsyncWrite + Unpin>(writer: &mut W, path: &Path) -> 
         }
 
         write_str(writer, "contents").await?;
-        let contents = fs::read(path)
+
+        // Get file size and write the length first
+        let file_size = metadata.len();
+        writer.write_all(&file_size.to_le_bytes()).await?;
+
+        // Stream the file contents
+        let file = tokio::fs::File::open(path)
             .await
-            .with_context(|| format!("Failed to read file {}", path.display()))?;
-        write_string(writer, &contents).await?;
+            .with_context(|| format!("Failed to open file {}", path.display()))?;
+        let mut reader = BufReader::new(file);
+
+        // Copy the file contents to the writer
+        let bytes_copied = tokio::io::copy(&mut reader, writer)
+            .await
+            .with_context(|| format!("Failed to stream file {}", path.display()))?;
+
+        // Ensure we copied the expected number of bytes
+        if bytes_copied != file_size {
+            anyhow::bail!(
+                "File size mismatch for {}: expected {}, copied {}",
+                path.display(),
+                file_size,
+                bytes_copied
+            );
+        }
+
+        // Pad to 8-byte boundary
+        let padding = (8 - (file_size % 8)) % 8;
+        if padding > 0 {
+            writer.write_all(&vec![0; padding as usize]).await?;
+        }
     } else if metadata.is_dir() {
         write_str(writer, "directory").await?;
 

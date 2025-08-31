@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::{Body, Client};
+use reqwest::{header, Body, Client};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
@@ -117,7 +117,7 @@ impl UploadClient {
         let response = self
             .client
             .put(upload_url)
-            .header("Content-Length", file_size)
+            .header(header::CONTENT_LENGTH, file_size.to_string())
             .body(body)
             .send()
             .await
@@ -152,7 +152,7 @@ impl UploadClient {
         let response = self
             .client
             .put(upload_url)
-            .header("Content-Length", content.len())
+            .header(reqwest::header::CONTENT_LENGTH, content.len().to_string())
             .body(content)
             .send()
             .await

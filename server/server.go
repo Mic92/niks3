@@ -89,7 +89,11 @@ func RunServer(opts *Options) error {
 	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
 
 	// Initialize the bucket with nix-cache-info if it doesn't exist
-	if err := service.InitializeBucket(context.Background()); err != nil {
+	// Use a 30-second timeout to prevent hanging indefinitely
+	initCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	if err := service.InitializeBucket(initCtx); err != nil {
 		return fmt.Errorf("failed to initialize bucket: %w", err)
 	}
 
@@ -130,7 +134,14 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 		return nil
 	}
 
-	// Create nix-cache-info content
+	// Check if this is a "not found" error vs other errors
+	errResp := minio.ToErrorResponse(err)
+	if errResp.Code != "NoSuchKey" {
+		// This is not a "not found" error - could be network, permissions, etc.
+		return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
+	}
+
+	// Object doesn't exist, create it
 	// Priority 30 is higher than the default nixos.org cache (priority 40)
 	cacheInfo := []byte(`StoreDir: /nix/store
 WantMassQuery: 1
