@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -53,7 +54,7 @@ func parseArgs() (*Options, error) {
 			return nil, fmt.Errorf("failed to read S3 access key file: %w", err)
 		}
 
-		opts.S3AccessKey = string(accessKey)
+		opts.S3AccessKey = strings.TrimSpace(string(accessKey))
 	}
 
 	if s3SecretKeyPath != "" {
@@ -62,7 +63,7 @@ func parseArgs() (*Options, error) {
 			return nil, fmt.Errorf("failed to read S3 secret key file: %w", err)
 		}
 
-		opts.S3SecretKey = string(secretKey)
+		opts.S3SecretKey = strings.TrimSpace(string(secretKey))
 	}
 
 	if apiTokenPath != "" {
@@ -71,7 +72,7 @@ func parseArgs() (*Options, error) {
 			return nil, fmt.Errorf("failed to read API token file: %w", err)
 		}
 
-		opts.APIToken = string(apiToken)
+		opts.APIToken = strings.TrimSpace(string(apiToken))
 	}
 
 	if opts.S3Endpoint == "" {
