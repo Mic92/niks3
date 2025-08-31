@@ -30,8 +30,8 @@
 
           niks3-clippy = config.packages.niks3.clippy;
 
-          niks3-integration = import ./integration-test.nix {
-            inherit pkgs;
+          nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {
+            niks3 = config.packages.niks3;
           };
         };
     };
