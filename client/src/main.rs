@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use futures::stream::{self, StreamExt};
 use niks3::nar;
-use niks3::nix_store::{get_path_info_recursive, get_store_path_hash};
-use niks3::upload::UploadClient;
+use niks3::nix_store::{get_path_info_recursive, get_store_path_hash, NixPathInfo};
+use niks3::upload::{ObjectWithRefs, UploadClient};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tempfile::tempdir;
-use tokio::fs;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -35,6 +35,10 @@ enum Commands {
         /// Authentication token for the server
         #[arg(long, env = "NIKS3_AUTH_TOKEN")]
         auth_token: String,
+
+        /// Maximum number of concurrent uploads
+        #[arg(long, default_value = "30")]
+        max_concurrent_uploads: usize,
     },
 }
 
@@ -54,6 +58,7 @@ async fn main() -> Result<()> {
             server_url,
             paths,
             auth_token,
+            max_concurrent_uploads,
         } => {
             let base_url = Url::parse(&server_url).context("Invalid server URL")?;
 
@@ -63,43 +68,127 @@ async fn main() -> Result<()> {
             let path_infos = get_path_info_recursive(&paths)?;
             info!("Found {} paths in closure", path_infos.len());
 
-            // Create a temporary directory for NAR files
-            let temp_dir = tempdir()?;
+            // First, collect all objects we want to upload
+            let mut all_closures = Vec::new();
+            let mut path_info_by_hash = HashMap::new();
 
-            // Process each path in the closure
             for (store_path, path_info) in &path_infos {
                 let hash = get_store_path_hash(store_path)?;
-                info!("Uploading {}", store_path);
+                path_info_by_hash.insert(hash.clone(), (store_path.clone(), path_info.clone()));
 
-                // Generate NAR file
-                let nar_filename = format!("{}.nar", hash);
-                let nar_path = temp_dir.path().join(&nar_filename);
-
-                debug!("Creating NAR at {}", nar_path.display());
-                let mut nar_file = fs::File::create(&nar_path).await?;
-                nar::dump_path(&mut nar_file, Path::new(store_path)).await?;
-                nar_file.sync_all().await?;
-
-                // Create narinfo content
-                let narinfo_content = create_narinfo(path_info, &nar_filename).await?;
-
-                // Extract references as store path hashes (not full paths)
+                // Extract references as store path hashes
                 let references: Vec<String> = path_info
                     .references
                     .iter()
                     .map(|r| get_store_path_hash(r))
                     .collect::<Result<Vec<_>>>()?;
 
-                // Upload this closure with references
-                client
-                    .upload_closure(
-                        &hash,
-                        narinfo_content.into_bytes(),
-                        vec![(format!("nar/{}", nar_filename), nar_path)],
-                        references,
-                    )
-                    .await
-                    .context("Failed to upload closure")?;
+                // Prepare objects for this closure
+                let mut objects = vec![ObjectWithRefs {
+                    key: format!("{}.narinfo", hash),
+                    refs: references,
+                }];
+
+                // Add NAR file object
+                let nar_filename = format!("{}.nar", hash);
+                objects.push(ObjectWithRefs {
+                    key: format!("nar/{}", nar_filename),
+                    refs: vec![],
+                });
+
+                all_closures.push((hash.clone(), objects));
+            }
+
+            // Create all pending closures and get back what needs uploading
+            info!("Checking which objects need uploading...");
+            let mut pending_objects = HashMap::new();
+            let mut pending_ids = Vec::new();
+
+            for (closure_hash, objects) in all_closures {
+                let response = client
+                    .create_pending_closure(closure_hash.clone(), objects)
+                    .await?;
+
+                pending_ids.push(response.id);
+
+                // Collect pending objects
+                for (key, obj) in response.pending_objects {
+                    pending_objects.insert(key, obj);
+                }
+            }
+
+            info!(
+                "Need to upload {} objects out of {} total",
+                pending_objects.len(),
+                path_infos.len() * 2 // Each path has a narinfo and a nar file
+            );
+
+            // Create upload tasks for all pending objects
+            let mut upload_tasks = Vec::new();
+
+            for (object_key, pending_object) in pending_objects {
+                let client = client.clone();
+                let path_info_by_hash = path_info_by_hash.clone();
+                
+                let task = async move {
+                    if let Some(hash) = object_key.strip_suffix(".narinfo") {
+                        // This is a narinfo file
+                        if let Some((store_path, path_info)) = path_info_by_hash.get(hash) {
+                            debug!("Uploading narinfo for {}", store_path);
+                            let narinfo_content =
+                                create_narinfo(path_info, &format!("{}.nar", hash)).await?;
+                            client
+                                .upload_bytes_to_presigned_url(
+                                    &pending_object.presigned_url,
+                                    narinfo_content.into_bytes(),
+                                    &object_key,
+                                )
+                                .await?;
+                        }
+                    } else if let Some(nar_name) = object_key.strip_prefix("nar/") {
+                        // This is a NAR file
+                        if let Some(hash) = nar_name.strip_suffix(".nar") {
+                            if let Some((store_path, path_info)) = path_info_by_hash.get(hash) {
+                                debug!("Uploading NAR for {}", store_path);
+
+                                // Serialize NAR to memory
+                                let mut nar_data = Vec::with_capacity(path_info.nar_size as usize);
+                                nar::dump_path(&mut nar_data, Path::new(store_path)).await?;
+
+                                // Upload the NAR data
+                                client
+                                    .upload_bytes_to_presigned_url(
+                                        &pending_object.presigned_url,
+                                        nar_data,
+                                        &object_key,
+                                    )
+                                    .await?;
+                            }
+                        }
+                    }
+                    Ok::<(), anyhow::Error>(())
+                };
+                
+                upload_tasks.push(task);
+            }
+
+            // Execute uploads with concurrency limit
+            info!("Uploading with max {} concurrent uploads", max_concurrent_uploads);
+            
+            let upload_stream = stream::iter(upload_tasks)
+                .buffer_unordered(max_concurrent_uploads);
+            
+            let results: Vec<Result<()>> = upload_stream.collect().await;
+            
+            // Check for any upload failures
+            for result in results {
+                result?;
+            }
+
+            // Complete all pending closures
+            info!("Completing pending closures...");
+            for pending_id in pending_ids {
+                client.complete_pending_closure(&pending_id).await?;
             }
 
             info!("Upload completed successfully");
@@ -109,10 +198,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn create_narinfo(
-    path_info: &niks3::nix_store::NixPathInfo,
-    nar_filename: &str,
-) -> Result<String> {
+async fn create_narinfo(path_info: &NixPathInfo, nar_filename: &str) -> Result<String> {
     use std::fmt::Write;
 
     let mut narinfo = String::new();
