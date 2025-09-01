@@ -22,8 +22,8 @@ use url::Url;
 /// Return type for create_hashing_stream function  
 type HashingStreamResult = (
     std::pin::Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>,
-    Arc<Mutex<usize>>,
-    Arc<Mutex<Vec<u8>>>,
+    Arc<AtomicU64>,
+    Arc<Mutex<Sha256>>,
 );
 
 /// Upload temp directory for staging compressed files
@@ -228,7 +228,7 @@ impl UploadClient {
         let compressed_reader = ZstdEncoder::new(buf_reader);
 
         // Create a hashing stream wrapper
-        let (stream, size_tracker, hash_tracker) = create_hashing_stream(compressed_reader);
+        let (stream, size_tracker, hasher) = create_hashing_stream(compressed_reader);
 
         // Convert anyhow::Error to std::io::Error for StreamReader compatibility
         let stream = stream.map_err(std::io::Error::other);
@@ -247,8 +247,8 @@ impl UploadClient {
         nar_task.await??;
 
         // Get final size and hash
-        let total_size = *size_tracker.lock().unwrap();
-        let hash = hash_tracker.lock().unwrap().clone();
+        let total_size = size_tracker.load(Ordering::SeqCst) as usize;
+        let hash = hasher.lock().unwrap().clone().finalize();
         let hash_str = format!(
             "sha256:{}",
             base64::engine::general_purpose::STANDARD.encode(&hash)
@@ -348,12 +348,10 @@ impl UploadClient {
 
 /// Creates a hashing stream that computes size and sha256 hash of data
 fn create_hashing_stream(reader: impl AsyncRead + Send + 'static) -> HashingStreamResult {
-    let size_tracker = Arc::new(Mutex::new(0));
-    let hash_tracker = Arc::new(Mutex::new(Vec::new()));
+    let size_tracker = Arc::new(AtomicU64::new(0));
     let hasher = Arc::new(Mutex::new(Sha256::new()));
 
     let size_tracker_clone = size_tracker.clone();
-    let hash_tracker_clone = hash_tracker.clone();
     let hasher_clone = hasher.clone();
 
     let stream = ReaderStream::new(reader)
@@ -363,15 +361,13 @@ fn create_hashing_stream(reader: impl AsyncRead + Send + 'static) -> HashingStre
             {
                 let mut hasher = hasher_clone.lock().unwrap();
                 hasher.update(&chunk);
-                // Update the hash tracker with current state
-                *hash_tracker_clone.lock().unwrap() = hasher.clone().finalize().to_vec();
             }
 
-            let len = chunk.len();
-            *size_tracker_clone.lock().unwrap() += len;
+            let len = chunk.len() as u64;
+            size_tracker_clone.fetch_add(len, Ordering::SeqCst);
 
             chunk
         });
 
-    (Box::pin(stream), size_tracker, hash_tracker)
+    (Box::pin(stream), size_tracker, hasher)
 }
