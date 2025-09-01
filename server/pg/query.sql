@@ -68,10 +68,10 @@ WHERE key = $1 LIMIT 1;
 -- name: GetClosureObjects :many
 -- Return objects reachable from the given closure key
 WITH RECURSIVE closure_reach AS (
-    -- Start with the closure key itself
+    -- Start with the provided closure key
     SELECT o.key, o.refs 
     FROM objects o
-    INNER JOIN closures c ON o.key = c.key AND c.key = $1
+    WHERE o.key = $1
     UNION
     -- Recursively add all referenced objects
     SELECT o.key, o.refs 
