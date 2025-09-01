@@ -60,7 +60,7 @@ impl UploadTempDir {
 #[derive(Debug)]
 pub struct CompressedFile {
     pub path: PathBuf,
-    pub size: usize,
+    pub size: u64,
     pub hash: String,
 }
 
@@ -247,11 +247,11 @@ impl UploadClient {
         nar_task.await??;
 
         // Get final size and hash
-        let total_size = size_tracker.load(Ordering::SeqCst) as usize;
+        let total_size = size_tracker.load(Ordering::SeqCst);
         let hash = hasher.lock().unwrap().clone().finalize();
         let hash_str = format!(
             "sha256:{}",
-            base64::engine::general_purpose::STANDARD.encode(&hash)
+            base64::engine::general_purpose::STANDARD.encode(hash)
         );
 
         debug!(
