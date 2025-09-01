@@ -227,7 +227,7 @@ async fn upload_nars(
     nar_uploads: Vec<(String, PendingObject)>,
     path_info_by_hash: &HashMap<String, (String, NixPathInfo)>,
     max_concurrent_uploads: usize,
-) -> Result<HashMap<String, (usize, String)>> {
+) -> Result<HashMap<String, (u64, String)>> {
     let mut compressed_info = HashMap::new();
 
     // Create upload temp directory for all compressions
@@ -312,7 +312,7 @@ async fn upload_nars(
         max_concurrent_uploads
     );
     let upload_stream = stream::iter(upload_tasks).buffer_unordered(max_concurrent_uploads);
-    let upload_results: Vec<Result<(String, (usize, String))>> = upload_stream.collect().await;
+    let upload_results: Vec<Result<(String, (u64, String))>> = upload_stream.collect().await;
 
     // Collect compressed sizes and hashes
     for result in upload_results {
@@ -329,7 +329,7 @@ async fn upload_narinfos(
     client: &UploadClient,
     narinfo_uploads: Vec<(String, PendingObject)>,
     path_info_by_hash: &HashMap<String, (String, NixPathInfo)>,
-    compressed_info: &HashMap<String, (usize, String)>,
+    compressed_info: &HashMap<String, (u64, String)>,
     max_concurrent_uploads: usize,
 ) -> Result<()> {
     let narinfo_tasks: Vec<_> = narinfo_uploads
@@ -395,7 +395,7 @@ async fn complete_closures(client: &UploadClient, pending_ids: Vec<String>) -> R
 async fn create_narinfo(
     path_info: &NixPathInfo,
     nar_filename: &str,
-    compressed_size: usize,
+    compressed_size: u64,
     file_hash: &str,
 ) -> Result<String> {
     use std::fmt::Write;
