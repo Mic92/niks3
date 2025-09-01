@@ -10,9 +10,14 @@ import (
 	"time"
 )
 
+type ObjectWithRefs struct {
+	Key  string   `json:"key"`
+	Refs []string `json:"refs"`
+}
+
 type CreatePendingClosureRequest struct {
-	Closure *string  `json:"closure"`
-	Objects []string `json:"objects"`
+	Closure *string          `json:"closure"`
+	Objects []ObjectWithRefs `json:"objects"`
 }
 
 // POST /pending_closures
@@ -63,13 +68,13 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	storePathSet := make(map[string]bool)
+	objectsWithRefs := make(map[string][]string)
 
 	for _, object := range req.Objects {
-		storePathSet[object] = true
+		objectsWithRefs[object.Key] = object.Refs
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, storePathSet)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsWithRefs)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 

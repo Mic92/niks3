@@ -31,20 +31,12 @@ CREATE INDEX closures_updated_at_idx ON closures (updated_at);
 CREATE TABLE objects
 (
     key varchar(1024) PRIMARY KEY,
+    refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects (not transitive)
     deleted_at timestamp
 );
 
--- closure_objects is a many-to-many relationship between closures and objects
-CREATE TABLE IF NOT EXISTS closure_objects
-(
-    closure_key varchar(1024) NOT NULL REFERENCES closures (
-        key
-    ) ON DELETE CASCADE,
-    object_key varchar(1024) NOT NULL REFERENCES objects (key)
-);
-
-CREATE INDEX closure_objects_closure_key_idx ON closure_objects (closure_key);
-CREATE INDEX closure_objects_object_key_idx ON closure_objects (object_key);
+-- Create GIN index for efficient reference lookups
+CREATE INDEX objects_refs_gin ON objects USING gin (refs);
 
 -- This is where track not yet uploaded closures
 CREATE TABLE pending_closures
@@ -60,6 +52,7 @@ CREATE TABLE pending_objects
 (
     pending_closure_id bigint NOT NULL REFERENCES pending_closures (id) ON DELETE CASCADE,
     key varchar(1024) NOT NULL,
+    refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects
     PRIMARY KEY (key, pending_closure_id)
 );
 CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
@@ -70,15 +63,13 @@ CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
 -- +goose Down
 -- +goose StatementBegin
 
-DROP INDEX closure_objects_closure_key_idx;
+DROP INDEX objects_refs_gin;
 DROP INDEX pending_objects_pending_closure_id_idx;
-DROP INDEX closure_objects_object_key_idx;
 DROP INDEX closures_updated_at_idx;
 DROP INDEX pending_closures_started_at_idx;
 
-DROP TABLE closures;
-DROP TABLE objects;
-DROP TABLE closure_objects;
-DROP TABLE pending_closures;
 DROP TABLE pending_objects;
+DROP TABLE pending_closures;
+DROP TABLE objects;
+DROP TABLE closures;
 -- +goose StatementEnd
