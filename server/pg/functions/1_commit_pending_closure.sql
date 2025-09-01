@@ -33,7 +33,9 @@ BEGIN
                     objects.refs || EXCLUDED.refs
                 )
             )
-        );
+        ),
+        -- Resurrect previously tombstoned objects
+        deleted_at = NULL;
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;
