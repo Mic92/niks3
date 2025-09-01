@@ -76,7 +76,7 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 				return nil, fmt.Errorf("deleted_at is not set for object: %s", existingObject.Key)
 			}
 
-			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*30 {
+			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*1000*30 {
 				inflightPaths = append(inflightPaths, existingObject.Key)
 			} else {
 				delete(missingObjects, existingObject.Key)
