@@ -123,8 +123,8 @@ func TestClientIntegration(t *testing.T) {
 		t.Errorf("Narinfo doesn't contain NarSize")
 	}
 
-	// Also check if NAR file exists in S3
-	narKey := fmt.Sprintf("nar/%s.nar", hash)
+	// Also check if NAR file exists in S3 (compressed with zstd)
+	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 	_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 	if err != nil {
@@ -475,8 +475,8 @@ func TestClientErrorHandling(t *testing.T) {
 		}
 
 		outputStr := string(output)
-		if !strings.Contains(outputStr, "not a valid store path") {
-			t.Errorf("Expected 'not a valid store path' error, got: %s", outputStr)
+		if !strings.Contains(outputStr, "nix path-info failed") {
+			t.Errorf("Expected 'nix path-info failed' error, got: %s", outputStr)
 		}
 	})
 

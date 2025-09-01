@@ -134,9 +134,11 @@ fn prepare_closures(path_infos: &HashMap<String, NixPathInfo>) -> Result<Prepare
         let mut narinfo_refs = references;
         narinfo_refs.push(nar_key.clone());
 
+        let narinfo_key = format!("{}.narinfo", hash);
+
         // Prepare objects for this closure
         let mut objects = vec![ObjectWithRefs {
-            key: format!("{}.narinfo", hash),
+            key: narinfo_key.clone(),
             refs: narinfo_refs,
         }];
 
@@ -145,7 +147,7 @@ fn prepare_closures(path_infos: &HashMap<String, NixPathInfo>) -> Result<Prepare
             refs: vec![],
         });
 
-        closures.push((hash.clone(), objects));
+        closures.push((narinfo_key, objects));
     }
 
     Ok(PreparedClosures {

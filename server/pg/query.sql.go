@@ -98,10 +98,10 @@ func (q *Queries) GetClosure(ctx context.Context, key string) (pgtype.Timestamp,
 
 const getClosureObjects = `-- name: GetClosureObjects :many
 WITH RECURSIVE closure_reach AS (
-    -- Start with the closure key itself
+    -- Start with the narinfo object for this closure (closure key should already include '.narinfo')
     SELECT o.key, o.refs 
     FROM objects o
-    INNER JOIN closures c ON o.key = c.key AND c.key = $1
+    WHERE o.key = $1
     UNION
     -- Recursively add all referenced objects
     SELECT o.key, o.refs 
