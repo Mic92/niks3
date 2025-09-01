@@ -4,7 +4,7 @@ VALUES (timezone('UTC', now()), $1)
 RETURNING *;
 
 -- name: InsertPendingObjects :copyfrom
-INSERT INTO pending_objects (pending_closure_id, key) VALUES ($1, $2);
+INSERT INTO pending_objects (pending_closure_id, key, refs) VALUES ($1, $2, $3);
 
 -- name: GetExistingObjects :many
 WITH ct AS (
@@ -66,26 +66,51 @@ SELECT updated_at FROM closures
 WHERE key = $1 LIMIT 1;
 
 -- name: GetClosureObjects :many
-SELECT object_key FROM closure_objects
-WHERE closure_key = $1;
+-- Return objects reachable from the given closure key
+WITH RECURSIVE closure_reach AS (
+    -- Start with the closure key itself
+    SELECT o.key, o.refs 
+    FROM objects o
+    INNER JOIN closures c ON o.key = c.key AND c.key = $1
+    UNION
+    -- Recursively add all referenced objects
+    SELECT o.key, o.refs 
+    FROM objects o
+    INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
+)
+SELECT DISTINCT key FROM closure_reach;
 
 -- name: DeleteClosures :exec
 DELETE FROM closures
 WHERE updated_at < $1;
 
 -- name: MarkObjectsForDeletion :many
-WITH ct AS (
+WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
-
+-- Find all objects reachable from any closure
+closure_reach AS (
+    -- Start with all closure keys
+    SELECT o.key, o.refs 
+    FROM objects o
+    INNER JOIN closures c ON o.key = c.key
+    UNION
+    -- Recursively add all referenced objects
+    SELECT o.key, o.refs 
+    FROM objects o
+    INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
+),
+reachable_objects AS (
+    SELECT DISTINCT key FROM closure_reach
+),
 stale_objects AS (
     SELECT o.key
     FROM objects AS o, ct
     WHERE
         NOT EXISTS (
             SELECT 1
-            FROM closure_objects AS co
-            WHERE co.object_key = o.key
+            FROM reachable_objects ro
+            WHERE ro.key = o.key
         )
         AND NOT EXISTS (
             SELECT 1

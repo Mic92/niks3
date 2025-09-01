@@ -26,7 +26,10 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	})
 
 	closureKey := "00000000000000000000000000000000"
-	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	objects := []map[string]interface{}{
+		{"key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "refs": []string{}},
+		{"key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "refs": []string{}},
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
 		"objects": objects,
@@ -101,7 +104,10 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	closureKey := "00000000000000000000000000000000"
 	firstObject := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	secondObject := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	objects := []string{firstObject, secondObject}
+	objects := []map[string]interface{}{
+		{"key": firstObject, "refs": []string{}},
+		{"key": secondObject, "refs": []string{firstObject}}, // secondObject references firstObject
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
 		"objects": objects,
@@ -173,14 +179,17 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
 	ok(t, err)
 
-	objects = closureResponse.Objects
-	if len(objects) != 2 {
-		t.Errorf("expected 2 objects, got %d", len(objects))
+	if len(closureResponse.Objects) != 2 {
+		t.Errorf("expected 2 objects, got %d", len(closureResponse.Objects))
 	}
 
 	thirdObject := "cccccccccccccccccccccccccccccccc"
 
-	objects2 := []string{firstObject, secondObject, thirdObject}
+	objects2 := []map[string]interface{}{
+		{"key": firstObject, "refs": []string{}},
+		{"key": secondObject, "refs": []string{firstObject}},
+		{"key": thirdObject, "refs": []string{secondObject}},
+	}
 	body2, err := json.Marshal(map[string]interface{}{
 		"closure": "11111111111111111111111111111111",
 		"objects": objects2,
