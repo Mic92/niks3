@@ -73,26 +73,6 @@ pub fn get_store_path_hash(store_path: &str) -> Result<String> {
     Ok(hash.to_string())
 }
 
-/// Check if a path is a valid Nix store path
-pub fn is_store_path(path: &Path) -> bool {
-    path.starts_with("/nix/store/") && path.components().count() >= 4
-}
-
-/// Verify that all required store paths exist
-pub fn verify_store_paths(paths: &[PathBuf]) -> Result<()> {
-    for path in paths {
-        if !is_store_path(path) {
-            anyhow::bail!("{} is not a valid store path", path.display());
-        }
-
-        if !path.exists() {
-            anyhow::bail!("Store path {} does not exist", path.display());
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,13 +83,6 @@ mod tests {
     fn test_store_path_hash() {
         let hash = get_store_path_hash("/nix/store/abc123def456-hello-world-1.0").unwrap();
         assert_eq!(hash, "abc123def456");
-    }
-
-    #[test]
-    fn test_is_store_path() {
-        assert!(is_store_path(Path::new("/nix/store/abc123-test")));
-        assert!(!is_store_path(Path::new("/tmp/test")));
-        assert!(!is_store_path(Path::new("/nix/store")));
     }
 
     #[test]
@@ -131,9 +104,6 @@ mod tests {
                 .to_string();
 
             let store_path_buf = PathBuf::from(&store_path);
-
-            // Verify it's a valid store path
-            assert!(is_store_path(&store_path_buf));
 
             // Get path info
             let result = get_path_info_recursive(&[store_path_buf.clone()]);

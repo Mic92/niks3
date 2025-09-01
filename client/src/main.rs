@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use niks3::nar;
-use niks3::nix_store::{get_path_info_recursive, get_store_path_hash, verify_store_paths};
+use niks3::nix_store::{get_path_info_recursive, get_store_path_hash};
 use niks3::upload::UploadClient;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -58,9 +58,6 @@ async fn main() -> Result<()> {
             let base_url = Url::parse(&server_url).context("Invalid server URL")?;
 
             let client = UploadClient::new(base_url, auth_token)?;
-
-            // Verify all paths are valid store paths
-            verify_store_paths(&paths)?;
 
             // Get path info for all paths and their closures
             let path_infos = get_path_info_recursive(&paths)?;
