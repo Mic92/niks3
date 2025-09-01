@@ -1,12 +1,77 @@
+use crate::nar;
 use anyhow::{Context, Result};
+use async_compression::tokio::bufread::ZstdEncoder;
+use base64::Engine;
+use bytes::Bytes;
+use futures::stream::Stream;
+use futures::TryStreamExt;
 use reqwest::{header, Body, Client};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tempfile::TempDir;
 use tokio::fs::File;
+use tokio::io::{AsyncRead, BufReader};
 use tokio_util::io::ReaderStream;
+use tokio_util::io::StreamReader;
 use tracing::{debug, info};
 use url::Url;
+
+/// Return type for create_hashing_stream function  
+type HashingStreamResult = (
+    std::pin::Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>,
+    Arc<Mutex<usize>>,
+    Arc<Mutex<Vec<u8>>>,
+);
+
+/// Upload temp directory for staging compressed files
+#[derive(Debug)]
+pub struct UploadTempDir {
+    temp_dir: TempDir,
+    file_counter: AtomicU64,
+}
+
+impl UploadTempDir {
+    /// Create a new upload temp directory
+    pub fn new() -> Result<Self> {
+        let temp_dir = TempDir::new().context("Failed to create temp directory")?;
+        Ok(Self {
+            temp_dir,
+            file_counter: AtomicU64::new(0),
+        })
+    }
+
+    /// Get the path to the temp directory
+    pub fn path(&self) -> &Path {
+        self.temp_dir.path()
+    }
+
+    /// Allocate a new file path within this directory without creating the file
+    pub fn allocate_temp_path(&self) -> PathBuf {
+        let file_id = self.file_counter.fetch_add(1, Ordering::SeqCst);
+        let filename = format!("{}", file_id);
+        self.temp_dir.path().join(filename)
+    }
+}
+
+/// Compressed file information
+#[derive(Debug)]
+pub struct CompressedFile {
+    pub path: PathBuf,
+    pub size: usize,
+    pub hash: String,
+}
+
+impl Drop for CompressedFile {
+    fn drop(&mut self) {
+        // Clean up temporary file when dropped
+        if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UploadClient {
@@ -101,49 +166,6 @@ impl UploadClient {
         Ok(result)
     }
 
-    /// Upload a file to a presigned URL
-    pub async fn upload_to_presigned_url(&self, upload_url: &str, file_path: &Path) -> Result<()> {
-        let file = File::open(file_path).await.context("Failed to open file")?;
-
-        let metadata = file
-            .metadata()
-            .await
-            .context("Failed to get file metadata")?;
-        let file_size = metadata.len();
-
-        info!(
-            "Uploading {} ({} bytes) to presigned URL",
-            file_path.display(),
-            file_size
-        );
-
-        // Create a stream from the file
-        let stream = ReaderStream::new(file);
-        let body = Body::wrap_stream(stream);
-
-        let response = self
-            .client
-            .put(upload_url)
-            .header(header::CONTENT_LENGTH, file_size.to_string())
-            .body(body)
-            .send()
-            .await
-            .context("Failed to upload file")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Failed to read response body".to_string());
-            anyhow::bail!("Failed to upload file: {} - {}", status, body);
-        }
-
-        debug!("Successfully uploaded {}", file_path.display());
-        Ok(())
-    }
-
-
     /// Upload content from bytes to a presigned URL
     pub async fn upload_bytes_to_presigned_url(
         &self,
@@ -179,6 +201,120 @@ impl UploadClient {
         Ok(())
     }
 
+    /// Compress NAR data to a temporary file and return file info
+    /// This separates compression from upload for S3 size requirements
+    pub async fn compress_nar_to_file(
+        temp_dir: &UploadTempDir,
+        store_path: &Path,
+        object_key: &str,
+    ) -> Result<CompressedFile> {
+        info!("Compressing NAR data for {} to temporary file", object_key);
+
+        // Allocate temp file path
+        let temp_path = temp_dir.allocate_temp_path();
+
+        // Create pipe to connect NAR serialization to compression
+        let (nar_reader, nar_writer) = tokio::io::duplex(65536);
+
+        // Spawn NAR serialization task
+        let store_path = store_path.to_path_buf();
+        let nar_task = tokio::spawn(async move {
+            let mut writer = nar_writer;
+            nar::dump_path(&mut writer, &store_path).await
+        });
+
+        // Create compressed stream using async-compression with tokio support
+        let buf_reader = BufReader::new(nar_reader);
+        let compressed_reader = ZstdEncoder::new(buf_reader);
+
+        // Create a hashing stream wrapper
+        let (stream, size_tracker, hash_tracker) = create_hashing_stream(compressed_reader);
+
+        // Convert anyhow::Error to std::io::Error for StreamReader compatibility
+        let stream = stream.map_err(std::io::Error::other);
+
+        // Convert stream to AsyncRead and copy to file
+        let mut stream_reader = StreamReader::new(stream);
+        let mut temp_file = File::create(&temp_path)
+            .await
+            .with_context(|| format!("Failed to create temp file at {}", temp_path.display()))?;
+
+        tokio::io::copy(&mut stream_reader, &mut temp_file)
+            .await
+            .context("Failed to copy compressed stream to temp file")?;
+
+        // Wait for NAR task to complete
+        nar_task.await??;
+
+        // Get final size and hash
+        let total_size = *size_tracker.lock().unwrap();
+        let hash = hash_tracker.lock().unwrap().clone();
+        let hash_str = format!(
+            "sha256:{}",
+            base64::engine::general_purpose::STANDARD.encode(&hash)
+        );
+
+        debug!(
+            "Compressed {} to {} (size: {} bytes, hash: {})",
+            object_key,
+            temp_path.display(),
+            total_size,
+            hash_str
+        );
+
+        Ok(CompressedFile {
+            path: temp_path,
+            size: total_size,
+            hash: hash_str,
+        })
+    }
+
+    /// Upload a compressed file to a presigned URL
+    /// This provides the file size upfront as required by S3
+    pub async fn upload_compressed_file(
+        &self,
+        upload_url: &str,
+        compressed_file: &CompressedFile,
+        object_key: &str,
+    ) -> Result<()> {
+        debug!(
+            "Uploading compressed file {} ({} bytes) to presigned URL",
+            object_key, compressed_file.size
+        );
+
+        let file = File::open(&compressed_file.path).await.with_context(|| {
+            format!(
+                "Failed to open compressed file at {}",
+                compressed_file.path.display()
+            )
+        })?;
+
+        // Create a stream from the file
+        let stream = ReaderStream::new(file);
+        let body = Body::wrap_stream(stream);
+
+        let response = self
+            .client
+            .put(upload_url)
+            .header(header::CONTENT_LENGTH, compressed_file.size.to_string())
+            .body(body)
+            .send()
+            .await
+            .context("Failed to upload compressed file")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Failed to read response body".to_string());
+            anyhow::bail!("Failed to upload {}: {} - {}", object_key, status, body);
+        }
+
+        debug!("Successfully uploaded compressed file {}", object_key);
+        Ok(())
+    }
+
     /// Complete a pending closure
     pub async fn complete_pending_closure(&self, closure_id: &str) -> Result<()> {
         let url = self
@@ -208,30 +344,34 @@ impl UploadClient {
         info!("Successfully completed pending closure {}", closure_id);
         Ok(())
     }
+}
 
-    /// Upload multiple closures in a single batch
-    /// Returns a map of object keys that need to be uploaded
-    pub async fn create_batch_pending_closure(
-        &self,
-        closures: Vec<(String, Vec<ObjectWithRefs>)>,
-    ) -> Result<HashMap<String, PendingObject>> {
-        // For now, we'll handle one closure at a time but collect all pending objects
-        // In the future, the server could support batching multiple closures
-        let mut all_pending_objects = HashMap::new();
-        
-        for (closure_hash, objects) in closures {
-            let pending = self
-                .create_pending_closure(closure_hash, objects)
-                .await?;
-            
-            // Collect all pending objects
-            for (key, obj) in pending.pending_objects {
-                all_pending_objects.insert(key, obj);
+/// Creates a hashing stream that computes size and sha256 hash of data
+fn create_hashing_stream(reader: impl AsyncRead + Send + 'static) -> HashingStreamResult {
+    let size_tracker = Arc::new(Mutex::new(0));
+    let hash_tracker = Arc::new(Mutex::new(Vec::new()));
+    let hasher = Arc::new(Mutex::new(Sha256::new()));
+
+    let size_tracker_clone = size_tracker.clone();
+    let hash_tracker_clone = hash_tracker.clone();
+    let hasher_clone = hasher.clone();
+
+    let stream = ReaderStream::new(reader)
+        .map_err(|e| anyhow::anyhow!("IO error: {}", e))
+        .map_ok(move |chunk| {
+            // Update hash and size
+            {
+                let mut hasher = hasher_clone.lock().unwrap();
+                hasher.update(&chunk);
+                // Update the hash tracker with current state
+                *hash_tracker_clone.lock().unwrap() = hasher.clone().finalize().to_vec();
             }
-            
-            // TODO: Store pending closure IDs for later completion
-        }
-        
-        Ok(all_pending_objects)
-    }
+
+            let len = chunk.len();
+            *size_tracker_clone.lock().unwrap() += len;
+
+            chunk
+        });
+
+    (Box::pin(stream), size_tracker, hash_tracker)
 }
