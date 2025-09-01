@@ -126,16 +126,22 @@ fn prepare_closures(path_infos: &HashMap<String, NixPathInfo>) -> Result<Prepare
             .map(|r| get_store_path_hash(r))
             .collect::<Result<Vec<_>>>()?;
 
+        // Add NAR file object (with .zst extension for compressed)
+        let nar_filename = format!("{}.nar.zst", hash);
+        let nar_key = format!("nar/{}", nar_filename);
+
+        // Create narinfo object that references both dependencies and its own NAR file
+        let mut narinfo_refs = references;
+        narinfo_refs.push(nar_key.clone());
+
         // Prepare objects for this closure
         let mut objects = vec![ObjectWithRefs {
             key: format!("{}.narinfo", hash),
-            refs: references,
+            refs: narinfo_refs,
         }];
 
-        // Add NAR file object (with .zst extension for compressed)
-        let nar_filename = format!("{}.nar.zst", hash);
         objects.push(ObjectWithRefs {
-            key: format!("nar/{}", nar_filename),
+            key: nar_key,
             refs: vec![],
         });
 
