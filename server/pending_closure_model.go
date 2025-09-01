@@ -209,7 +209,7 @@ func (s *Service) createPendingClosure(
 			pendingObjectsParams = append(pendingObjectsParams, pg.InsertPendingObjectsParams{
 				PendingClosureID: pendingClosure.id,
 				Key:              objectKey,
-				Refs:             []string{}, // Deleted objects being re-uploaded don't have refs info here
+				Refs:             objectsWithRefs[objectKey],
 			})
 		}
 
