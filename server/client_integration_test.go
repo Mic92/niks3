@@ -214,8 +214,8 @@ func TestClientMultipleUploads(t *testing.T) {
 		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		ok(t, err)
 
-		// Check if NAR exists in S3
-		narKey := fmt.Sprintf("nar/%s.nar", hash)
+		// Check if NAR exists in S3 (compressed with zstd)
+		narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 		_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 		ok(t, err)
@@ -307,8 +307,8 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 		} else {
 			uploadedCount++
 
-			// Also verify NAR exists
-			narKey := fmt.Sprintf("nar/%s.nar", hash)
+			// Also verify NAR exists (compressed with zstd)
+			narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 			_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 			if err != nil {

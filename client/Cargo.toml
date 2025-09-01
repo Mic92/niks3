@@ -25,6 +25,9 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
+zstd = "0.13"
+async-compression = { version = "0.4", features = ["tokio", "zstd"] }
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
