@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use reqwest::{header, Body, Client};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info};
@@ -142,6 +143,7 @@ impl UploadClient {
         Ok(())
     }
 
+
     /// Upload content from bytes to a presigned URL
     pub async fn upload_bytes_to_presigned_url(
         &self,
@@ -207,61 +209,29 @@ impl UploadClient {
         Ok(())
     }
 
-    /// Upload a closure with its NAR files and references
-    pub async fn upload_closure(
+    /// Upload multiple closures in a single batch
+    /// Returns a map of object keys that need to be uploaded
+    pub async fn create_batch_pending_closure(
         &self,
-        closure_hash: &str,
-        narinfo_content: Vec<u8>,
-        nar_paths: Vec<(String, PathBuf)>,
-        references: Vec<String>,
-    ) -> Result<()> {
-        // Prepare the list of objects with their references
-        let mut objects = vec![ObjectWithRefs {
-            key: format!("{}.narinfo", closure_hash),
-            refs: references.clone(),
-        }];
-
-        // NAR files don't have references themselves
-        for (key, _) in &nar_paths {
-            objects.push(ObjectWithRefs {
-                key: key.clone(),
-                refs: vec![],
-            });
-        }
-
-        // Create pending closure
-        let pending = self
-            .create_pending_closure(closure_hash.to_string(), objects)
-            .await?;
-
-        // Upload narinfo file
-        let narinfo_key = format!("{}.narinfo", closure_hash);
-        let narinfo_object = pending
-            .pending_objects
-            .get(&narinfo_key)
-            .context("No narinfo object in response")?;
-
-        self.upload_bytes_to_presigned_url(
-            &narinfo_object.presigned_url,
-            narinfo_content,
-            &narinfo_key,
-        )
-        .await?;
-
-        // Upload NAR files
-        for (nar_key, nar_path) in &nar_paths {
-            let nar_object = pending
-                .pending_objects
-                .get(nar_key)
-                .context("NAR object not found in response")?;
-
-            self.upload_to_presigned_url(&nar_object.presigned_url, nar_path)
+        closures: Vec<(String, Vec<ObjectWithRefs>)>,
+    ) -> Result<HashMap<String, PendingObject>> {
+        // For now, we'll handle one closure at a time but collect all pending objects
+        // In the future, the server could support batching multiple closures
+        let mut all_pending_objects = HashMap::new();
+        
+        for (closure_hash, objects) in closures {
+            let pending = self
+                .create_pending_closure(closure_hash, objects)
                 .await?;
+            
+            // Collect all pending objects
+            for (key, obj) in pending.pending_objects {
+                all_pending_objects.insert(key, obj);
+            }
+            
+            // TODO: Store pending closure IDs for later completion
         }
-
-        // Complete the upload
-        self.complete_pending_closure(&pending.id).await?;
-
-        Ok(())
+        
+        Ok(all_pending_objects)
     }
 }
