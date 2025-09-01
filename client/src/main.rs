@@ -86,12 +86,20 @@ async fn main() -> Result<()> {
                 // Create narinfo content
                 let narinfo_content = create_narinfo(path_info, &nar_filename).await?;
 
-                // Upload this closure
+                // Extract references as store path hashes (not full paths)
+                let references: Vec<String> = path_info
+                    .references
+                    .iter()
+                    .map(|r| get_store_path_hash(r))
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Upload this closure with references
                 client
                     .upload_closure(
                         &hash,
                         narinfo_content.into_bytes(),
                         vec![(format!("nar/{}", nar_filename), nar_path)],
+                        references,
                     )
                     .await
                     .context("Failed to upload closure")?;

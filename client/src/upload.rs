@@ -15,9 +15,15 @@ pub struct UploadClient {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ObjectWithRefs {
+    pub key: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct CreatePendingClosureRequest {
     pub closure: String,
-    pub objects: Vec<String>,
+    pub objects: Vec<ObjectWithRefs>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +57,7 @@ impl UploadClient {
     pub async fn create_pending_closure(
         &self,
         closure: String,
-        objects: Vec<String>,
+        objects: Vec<ObjectWithRefs>,
     ) -> Result<CreatePendingClosureResponse> {
         let url = self
             .base_url
@@ -201,16 +207,27 @@ impl UploadClient {
         Ok(())
     }
 
-    /// Upload a closure with its NAR files
+    /// Upload a closure with its NAR files and references
     pub async fn upload_closure(
         &self,
         closure_hash: &str,
         narinfo_content: Vec<u8>,
         nar_paths: Vec<(String, PathBuf)>,
+        references: Vec<String>,
     ) -> Result<()> {
-        // Prepare the list of objects
-        let mut objects = vec![format!("{}.narinfo", closure_hash)];
-        objects.extend(nar_paths.iter().map(|(key, _)| key.clone()));
+        // Prepare the list of objects with their references
+        let mut objects = vec![ObjectWithRefs {
+            key: format!("{}.narinfo", closure_hash),
+            refs: references.clone(),
+        }];
+
+        // NAR files don't have references themselves
+        for (key, _) in &nar_paths {
+            objects.push(ObjectWithRefs {
+                key: key.clone(),
+                refs: vec![],
+            });
+        }
 
         // Create pending closure
         let pending = self
