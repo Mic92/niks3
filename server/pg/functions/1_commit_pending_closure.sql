@@ -20,23 +20,22 @@ BEGIN
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
-    -- If the closure was inserted, commit the pending objects
-    IF is_inserted THEN
-        -- Commit the pending objects that we don't already have and the corresponding closure_objects
-        WITH pending_keys AS (
-          SELECT key
-          FROM pending_objects
-          WHERE pending_closure_id = closure_id
-        ), insert_objects AS (
-          INSERT INTO objects (key)
-          SELECT key FROM pending_keys
-          ON CONFLICT (key) DO NOTHING
-          RETURNING key
-        )
-        INSERT INTO closure_objects (closure_key, object_key)
-        SELECT closure_key, key
-        FROM pending_keys;
-    END IF;
+    -- Commit the pending objects with their references
+    INSERT INTO objects (key, refs)
+    SELECT key, refs FROM pending_objects
+    WHERE pending_closure_id = closure_id
+    ON CONFLICT (key) 
+    DO UPDATE SET 
+        -- If object exists, merge references (union of arrays, removing duplicates)
+        refs = (
+            SELECT ARRAY(
+                SELECT DISTINCT unnest(
+                    objects.refs || EXCLUDED.refs
+                )
+            )
+        ),
+        -- Resurrect previously tombstoned objects
+        deleted_at = NULL;
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;

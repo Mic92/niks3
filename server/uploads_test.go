@@ -21,12 +21,15 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	// should be a no-op
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/api/pending_closure?older-than=0s",
+		path:    "/api/pending_closures?older-than=0s",
 		handler: service.CleanupPendingClosuresHandler,
 	})
 
 	closureKey := "00000000000000000000000000000000"
-	objects := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	objects := []map[string]interface{}{
+		{"key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "refs": []string{}},
+		{"key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "refs": []string{}},
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
 		"objects": objects,
@@ -35,14 +38,14 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 
 	rr := testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/api/pending_closure",
+		path:    "/api/pending_closures",
 		body:    body,
 		handler: service.CreatePendingClosureHandler,
 	})
 
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
-		path:    "/api/pending_closure?older-than=0s",
+		path:    "/api/pending_closures?older-than=0s",
 		handler: service.CleanupPendingClosuresHandler,
 	})
 
@@ -60,7 +63,7 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	}
 	testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
+		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
 		body:    body,
 		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
@@ -92,25 +95,28 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:        "POST",
-		path:          "/api/pending_closure",
+		path:          "/api/pending_closures",
 		body:          invalidBody,
 		handler:       service.CreatePendingClosureHandler,
 		checkResponse: &val,
 	})
 
 	closureKey := "00000000000000000000000000000000"
-	firstObject := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	secondObject := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	objects := []string{firstObject, secondObject}
+	firstObject := closureKey + ".narinfo"           // This should be the narinfo file
+	secondObject := "nar/" + closureKey + ".nar.zst" // This should be the NAR file
+	objects := []map[string]interface{}{
+		{"key": firstObject, "refs": []string{secondObject}}, // narinfo references the NAR file
+		{"key": secondObject, "refs": []string{}},            // NAR file has no references
+	}
 	body, err := json.Marshal(map[string]interface{}{
-		"closure": closureKey,
+		"closure": firstObject, // Send the narinfo key as closure key
 		"objects": objects,
 	})
 	ok(t, err)
 
 	rr := testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/api/pending_closure",
+		path:    "/api/pending_closures",
 		body:    body,
 		handler: service.CreatePendingClosureHandler,
 	})
@@ -150,7 +156,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    fmt.Sprintf("/api/pending_closure/%s/complete", pendingClosureResponse.ID),
+		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
 		body:    body,
 		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
@@ -164,7 +170,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		body:    body,
 		handler: service.GetClosureHandler,
 		pathValues: map[string]string{
-			"key": closureKey,
+			"key": firstObject, // Use the narinfo key for the closure
 		},
 	})
 
@@ -173,23 +179,26 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &closureResponse)
 	ok(t, err)
 
-	objects = closureResponse.Objects
-	if len(objects) != 2 {
-		t.Errorf("expected 2 objects, got %d", len(objects))
+	if len(closureResponse.Objects) != 2 {
+		t.Errorf("expected 2 objects, got %d", len(closureResponse.Objects))
 	}
 
 	thirdObject := "cccccccccccccccccccccccccccccccc"
 
-	objects2 := []string{firstObject, secondObject, thirdObject}
+	objects2 := []map[string]interface{}{
+		{"key": firstObject, "refs": []string{}},
+		{"key": secondObject, "refs": []string{firstObject}},
+		{"key": thirdObject, "refs": []string{secondObject}},
+	}
 	body2, err := json.Marshal(map[string]interface{}{
-		"closure": "11111111111111111111111111111111",
+		"closure": "11111111111111111111111111111111.narinfo", // Send the narinfo key as closure key
 		"objects": objects2,
 	})
 	ok(t, err)
 
 	rr = testRequest(t, &TestRequest{
 		method:  "POST",
-		path:    "/api/pending_closure",
+		path:    "/api/pending_closures",
 		body:    body2,
 		handler: service.CreatePendingClosureHandler,
 	})

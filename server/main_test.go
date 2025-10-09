@@ -3,11 +3,28 @@ package server_test
 import (
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
+var testClientPath string //nolint:gochecknoglobals
+
 func innerTestMain(m *testing.M) int {
 	var err error
+
+	// Build the Rust client once for all tests
+	cmd := exec.Command("cargo", "build", "--release")
+	cmd.Dir = filepath.Join("..", "client")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Error("Failed to build client", "error", err, "output", string(output))
+
+		return 1
+	}
+
+	testClientPath = filepath.Join("..", "client", "target", "release", "niks3")
 
 	// unload environment variables from the devenv
 	_ = os.Unsetenv("DATABASE_URL")
