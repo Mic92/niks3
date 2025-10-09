@@ -76,7 +76,7 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 				return nil, fmt.Errorf("deleted_at is not set for object: %s", existingObject.Key)
 			}
 
-			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*30 {
+			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*1000*30 {
 				inflightPaths = append(inflightPaths, existingObject.Key)
 			} else {
 				delete(missingObjects, existingObject.Key)
@@ -91,7 +91,7 @@ func createPendingClosureInner(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
-	storePathSet map[string]bool,
+	objectsWithRefs map[string][]string,
 ) (*PendingClosure, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -110,8 +110,8 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
-	keys := make([]string, 0, len(storePathSet))
-	for k := range storePathSet {
+	keys := make([]string, 0, len(objectsWithRefs))
+	for k := range objectsWithRefs {
 		keys = append(keys, k)
 	}
 
@@ -126,16 +126,17 @@ func createPendingClosureInner(
 		if existingObject.DeletedAt != nil {
 			deletedObjects = append(deletedObjects, existingObject.Key)
 		} else {
-			delete(storePathSet, existingObject.Key)
+			delete(objectsWithRefs, existingObject.Key)
 		}
 	}
 
-	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(storePathSet))
+	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsWithRefs))
 
-	for objectKey := range storePathSet {
+	for objectKey, refs := range objectsWithRefs {
 		pendingObjects = append(pendingObjects, pg.InsertPendingObjectsParams{
 			PendingClosureID: pendingClosure.ID,
 			Key:              objectKey,
+			Refs:             refs,
 		})
 	}
 
@@ -176,9 +177,9 @@ func (s *Service) createPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
-	storePathSet map[string]bool,
+	objectsWithRefs map[string][]string,
 ) (*PendingClosureResponse, error) {
-	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, storePathSet)
+	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsWithRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +209,7 @@ func (s *Service) createPendingClosure(
 			pendingObjectsParams = append(pendingObjectsParams, pg.InsertPendingObjectsParams{
 				PendingClosureID: pendingClosure.id,
 				Key:              objectKey,
+				Refs:             objectsWithRefs[objectKey],
 			})
 		}
 

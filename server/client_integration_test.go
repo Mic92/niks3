@@ -22,14 +22,6 @@ const testAuthToken = "test-auth-token" //nolint:gosec // Test token for integra
 func TestClientIntegration(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("cargo", "build", "--release")
-	cmd.Dir = filepath.Join("..", "client")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build client: %v\nOutput: %s", err, output)
-	}
-
 	// Start test service (includes Minio and PostgreSQL)
 	service := createTestService(t)
 	defer service.Close()
@@ -44,7 +36,7 @@ func TestClientIntegration(t *testing.T) {
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err = testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(context.Background())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -63,7 +55,7 @@ func TestClientIntegration(t *testing.T) {
 	ok(t, err)
 
 	// Add the file to nix store
-	output, err = exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+	output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to add file to nix store: %v\nOutput: %s", err, output)
 	}
@@ -72,8 +64,7 @@ func TestClientIntegration(t *testing.T) {
 	t.Logf("Created store path: %s", storePath)
 
 	// Run the client to upload the store path
-	clientPath := filepath.Join("..", "client", "target", "release", "client")
-	cmd = exec.Command(clientPath, "push", storePath)
+	cmd := exec.Command(testClientPath, "push", storePath)
 
 	cmd.Env = append(os.Environ(),
 		"NIKS3_SERVER_URL="+ts.URL,
@@ -132,8 +123,8 @@ func TestClientIntegration(t *testing.T) {
 		t.Errorf("Narinfo doesn't contain NarSize")
 	}
 
-	// Also check if NAR file exists in S3
-	narKey := fmt.Sprintf("nar/%s.nar", hash)
+	// Also check if NAR file exists in S3 (compressed with zstd)
+	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 	_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 	if err != nil {
@@ -143,13 +134,6 @@ func TestClientIntegration(t *testing.T) {
 
 func TestClientMultipleUploads(t *testing.T) {
 	t.Parallel()
-
-	// Build the Rust client
-	cmd := exec.Command("cargo", "build", "--release")
-	cmd.Dir = filepath.Join("..", "client")
-
-	_, err := cmd.CombinedOutput()
-	ok(t, err)
 
 	// Start test service
 	service := createTestService(t)
@@ -165,7 +149,7 @@ func TestClientMultipleUploads(t *testing.T) {
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err = testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(context.Background())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -197,11 +181,10 @@ func TestClientMultipleUploads(t *testing.T) {
 	}
 
 	// Run the client with all paths
-	clientPath := filepath.Join("..", "client", "target", "release", "client")
 	args := []string{"push"}
 	args = append(args, storePaths...)
 
-	cmd = exec.Command(clientPath, args...)
+	cmd := exec.Command(testClientPath, args...)
 
 	cmd.Env = append(os.Environ(),
 		"NIKS3_SERVER_URL="+ts.URL,
@@ -231,25 +214,11 @@ func TestClientMultipleUploads(t *testing.T) {
 		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		ok(t, err)
 
-		// Check if NAR exists in S3
-		narKey := fmt.Sprintf("nar/%s.nar", hash)
+		// Check if NAR exists in S3 (compressed with zstd)
+		narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 		_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 		ok(t, err)
-	}
-}
-
-func buildRustClient(t *testing.T) {
-	t.Helper()
-
-	cmd := exec.Command("cargo", "build", "--release")
-	cmd.Dir = filepath.Join("..", "client")
-
-	output, err := cmd.CombinedOutput()
-	ok(t, err)
-
-	if err != nil {
-		t.Fatalf("Failed to build client: %v\nOutput: %s", err, output)
 	}
 }
 
@@ -299,8 +268,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	t.Logf("Found %d dependencies (including self)", len(dependencies))
 
 	// Run the client to upload the store path (should upload all dependencies)
-	clientPath := filepath.Join("..", "client", "target", "release", "client")
-	cmd := exec.Command(clientPath, "push", storePath)
+	cmd := exec.Command(testClientPath, "push", storePath)
 
 	cmd.Env = append(os.Environ(),
 		"NIKS3_SERVER_URL="+serverURL,
@@ -339,8 +307,8 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 		} else {
 			uploadedCount++
 
-			// Also verify NAR exists
-			narKey := fmt.Sprintf("nar/%s.nar", hash)
+			// Also verify NAR exists (compressed with zstd)
+			narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
 			_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
 			if err != nil {
@@ -430,8 +398,6 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 func TestClientWithDependencies(t *testing.T) {
 	t.Parallel()
 
-	buildRustClient(t)
-
 	// Start test service
 	service := createTestService(t)
 	t.Cleanup(func() { service.Close() })
@@ -474,17 +440,6 @@ func TestClientWithDependencies(t *testing.T) {
 func TestClientErrorHandling(t *testing.T) {
 	t.Parallel()
 
-	// Build the Rust client
-	cmd := exec.Command("cargo", "build", "--release")
-	cmd.Dir = filepath.Join("..", "client")
-
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Skip("Client not built, skipping test")
-	}
-
-	clientPath := filepath.Join("..", "client", "target", "release", "client")
-
 	t.Run("InvalidStorePath", func(t *testing.T) {
 		t.Parallel()
 
@@ -507,7 +462,7 @@ func TestClientErrorHandling(t *testing.T) {
 		defer ts.Close()
 
 		// Try to upload a non-store path
-		cmd := exec.Command(clientPath, "push", "/tmp/nonexistent")
+		cmd := exec.Command(testClientPath, "push", "/tmp/nonexistent")
 
 		cmd.Env = append(os.Environ(),
 			"NIKS3_SERVER_URL="+ts.URL,
@@ -520,8 +475,8 @@ func TestClientErrorHandling(t *testing.T) {
 		}
 
 		outputStr := string(output)
-		if !strings.Contains(outputStr, "not a valid store path") {
-			t.Errorf("Expected 'not a valid store path' error, got: %s", outputStr)
+		if !strings.Contains(outputStr, "nix path-info failed") {
+			t.Errorf("Expected 'nix path-info failed' error, got: %s", outputStr)
 		}
 	})
 
@@ -557,7 +512,7 @@ func TestClientErrorHandling(t *testing.T) {
 		storePath := strings.TrimSpace(string(output))
 
 		// Try with invalid auth token
-		cmd := exec.Command(clientPath, "push", storePath)
+		cmd := exec.Command(testClientPath, "push", storePath)
 
 		cmd.Env = append(os.Environ(),
 			"NIKS3_SERVER_URL="+ts.URL,
@@ -583,7 +538,7 @@ func TestClientErrorHandling(t *testing.T) {
 		storePath := strings.TrimSpace(string(output))
 
 		// Try with unavailable server
-		cmd := exec.Command(clientPath, "push", storePath)
+		cmd := exec.Command(testClientPath, "push", storePath)
 
 		cmd.Env = append(os.Environ(),
 			"NIKS3_SERVER_URL=http://localhost:19999",
