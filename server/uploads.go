@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -178,6 +179,13 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 		http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
 
 		return
+	}
+
+	// Delete the multipart upload tracking row
+	queries := pg.New(s.Pool)
+	if err := queries.DeleteMultipartUpload(r.Context(), req.UploadID); err != nil {
+		// Log the error but don't fail the request - the upload already succeeded in S3
+		slog.Error("Failed to delete multipart upload tracking row", "error", err, "upload_id", req.UploadID)
 	}
 
 	slog.Info("Completed multipart upload", "object_key", req.ObjectKey, "upload_id", req.UploadID, "parts", len(req.Parts))

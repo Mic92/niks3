@@ -24,8 +24,8 @@ BEGIN
     INSERT INTO objects (key, refs)
     SELECT key, refs FROM pending_objects
     WHERE pending_closure_id = closure_id
-    ON CONFLICT (key) 
-    DO UPDATE SET 
+    ON CONFLICT (key)
+    DO UPDATE SET
         -- If object exists, merge references (union of arrays, removing duplicates)
         refs = (
             SELECT ARRAY(
@@ -35,7 +35,8 @@ BEGIN
             )
         ),
         -- Resurrect previously tombstoned objects
-        deleted_at = NULL;
+        deleted_at = NULL,
+        first_deleted_at = NULL;
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;

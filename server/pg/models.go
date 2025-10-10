@@ -20,9 +20,10 @@ type MultipartUpload struct {
 }
 
 type Object struct {
-	Key       string           `json:"key"`
-	Refs      []string         `json:"refs"`
-	DeletedAt pgtype.Timestamp `json:"deleted_at"`
+	Key            string           `json:"key"`
+	Refs           []string         `json:"refs"`
+	DeletedAt      pgtype.Timestamp `json:"deleted_at"`
+	FirstDeletedAt pgtype.Timestamp `json:"first_deleted_at"`
 }
 
 type PendingClosure struct {
