@@ -355,6 +355,7 @@ func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.R
 
 	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	req.ContentLength = int64(len(data))
+	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

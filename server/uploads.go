@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -162,6 +163,11 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 		}
 	}
 
+	// Sort parts by PartNumber (S3 expects ascending order)
+	sort.Slice(completeParts, func(i, j int) bool {
+		return completeParts[i].PartNumber < completeParts[j].PartNumber
+	})
+
 	// Create Core client for multipart operations
 	coreClient := minio.Core{Client: s.MinioClient}
 
@@ -179,7 +185,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// CommitPendingClosureHandler handles POST /pending_closures/{key}/commit endpoint.
+// CommitPendingClosureHandler handles POST /api/pending_closures/{id}/complete endpoint.
 // Request body: -
 // Response body: -.
 func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +208,8 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	if err = commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)
+
+			return
 		}
 
 		slog.Error("Failed to complete upload", "id", parsedUploadID, "error", err)
@@ -216,7 +224,7 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// CleanupPendingClosuresHandler handles DELETE /pending_closures?duration=1h endpoint.
+// CleanupPendingClosuresHandler handles DELETE /api/pending_closures?older-than=1h endpoint.
 // Request body: -
 // Response body: -.
 func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {

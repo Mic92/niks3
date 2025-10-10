@@ -43,21 +43,20 @@ func randToken(n int) (string, error) {
 func randPort() (uint16, error) {
 	lc := net.ListenConfig{}
 
-	ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
 
-	_ = ln.Close()
-
-	time.Sleep(1 * time.Second)
-
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
-		return 0, fmt.Errorf("failed to get port: %w", err)
+		_ = ln.Close()
+		return 0, fmt.Errorf("listener did not return *net.TCPAddr")
 	}
+	port := uint16(addr.Port) //nolint:gosec
+	_ = ln.Close()
 
-	return (uint16)(addr.Port), nil //nolint:gosec
+	return port, nil
 }
 
 func (s *minioServer) Client(tb testing.TB) *minio.Client {
@@ -156,7 +155,7 @@ func startMinioServer() (*minioServer, error) {
 	minioProc.Env = env
 
 	if err = minioProc.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start postgres: %w", err)
+		return nil, fmt.Errorf("failed to start minio: %w", err)
 	}
 
 	// wait for server to start
