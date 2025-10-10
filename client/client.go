@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
@@ -22,6 +23,28 @@ import (
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts for balance between overhead and throughput
 )
+
+// uploadBufferPool pools 10MB buffers for multipart uploads to reduce memory allocations.
+var uploadBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, multipartPartSize)
+		return &buf
+	},
+}
+
+// zstdEncoderPool pools zstd encoders to reduce memory allocations.
+// Each encoder maintains compression history buffers (~60-80MB) that can be reused.
+var zstdEncoderPool = sync.Pool{
+	New: func() interface{} {
+		// Create encoder with nil writer (will use Reset() to set the actual writer)
+		encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+		if err != nil {
+			// This should never happen with nil writer
+			panic(fmt.Sprintf("failed to create zstd encoder: %v", err))
+		}
+		return encoder
+	},
+}
 
 // Client handles uploads to the niks3 server.
 type Client struct {
@@ -262,15 +285,11 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 			}
 		}()
 
-		// Create zstd encoder
-		encoder, err := zstd.NewWriter(pw, zstd.WithEncoderLevel(zstd.SpeedDefault))
-		if err != nil {
-			pw.CloseWithError(fmt.Errorf("creating zstd encoder: %w", err))
+		// Get encoder from pool and reset it to write to pipe
+		encoder := zstdEncoderPool.Get().(*zstd.Encoder)
+		defer zstdEncoderPool.Put(encoder)
 
-			errChan <- err
-
-			return
-		}
+		encoder.Reset(pw)
 
 		defer func() {
 			if err := encoder.Close(); err != nil {
@@ -344,8 +363,12 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 	var totalSize atomic.Uint64
 
+	// Get buffer from pool
+	bufferPtr := uploadBufferPool.Get().(*[]byte)
+	defer uploadBufferPool.Put(bufferPtr)
+	buffer := *bufferPtr
+
 	partNumber := 1
-	buffer := make([]byte, multipartPartSize)
 
 	for partNumber <= len(multipartInfo.PartURLs) {
 		// Read up to multipartPartSize for this part
