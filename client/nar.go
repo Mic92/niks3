@@ -20,6 +20,26 @@ const (
 //nolint:gochecknoglobals // useCaseHack is platform-specific runtime constant
 var useCaseHack = runtime.GOOS == "darwin"
 
+//nolint:gochecknoglobals // pre-encoded constants avoid recomputing framing bytes
+var (
+	zeroPad = [8]byte{}
+
+	narVersionMagicEncoded = encodeStaticString(narVersionMagic)
+	openParenEncoded       = encodeStaticString("(")
+	closeParenEncoded      = encodeStaticString(")")
+	typeEncoded            = encodeStaticString("type")
+	regularEncoded         = encodeStaticString("regular")
+	executableEncoded      = encodeStaticString("executable")
+	emptyEncoded           = encodeStaticString("")
+	contentsEncoded        = encodeStaticString("contents")
+	directoryEncoded       = encodeStaticString("directory")
+	entryEncoded           = encodeStaticString("entry")
+	nameEncoded            = encodeStaticString("name")
+	nodeEncoded            = encodeStaticString("node")
+	symlinkEncoded         = encodeStaticString("symlink")
+	targetEncoded          = encodeStaticString("target")
+)
+
 // stripCaseHackSuffix removes the case hack suffix from filenames on macOS.
 func stripCaseHackSuffix(name string) string {
 	if !useCaseHack {
@@ -36,34 +56,85 @@ func stripCaseHackSuffix(name string) string {
 
 // writeString writes a length-prefixed string to the NAR with padding.
 func writeString(w io.Writer, s string) error {
-	// Write length as little-endian u64
-	if err := binary.Write(w, binary.LittleEndian, uint64(len(s))); err != nil {
+	if err := writeUint64(w, uint64(len(s))); err != nil {
 		return fmt.Errorf("writing string length: %w", err)
 	}
 
-	// Write string content
 	if _, err := io.WriteString(w, s); err != nil {
 		return fmt.Errorf("writing string content: %w", err)
 	}
 
-	// Pad to 8-byte boundary
-	padding := (8 - (len(s) % 8)) % 8
-	if padding > 0 {
-		if _, err := w.Write(make([]byte, padding)); err != nil {
-			return fmt.Errorf("writing padding: %w", err)
-		}
+	return writePadding(w, len(s))
+}
+
+func writePadding(w io.Writer, n int) error {
+	padding := (8 - (n % 8)) % 8
+	if padding == 0 {
+		return nil
+	}
+
+	if _, err := w.Write(zeroPad[:padding]); err != nil {
+		return fmt.Errorf("writing padding: %w", err)
 	}
 
 	return nil
 }
 
+func writeSizePadding(w io.Writer, size uint64) error {
+	padding := size % 8
+	if padding == 0 {
+		return nil
+	}
+
+	toWrite := 8 - padding
+
+	if _, err := w.Write(zeroPad[:toWrite]); err != nil {
+		return fmt.Errorf("writing padding: %w", err)
+	}
+
+	return nil
+}
+
+func writeUint64(w io.Writer, v uint64) error {
+	var buf [8]byte
+
+	binary.LittleEndian.PutUint64(buf[:], v)
+
+	if _, err := w.Write(buf[:]); err != nil {
+		return fmt.Errorf("writing uint64: %w", err)
+	}
+
+	return nil
+}
+
+func writeStatic(w io.Writer, data []byte) error {
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("writing static string: %w", err)
+	}
+
+	return nil
+}
+
+func encodeStaticString(s string) []byte {
+	n := len(s)
+
+	padding := (8 - (n % 8)) % 8
+
+	buf := make([]byte, 8+n+padding)
+
+	binary.LittleEndian.PutUint64(buf[:8], uint64(n))
+	copy(buf[8:], s)
+
+	return buf
+}
+
 // DumpPath serializes a filesystem path to NAR format.
 func DumpPath(w io.Writer, path string) error {
-	if err := writeString(w, narVersionMagic); err != nil {
+	if err := writeStatic(w, narVersionMagicEncoded); err != nil {
 		return err
 	}
 
-	if err := writeString(w, "("); err != nil {
+	if err := writeStatic(w, openParenEncoded); err != nil {
 		return err
 	}
 
@@ -71,7 +142,7 @@ func DumpPath(w io.Writer, path string) error {
 		return err
 	}
 
-	if err := writeString(w, ")"); err != nil {
+	if err := writeStatic(w, closeParenEncoded); err != nil {
 		return err
 	}
 
@@ -85,35 +156,35 @@ func dumpPathInner(w io.Writer, path string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 
-	if err := writeString(w, "type"); err != nil {
+	if err := writeStatic(w, typeEncoded); err != nil {
 		return err
 	}
 
 	switch mode := info.Mode(); {
 	case mode.IsRegular():
-		if err := writeString(w, "regular"); err != nil {
+		if err := writeStatic(w, regularEncoded); err != nil {
 			return err
 		}
 
 		// Check if executable (Unix permissions)
 		if mode&0o111 != 0 {
-			if err := writeString(w, "executable"); err != nil {
+			if err := writeStatic(w, executableEncoded); err != nil {
 				return err
 			}
 
-			if err := writeString(w, ""); err != nil {
+			if err := writeStatic(w, emptyEncoded); err != nil {
 				return err
 			}
 		}
 
-		if err := writeString(w, "contents"); err != nil {
+		if err := writeStatic(w, contentsEncoded); err != nil {
 			return err
 		}
 
 		// Write file size
 		//nolint:gosec // File size from os.FileInfo is safe to convert
 		fileSize := uint64(info.Size())
-		if err := binary.Write(w, binary.LittleEndian, fileSize); err != nil {
+		if err := writeUint64(w, fileSize); err != nil {
 			return fmt.Errorf("writing file size: %w", err)
 		}
 
@@ -139,15 +210,12 @@ func dumpPathInner(w io.Writer, path string) error {
 		}
 
 		// Pad to 8-byte boundary
-		padding := (8 - (fileSize % 8)) % 8
-		if padding > 0 {
-			if _, err := w.Write(make([]byte, padding)); err != nil {
-				return fmt.Errorf("writing padding: %w", err)
-			}
+		if err := writeSizePadding(w, fileSize); err != nil {
+			return err
 		}
 
 	case mode.IsDir():
-		if err := writeString(w, "directory"); err != nil {
+		if err := writeStatic(w, directoryEncoded); err != nil {
 			return err
 		}
 
@@ -169,15 +237,15 @@ func dumpPathInner(w io.Writer, path string) error {
 			// Strip case hack suffix for NAR serialization
 			narName := stripCaseHackSuffix(name)
 
-			if err := writeString(w, "entry"); err != nil {
+			if err := writeStatic(w, entryEncoded); err != nil {
 				return err
 			}
 
-			if err := writeString(w, "("); err != nil {
+			if err := writeStatic(w, openParenEncoded); err != nil {
 				return err
 			}
 
-			if err := writeString(w, "name"); err != nil {
+			if err := writeStatic(w, nameEncoded); err != nil {
 				return err
 			}
 
@@ -185,11 +253,11 @@ func dumpPathInner(w io.Writer, path string) error {
 				return err
 			}
 
-			if err := writeString(w, "node"); err != nil {
+			if err := writeStatic(w, nodeEncoded); err != nil {
 				return err
 			}
 
-			if err := writeString(w, "("); err != nil {
+			if err := writeStatic(w, openParenEncoded); err != nil {
 				return err
 			}
 
@@ -197,21 +265,21 @@ func dumpPathInner(w io.Writer, path string) error {
 				return err
 			}
 
-			if err := writeString(w, ")"); err != nil {
+			if err := writeStatic(w, closeParenEncoded); err != nil {
 				return err
 			}
 
-			if err := writeString(w, ")"); err != nil {
+			if err := writeStatic(w, closeParenEncoded); err != nil {
 				return err
 			}
 		}
 
 	case mode&os.ModeSymlink != 0:
-		if err := writeString(w, "symlink"); err != nil {
+		if err := writeStatic(w, symlinkEncoded); err != nil {
 			return err
 		}
 
-		if err := writeString(w, "target"); err != nil {
+		if err := writeStatic(w, targetEncoded); err != nil {
 			return err
 		}
 
