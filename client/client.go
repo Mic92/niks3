@@ -258,14 +258,63 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 
 // UploadBytesToPresignedURL uploads bytes to a presigned URL.
 func (c *Client) UploadBytesToPresignedURL(ctx context.Context, presignedURL string, data []byte) error {
-	resp, err := c.putBytes(ctx, presignedURL, data)
+	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, data, nil)
+}
+
+// UploadBytesToPresignedURLWithHeaders uploads bytes to a presigned URL with optional custom headers.
+func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presignedURL string, data []byte, headers map[string]string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req.ContentLength = int64(len(data))
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	// Add custom headers
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploading: %w", err)
 	}
 
 	defer deferCloseBody(resp)
 
 	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
+}
+
+// UploadNarinfoToPresignedURL compresses a narinfo file with zstd and uploads it with Content-Encoding header.
+// This follows Nix's convention for compressed narinfo files.
+func (c *Client) UploadNarinfoToPresignedURL(ctx context.Context, presignedURL string, narinfoContent []byte) error {
+	// Compress narinfo content with zstd using pooled encoder
+	var compressed bytes.Buffer
+
+	encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
+	if !ok {
+		return errors.New("failed to get zstd encoder from pool")
+	}
+	defer zstdEncoderPool.Put(encoder)
+
+	encoder.Reset(&compressed)
+
+	if _, err := encoder.Write(narinfoContent); err != nil {
+		return fmt.Errorf("compressing narinfo: %w", err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("closing zstd encoder: %w", err)
+	}
+
+	// Upload with Content-Encoding header
+	headers := map[string]string{
+		"Content-Encoding": "zstd",
+	}
+
+	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed.Bytes(), headers)
 }
 
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
