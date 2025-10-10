@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -436,7 +435,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 	// Compute final hash
 	hashBytes := hasher.Sum(nil)
-	hash := "sha256:" + base64.StdEncoding.EncodeToString(hashBytes)
+	hash := "sha256:" + EncodeNixBase32(hashBytes)
 
 	return &CompressedFileInfo{
 		Size: totalSize.Load(),
