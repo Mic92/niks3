@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"os"
@@ -107,7 +106,7 @@ func terminateProcess(cmd *exec.Cmd) {
 func (s *minioServer) Cleanup() {
 	defer func() {
 		if err := os.RemoveAll(s.tempDir); err != nil {
-			log.Printf("Failed to remove minio temp directory: %v", err)
+			slog.Warn("Failed to remove minio temp directory", "error", err)
 		}
 	}()
 
@@ -123,7 +122,7 @@ func startMinioServer() (*minioServer, error) {
 	defer func() {
 		if err != nil {
 			if err := os.RemoveAll(tempDir); err != nil {
-				log.Printf("Failed to remove temp directory during startup cleanup: %v", err)
+				slog.Warn("Failed to remove temp directory during startup cleanup", "error", err)
 			}
 		}
 	}()

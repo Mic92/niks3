@@ -1,11 +1,13 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +75,96 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	})
 }
 
+// handleMultipartUpload handles uploading a multipart object for testing.
+func handleMultipartUpload(ctx context.Context, t *testing.T, key string, pendingObject server.PendingObject, service *server.Service) {
+	t.Helper()
+
+	httpClient := &http.Client{}
+	completedParts := make([]map[string]interface{}, 0, len(pendingObject.MultipartInfo.PartURLs))
+
+	// Create dummy data that meets S3 minimum part size (5MB)
+	minPartSize := 5 * 1024 * 1024 // 5MB
+
+	dummyData := make([]byte, minPartSize)
+	for i := range dummyData {
+		dummyData[i] = byte(i % 256)
+	}
+
+	for i, partURL := range pendingObject.MultipartInfo.PartURLs {
+		partNumber := i + 1
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, partURL, bytes.NewReader(dummyData))
+		ok(t, err)
+
+		resp, err := httpClient.Do(req)
+		ok(t, err)
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected http status 200 for part %d, got %d", partNumber, resp.StatusCode)
+		}
+
+		// Get ETag from response
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			t.Errorf("no ETag in response for part %d", partNumber)
+		}
+
+		// Remove quotes from ETag if present
+		etag = strings.Trim(etag, "\"")
+
+		completedParts = append(completedParts, map[string]interface{}{
+			"part_number": partNumber,
+			"etag":        etag,
+		})
+
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("Failed to close response body: %v", err)
+		}
+	}
+
+	// Complete the multipart upload
+	completeReq := map[string]interface{}{
+		"object_key": key,
+		"upload_id":  pendingObject.MultipartInfo.UploadID,
+		"parts":      completedParts,
+	}
+
+	completeBody, err := json.Marshal(completeReq)
+	ok(t, err)
+
+	// Use testRequest to properly call the handler
+	//nolint:contextcheck // testRequest is a test helper that doesn't accept context
+	testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/multipart/complete",
+		body:    completeBody,
+		handler: service.CompleteMultipartUploadHandler,
+	})
+}
+
+// handlePresignedUpload handles uploading to a presigned URL for testing.
+func handlePresignedUpload(ctx context.Context, t *testing.T, presignedURL string) {
+	t.Helper()
+
+	httpClient := &http.Client{}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, nil)
+	ok(t, err)
+
+	resp, err := httpClient.Do(req)
+	ok(t, err)
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("Failed to close response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected http status 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestService_createPendingClosureHandler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -134,23 +226,11 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
 
-	httpClient := &http.Client{}
-
-	for _, pendingObject := range pendingClosureResponse.PendingObjects {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, pendingObject.PresignedURL, nil)
-		ok(t, err)
-
-		resp, err := httpClient.Do(req)
-		ok(t, err)
-
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				t.Logf("Failed to close response body: %v", err)
-			}
-		}()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected http status 200, got %d", resp.StatusCode)
+	for key, pendingObject := range pendingClosureResponse.PendingObjects {
+		if pendingObject.MultipartInfo != nil {
+			handleMultipartUpload(ctx, t, key, pendingObject, service)
+		} else {
+			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
 		}
 	}
 
@@ -183,7 +263,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		t.Errorf("expected 2 objects, got %d", len(closureResponse.Objects))
 	}
 
-	thirdObject := "cccccccccccccccccccccccccccccccc"
+	thirdObject := "cccccccccccccccccccccccccccccccc.narinfo"
 
 	objects2 := []map[string]interface{}{
 		{"key": firstObject, "refs": []string{}},

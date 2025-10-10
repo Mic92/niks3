@@ -1,0 +1,494 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync/atomic"
+
+	"github.com/klauspost/compress/zstd"
+)
+
+const (
+	multipartPartSize = 10 * 1024 * 1024 // 10MB parts for balance between overhead and throughput
+)
+
+// Client handles uploads to the niks3 server.
+type Client struct {
+	baseURL                 *url.URL
+	authToken               string
+	httpClient              *http.Client
+	MaxConcurrentNARUploads int // Maximum number of concurrent NAR uploads (0 = unlimited)
+}
+
+// ObjectWithRefs represents an object with its dependencies.
+type ObjectWithRefs struct {
+	Key     string   `json:"key"`
+	Refs    []string `json:"refs"`
+	NarSize *uint64  `json:"nar_size,omitempty"` // For estimating multipart parts
+}
+
+// createPendingClosureRequest is the request to create a pending closure.
+type createPendingClosureRequest struct {
+	Closure string           `json:"closure"`
+	Objects []ObjectWithRefs `json:"objects"`
+}
+
+// MultipartUploadInfo contains multipart upload information.
+type MultipartUploadInfo struct {
+	UploadID string   `json:"upload_id"`
+	PartURLs []string `json:"part_urls"`
+}
+
+// PendingObject contains upload information for an object.
+type PendingObject struct {
+	PresignedURL string `json:"presigned_url,omitempty"` // For small files
+
+	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files
+}
+
+// CreatePendingClosureResponse is the response from creating a pending closure.
+type CreatePendingClosureResponse struct {
+	ID             string                   `json:"id"`
+	StartedAt      string                   `json:"started_at"`
+	PendingObjects map[string]PendingObject `json:"pending_objects"`
+}
+
+// CompressedFileInfo contains information about a compressed file.
+type CompressedFileInfo struct {
+	Size uint64
+	Hash string
+}
+
+// CompletedPart represents a completed multipart part.
+type CompletedPart struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+}
+
+// completeMultipartRequest is the request to complete a multipart upload.
+type completeMultipartRequest struct {
+	ObjectKey string          `json:"object_key"`
+	UploadID  string          `json:"upload_id"`
+	Parts     []CompletedPart `json:"parts"`
+}
+
+// NewClient creates a new upload client.
+// The default MaxConcurrentNARUploads is set to 16, optimized for I/O-bound upload workloads.
+// This is comparable to browser HTTP/2 connection limits and Cachix's default of 8.
+//
+// TODO: Test this value in various network setups (local network, high-latency WAN,
+// rate-limited connections) to determine optimal defaults for different scenarios.
+func NewClient(serverURL, authToken string) (*Client, error) {
+	baseURL, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing server URL: %w", err)
+	}
+
+	return &Client{
+		baseURL:   baseURL,
+		authToken: authToken,
+		httpClient: &http.Client{
+			Timeout: 0, // No timeout for streaming uploads
+		},
+		MaxConcurrentNARUploads: 16,
+	}, nil
+}
+
+// CreatePendingClosure creates a pending closure and returns upload URLs.
+func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objects []ObjectWithRefs) (*CreatePendingClosureResponse, error) {
+	reqURL := c.baseURL.JoinPath("api/pending_closures")
+
+	reqBody := createPendingClosureRequest{
+		Closure: closure,
+		Objects: objects,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	}
+
+	var result CreatePendingClosureResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	slog.Info("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
+
+	return &result, nil
+}
+
+// CompletePendingClosure marks a closure as complete.
+func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
+	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	}
+
+	slog.Info("Completed pending closure", "id", closureID)
+
+	return nil
+}
+
+// CompleteMultipartUpload completes a multipart upload.
+func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadID string, parts []CompletedPart) error {
+	reqURL := c.baseURL.JoinPath("api/multipart/complete")
+
+	reqBody := completeMultipartRequest{
+		ObjectKey: objectKey,
+		UploadID:  uploadID,
+		Parts:     parts,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	}
+
+	slog.Info("Completed multipart upload", "object_key", objectKey)
+
+	return nil
+}
+
+// UploadBytesToPresignedURL uploads bytes to a presigned URL.
+func (c *Client) UploadBytesToPresignedURL(ctx context.Context, presignedURL string, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req.ContentLength = int64(len(data))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploading: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+
+		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, body)
+	}
+
+	return nil
+}
+
+// CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
+func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pendingObj PendingObject, objectKey string) (*CompressedFileInfo, error) {
+	slog.Info("Compressing and uploading NAR", "store_path", storePath)
+
+	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
+	pr, pw := io.Pipe()
+
+	// Channel to receive errors from the compression goroutine
+	errChan := make(chan error, 1)
+
+	// Start compression in goroutine
+	go func() {
+		defer func() {
+			if err := pw.Close(); err != nil {
+				slog.Error("Failed to close pipe writer", "error", err)
+			}
+		}()
+
+		// Create zstd encoder
+		encoder, err := zstd.NewWriter(pw, zstd.WithEncoderLevel(zstd.SpeedDefault))
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("creating zstd encoder: %w", err))
+
+			errChan <- err
+
+			return
+		}
+		defer func() {
+			if err := encoder.Close(); err != nil {
+				slog.Error("Failed to close zstd encoder", "error", err)
+			}
+		}()
+
+		// Serialize NAR directly to the compressed stream
+		if err := DumpPath(encoder, storePath); err != nil {
+			pw.CloseWithError(fmt.Errorf("serializing NAR: %w", err))
+
+			errChan <- err
+
+			return
+		}
+
+		errChan <- nil
+	}()
+
+	var info *CompressedFileInfo
+
+	var err error
+
+	switch {
+	case pendingObj.MultipartInfo != nil:
+		// Upload using multipart
+		info, err = c.uploadMultipart(ctx, pr, pendingObj.MultipartInfo, objectKey)
+	case pendingObj.PresignedURL != "":
+		// Single-part upload (shouldn't happen for NARs, but just in case)
+		return nil, errors.New("NAR files should use multipart upload")
+	default:
+		return nil, errors.New("no upload method provided")
+	}
+
+	// Check for compression errors
+	if compressErr := <-errChan; compressErr != nil {
+		return nil, compressErr
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("Uploaded NAR", "object_key", objectKey, "size", info.Size, "hash", info.Hash)
+
+	return info, nil
+}
+
+// uploadMultipart uploads a stream in parts using presigned URLs.
+func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) (*CompressedFileInfo, error) {
+	var completedParts []CompletedPart
+
+	hasher := sha256.New()
+
+	var totalSize atomic.Uint64
+
+	partNumber := 1
+	buffer := make([]byte, multipartPartSize)
+
+	for partNumber <= len(multipartInfo.PartURLs) {
+		// Read up to multipartPartSize for this part
+		n, err := io.ReadFull(r, buffer)
+		if errors.Is(err, io.EOF) {
+			// Done reading
+			break
+		}
+
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("reading part %d: %w", partNumber, err)
+		}
+
+		partData := buffer[:n]
+
+		// Update hash and size
+		hasher.Write(partData)
+		//nolint:gosec // n is from io.ReadFull which returns valid int
+		totalSize.Add(uint64(n))
+
+		// Upload this part
+		partURL := multipartInfo.PartURLs[partNumber-1]
+
+		etag, err := c.uploadPart(ctx, partURL, partData)
+		if err != nil {
+			return nil, fmt.Errorf("uploading part %d: %w", partNumber, err)
+		}
+
+		completedParts = append(completedParts, CompletedPart{
+			PartNumber: partNumber,
+			ETag:       etag,
+		})
+
+		slog.Info("Uploaded part", "part_number", partNumber, "total_parts", len(multipartInfo.PartURLs), "bytes", n, "object_key", objectKey)
+
+		partNumber++
+
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+	}
+
+	// Complete the multipart upload
+	err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, completedParts)
+	if err != nil {
+		return nil, fmt.Errorf("completing multipart upload: %w", err)
+	}
+
+	slog.Info("Completed multipart upload", "object_key", objectKey)
+
+	// Compute final hash
+	hashBytes := hasher.Sum(nil)
+	hash := "sha256:" + base64.StdEncoding.EncodeToString(hashBytes)
+
+	return &CompressedFileInfo{
+		Size: totalSize.Load(),
+		Hash: hash,
+	}, nil
+}
+
+// uploadPart uploads a single part and returns the ETag.
+func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, partURL, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req.ContentLength = int64(len(data))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("uploading: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+
+		return "", fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, body)
+	}
+
+	// Get ETag from response
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		return "", errors.New("no ETag in response")
+	}
+
+	// Remove quotes from ETag if present
+	etag = strings.Trim(etag, "\"")
+
+	return etag, nil
+}
+
+// CreateNarinfo generates a narinfo file content.
+func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64, fileHash string) string {
+	var sb strings.Builder
+
+	// StorePath
+	fmt.Fprintf(&sb, "StorePath: %s\n", pathInfo.Path)
+
+	// URL to the NAR file
+	fmt.Fprintf(&sb, "URL: nar/%s\n", narFilename)
+
+	// Compression
+	fmt.Fprintf(&sb, "Compression: zstd\n")
+
+	// NAR hash and size (uncompressed)
+	fmt.Fprintf(&sb, "NarHash: %s\n", pathInfo.NarHash)
+	fmt.Fprintf(&sb, "NarSize: %d\n", pathInfo.NarSize)
+
+	// FileHash and FileSize for compressed file
+	fmt.Fprintf(&sb, "FileHash: %s\n", fileHash)
+	fmt.Fprintf(&sb, "FileSize: %d\n", compressedSize)
+
+	// References
+	fmt.Fprint(&sb, "References:")
+
+	for _, ref := range pathInfo.References {
+		// Remove /nix/store/ prefix
+		refName := strings.TrimPrefix(ref, "/nix/store/")
+		fmt.Fprintf(&sb, " %s", refName)
+	}
+
+	fmt.Fprint(&sb, "\n")
+
+	// Deriver (optional)
+	if pathInfo.Deriver != nil {
+		deriverName := strings.TrimPrefix(*pathInfo.Deriver, "/nix/store/")
+		fmt.Fprintf(&sb, "Deriver: %s\n", deriverName)
+	}
+
+	// Signatures (optional)
+	if len(pathInfo.Signatures) > 0 {
+		for _, sig := range pathInfo.Signatures {
+			fmt.Fprintf(&sb, "Sig: %s\n", sig)
+		}
+	}
+
+	// CA (optional)
+	if pathInfo.CA != nil {
+		fmt.Fprintf(&sb, "CA: %s\n", *pathInfo.CA)
+	}
+
+	return sb.String()
+}
