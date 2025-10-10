@@ -23,7 +23,7 @@ type createPendingClosureRequest struct {
 	Objects []objectWithRefs `json:"objects"`
 }
 
-// POST /pending_closures
+// CreatePendingClosureHandler handles POST /pending_closures endpoint.
 // Request body:
 //
 //	{
@@ -109,8 +109,8 @@ type completeMultipartRequest struct {
 	Parts     []completedPart `json:"parts"`
 }
 
-// POST /api/multipart/complete
 // CompleteMultipartUploadHandler completes a multipart upload with the list of ETags.
+// It handles POST /api/multipart/complete endpoint.
 func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete multipart upload request", "method", r.Method, "url", r.URL)
 
@@ -171,7 +171,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /pending_closures/{key}/commit
+// CommitPendingClosureHandler handles POST /pending_closures/{key}/commit endpoint.
 // Request body: -
 // Response body: -.
 func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +208,7 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /pending_closures?duration=1h
+// CleanupPendingClosuresHandler handles DELETE /pending_closures?duration=1h endpoint.
 // Request body: -
 // Response body: -.
 func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {

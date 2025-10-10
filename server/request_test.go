@@ -31,7 +31,7 @@ func createTestService(t *testing.T) *server.Service {
 	// create database for test
 	dbName := "db" + strconv.Itoa(int(testDBCount.Add(1)))
 	//nolint:gosec
-	command := exec.Command("createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
+	command := exec.CommandContext(tb.Context(), "createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	err := command.Run()
@@ -39,7 +39,7 @@ func createTestService(t *testing.T) *server.Service {
 
 	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(tb.Context(), 10*time.Second)
 	defer cancel()
 
 	pool, err := pg.Connect(ctx, connectionString)
@@ -76,7 +76,7 @@ func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
 
 	rr := httptest.NewRecorder()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, req.method, req.path, bytes.NewBuffer(req.body))

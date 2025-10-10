@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,7 +52,7 @@ func startPostgresServer() (*postgresServer, error) {
 	}()
 	// initialize the database
 	dbPath := filepath.Join(tempDir, "data")
-	initdb := exec.Command("initdb", "-D", dbPath, "-U", "postgres")
+	initdb := exec.CommandContext(context.Background(), "initdb", "-D", dbPath, "-U", "postgres")
 	initdb.Stdout = os.Stdout
 	initdb.Stderr = os.Stderr
 
@@ -65,7 +66,7 @@ func startPostgresServer() (*postgresServer, error) {
 		args = append(args, "-c", "log_statement=all", "-c", "log_min_duration_statement=0")
 	}
 
-	postgresProc := exec.Command("postgres", args...)
+	postgresProc := exec.CommandContext(context.Background(), "postgres", args...)
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
 	postgresProc.SysProcAttr = &syscall.SysProcAttr{}
@@ -87,7 +88,7 @@ func startPostgresServer() (*postgresServer, error) {
 	}()
 
 	for range 30 {
-		waitForPostgres := exec.Command("pg_isready", "-h", tempDir, "-U", "postgres")
+		waitForPostgres := exec.CommandContext(context.Background(), "pg_isready", "-h", tempDir, "-U", "postgres")
 		waitForPostgres.Stdout = os.Stdout
 		waitForPostgres.Stderr = os.Stderr
 

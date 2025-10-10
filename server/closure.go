@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// getClosureObjects handles the GET /closures/<key> endpoint.
+// GetClosureHandler handles the GET /closures/<key> endpoint.
 func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received get closure request", "method", r.Method, "url", r.URL)
 
@@ -46,7 +46,7 @@ func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// cleanupClosuresOlders handles the DELETE /closures endpoint.
+// CleanupClosuresOlder handles the DELETE /closures endpoint.
 func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Starting cleanup of old closures", "method", r.Method, "url", r.URL)
 

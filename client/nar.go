@@ -122,6 +122,7 @@ func dumpPathInner(w io.Writer, path string) error {
 		if err != nil {
 			return fmt.Errorf("opening file %s: %w", path, err)
 		}
+
 		defer func() {
 			if err := f.Close(); err != nil {
 				slog.Error("Failed to close file", "path", path, "error", err)

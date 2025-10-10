@@ -33,7 +33,7 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	c.MaxConcurrentNARUploads = 16
 
 	// Get path info for all paths and their closures
-	pathInfos, err := client.GetPathInfoRecursive(paths)
+	pathInfos, err := client.GetPathInfoRecursive(ctx, paths)
 	if err != nil {
 		return fmt.Errorf("getting path info: %w", err)
 	}
@@ -334,7 +334,7 @@ func TestClientIntegration(t *testing.T) {
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -353,17 +353,17 @@ func TestClientIntegration(t *testing.T) {
 	err = os.WriteFile(tempFile, []byte("test content for niks3 integration test"), 0o600)
 	ok(t, err)
 
+	// Use the client package to upload the store path
+	ctx := t.Context()
+
 	// Add the file to nix store
-	output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to add file to nix store: %v\nOutput: %s", err, output)
 	}
 
 	storePath := strings.TrimSpace(string(output))
 	t.Logf("Created store path: %s", storePath)
-
-	// Use the client package to upload the store path
-	ctx := context.Background()
 
 	err = pushToServer(ctx, ts.URL, authToken, []string{storePath})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestClientIntegration(t *testing.T) {
 
 	// Check if narinfo exists in S3
 	narinfoKey := hash + ".narinfo"
-	narinfoObj, err := testService.MinioClient.GetObject(context.Background(), testService.Bucket, narinfoKey, minio.GetObjectOptions{})
+	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
 	defer func() {
@@ -417,7 +417,7 @@ func TestClientIntegration(t *testing.T) {
 	// Also check if NAR file exists in S3 (compressed with zstd)
 	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-	_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 	if err != nil {
 		t.Errorf("NAR file not found in S3: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestClientMultipleUploads(t *testing.T) {
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -453,6 +453,9 @@ func TestClientMultipleUploads(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
+	// Use the client package to upload all paths
+	ctx := t.Context()
+
 	// Create multiple test files and add them to nix store
 	storePaths := make([]string, 0, 3)
 
@@ -464,7 +467,7 @@ func TestClientMultipleUploads(t *testing.T) {
 		err = os.WriteFile(tempFile, []byte(content), 0o600)
 		ok(t, err)
 
-		output, err = exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		output, err = exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
@@ -472,8 +475,6 @@ func TestClientMultipleUploads(t *testing.T) {
 		t.Logf("Created store path %d: %s", i, storePath)
 	}
 
-	// Use the client package to upload all paths
-	ctx := context.Background()
 	start := time.Now()
 	err = pushToServer(ctx, ts.URL, authToken, storePaths)
 	duration := time.Since(start)
@@ -492,18 +493,18 @@ func TestClientMultipleUploads(t *testing.T) {
 		// Check if narinfo exists in S3
 		narinfoKey := hash + ".narinfo"
 
-		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
+		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		ok(t, err)
 
 		// Check if NAR exists in S3 (compressed with zstd)
 		narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-		_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+		_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 		ok(t, err)
 	}
 }
 
-func buildNixDerivation(t *testing.T) string {
+func buildNixDerivation(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	// Create a simple Nix expression that has dependencies
 	// We'll use a shell script that depends on bash
@@ -520,10 +521,10 @@ func buildNixDerivation(t *testing.T) string {
 	ok(t, err)
 
 	// Build the derivation
-	output, err := exec.Command("nix-build", nixExpr, "--no-out-link").CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link").CombinedOutput()
 	if err != nil {
 		// If nix-build fails, try with nix build
-		output, err = exec.Command("nix", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
+		output, err = exec.CommandContext(ctx, "nix", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
 		if err != nil {
 			t.Skipf("Failed to build nix expression (nix environment not set up): %v\nOutput: %s", err, output)
 		}
@@ -537,10 +538,10 @@ func buildNixDerivation(t *testing.T) string {
 	return storePath
 }
 
-func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePath, serverURL, authToken string) int {
+func runClientAndVerifyUpload(ctx context.Context, t *testing.T, testService *server.Service, storePath, serverURL, authToken string) int {
 	t.Helper()
 	// Get dependencies using nix-store -qR
-	output, err := exec.Command("nix-store", "-qR", storePath).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-store", "-qR", storePath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to query dependencies: %v\nOutput: %s", err, output)
 	}
@@ -549,8 +550,6 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	t.Logf("Found %d dependencies (including self)", len(dependencies))
 
 	// Use the client package to upload the store path (should upload all dependencies)
-	ctx := context.Background()
-
 	err = pushToServer(ctx, serverURL, authToken, []string{storePath})
 	if err != nil {
 		t.Fatalf("Client failed: %v", err)
@@ -575,7 +574,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 		// Check if narinfo exists in S3
 		narinfoKey := hash + ".narinfo"
 
-		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
+		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		if err != nil {
 			// Some dependencies might already exist, which is fine
 			t.Logf("Narinfo not found for %s (might already exist): %v", dep, err)
@@ -585,7 +584,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 			// Also verify NAR exists (compressed with zstd)
 			narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-			_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+			_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 			if err != nil {
 				t.Errorf("NAR not found for %s: %v", dep, err)
 			}
@@ -600,7 +599,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	return uploadedCount
 }
 
-func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePath string) {
+func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *server.Service, storePath string) {
 	t.Helper()
 	// Create a temporary store directory
 	tempStore := filepath.Join(t.TempDir(), "nix-store")
@@ -621,7 +620,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 
 	// First test that we can fetch nix-cache-info (like Nix's own tests do)
 	// #nosec G204 -- test code with controlled inputs
-	cmd := exec.Command("nix", "eval", "--impure", "--expr",
+	cmd := exec.CommandContext(ctx, "nix", "eval", "--impure", "--expr",
 		fmt.Sprintf(`builtins.fetchurl { name = "foo"; url = "s3://%s/nix-cache-info?endpoint=http://%s&region=eu-west-1"; }`, testService.Bucket, endpoint))
 	cmd.Env = testEnv
 
@@ -629,7 +628,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	ok(t, err)
 
 	// Get info about the store (like Nix's tests)
-	cmd = exec.Command("nix", "store", "info", "--store", binaryCacheURL)
+	cmd = exec.CommandContext(ctx, "nix", "store", "info", "--store", binaryCacheURL)
 	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
@@ -639,7 +638,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	hash := strings.Split(filepath.Base(storePath), "-")[0]
 	narinfoKey := hash + ".narinfo"
 
-	narinfoObj, err := testService.MinioClient.GetObject(context.Background(),
+	narinfoObj, err := testService.MinioClient.GetObject(ctx,
 		testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
@@ -651,7 +650,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	ok(t, err)
 
 	// Use --no-check-sigs like in Nix's tests
-	cmd = exec.Command("nix", "copy",
+	cmd = exec.CommandContext(ctx, "nix", "copy",
 		"--no-check-sigs",
 		"--from", binaryCacheURL,
 		storePath)
@@ -664,7 +663,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	}
 
 	// Verify the path exists locally now
-	cmd = exec.Command("nix", "path-info", storePath)
+	cmd = exec.CommandContext(ctx, "nix", "path-info", storePath)
 
 	_, err = cmd.CombinedOutput()
 	ok(t, err)
@@ -687,7 +686,7 @@ func TestClientWithDependencies(t *testing.T) {
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -702,14 +701,15 @@ func TestClientWithDependencies(t *testing.T) {
 
 	t.Cleanup(func() { ts.Close() })
 
-	storePath := buildNixDerivation(t)
+	ctx := t.Context()
+	storePath := buildNixDerivation(ctx, t)
 
-	runClientAndVerifyUpload(t, testService, storePath, ts.URL, authToken)
+	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, authToken)
 
 	// Test that we can retrieve the content using nix copy
 	t.Run("RetrieveWithNixCopy", func(t *testing.T) {
 		t.Parallel()
-		testRetrieveWithNixCopy(t, testService, storePath)
+		testRetrieveWithNixCopy(t.Context(), t, testService, storePath)
 	})
 }
 
@@ -739,7 +739,7 @@ func TestClientErrorHandling(t *testing.T) {
 		defer ts.Close()
 
 		// Try to upload a non-store path
-		ctx := context.Background()
+		ctx := t.Context()
 
 		err := pushToServer(ctx, ts.URL, authToken, []string{"/tmp/nonexistent"})
 		if err == nil {
@@ -778,13 +778,13 @@ func TestClientErrorHandling(t *testing.T) {
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		// Try with invalid auth token
+		ctx := t.Context()
+
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
-
-		// Try with invalid auth token
-		ctx := context.Background()
 
 		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath})
 		if err == nil {
@@ -794,18 +794,19 @@ func TestClientErrorHandling(t *testing.T) {
 
 	t.Run("ServerNotAvailable", func(t *testing.T) {
 		t.Parallel()
+
+		// Try with unavailable server
+		ctx := t.Context()
+
 		// Create a valid store path
 		tempFile := filepath.Join(t.TempDir(), "test.txt")
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
-
-		// Try with unavailable server
-		ctx := context.Background()
 
 		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath})
 		if err == nil {
