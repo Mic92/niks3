@@ -123,8 +123,8 @@ func startMinioServer() (*minioServer, error) {
 
 	defer func() {
 		if err != nil {
-			if err := os.RemoveAll(tempDir); err != nil {
-				slog.Warn("Failed to remove temp directory during startup cleanup", "error", err)
+			if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+				slog.Warn("Failed to remove temp directory during startup cleanup", "error", removeErr)
 			}
 		}
 	}()
@@ -138,8 +138,9 @@ func startMinioServer() (*minioServer, error) {
 	minioProc := exec.CommandContext(context.Background(), "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
-	minioProc.SysProcAttr = &syscall.SysProcAttr{}
-	minioProc.SysProcAttr.Setsid = true
+	minioProc.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
 	// random hex string
 	secret, err := randToken(20)

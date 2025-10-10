@@ -153,26 +153,28 @@ func uploadPendingObjects(ctx context.Context, c *client.Client, pendingObjects 
 	var narinfoTasks []uploadTask
 
 	for key, obj := range pendingObjects {
-		if key[len(key)-8:] == ".narinfo" {
-			hash := key[:len(key)-8]
+		if strings.HasSuffix(key, ".narinfo") {
+			hash := strings.TrimSuffix(key, ".narinfo")
 			narinfoTasks = append(narinfoTasks, uploadTask{
 				key:   key,
 				obj:   obj,
 				isNar: false,
 				hash:  hash,
 			})
-		} else if len(key) > 4 && key[:4] == "nar/" {
+
+			continue
+		}
+
+		if strings.HasPrefix(key, "nar/") && strings.HasSuffix(key, ".nar.zst") {
 			// Extract hash from "nar/HASH.nar.zst"
-			filename := key[4:]
-			if len(filename) > 8 && filename[len(filename)-8:] == ".nar.zst" {
-				hash := filename[:len(filename)-8]
-				narTasks = append(narTasks, uploadTask{
-					key:   key,
-					obj:   obj,
-					isNar: true,
-					hash:  hash,
-				})
-			}
+			filename := strings.TrimPrefix(key, "nar/")
+			hash := strings.TrimSuffix(filename, ".nar.zst")
+			narTasks = append(narTasks, uploadTask{
+				key:   key,
+				obj:   obj,
+				isNar: true,
+				hash:  hash,
+			})
 		}
 	}
 
@@ -325,12 +327,11 @@ func TestClientIntegration(t *testing.T) {
 	defer service.Close()
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
@@ -365,7 +366,7 @@ func TestClientIntegration(t *testing.T) {
 	storePath := strings.TrimSpace(string(output))
 	t.Logf("Created store path: %s", storePath)
 
-	err = pushToServer(ctx, ts.URL, authToken, []string{storePath})
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath})
 	if err != nil {
 		t.Fatalf("Client failed: %v", err)
 	}
@@ -431,12 +432,11 @@ func TestClientMultipleUploads(t *testing.T) {
 	defer service.Close()
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
@@ -476,7 +476,7 @@ func TestClientMultipleUploads(t *testing.T) {
 	}
 
 	start := time.Now()
-	err = pushToServer(ctx, ts.URL, authToken, storePaths)
+	err = pushToServer(ctx, ts.URL, testAuthToken, storePaths)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -677,12 +677,11 @@ func TestClientWithDependencies(t *testing.T) {
 	t.Cleanup(func() { service.Close() })
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
@@ -704,7 +703,7 @@ func TestClientWithDependencies(t *testing.T) {
 	ctx := t.Context()
 	storePath := buildNixDerivation(ctx, t)
 
-	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, authToken)
+	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, testAuthToken)
 
 	// Test that we can retrieve the content using nix copy
 	t.Run("RetrieveWithNixCopy", func(t *testing.T) {
@@ -723,12 +722,11 @@ func TestClientErrorHandling(t *testing.T) {
 		defer service.Close()
 
 		// Create test server
-		authToken := "test-auth-token" //nolint:gosec // test credential
 		testService := &server.Service{
 			Pool:        service.Pool,
 			MinioClient: service.MinioClient,
 			Bucket:      service.Bucket,
-			APIToken:    authToken,
+			APIToken:    testAuthToken,
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
@@ -741,7 +739,7 @@ func TestClientErrorHandling(t *testing.T) {
 		// Try to upload a non-store path
 		ctx := t.Context()
 
-		err := pushToServer(ctx, ts.URL, authToken, []string{"/tmp/nonexistent"})
+		err := pushToServer(ctx, ts.URL, testAuthToken, []string{"/tmp/nonexistent"})
 		if err == nil {
 			t.Fatal("Expected error for invalid store path")
 		}
@@ -757,13 +755,13 @@ func TestClientErrorHandling(t *testing.T) {
 		service := createTestService(t)
 		defer service.Close()
 
-		// Create test server with different auth token
-		authToken := "correct-auth-token" //nolint:gosec // test credential
+		// Create test server with correct auth token
+		correctAuthToken := "correct-auth-token" //nolint:gosec // test credential
 		testService := &server.Service{
 			Pool:        service.Pool,
 			MinioClient: service.MinioClient,
 			Bucket:      service.Bucket,
-			APIToken:    authToken,
+			APIToken:    correctAuthToken,
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))

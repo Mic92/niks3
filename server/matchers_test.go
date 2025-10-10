@@ -25,7 +25,3 @@ func httpOkDepth(tb testing.TB, rr *httptest.ResponseRecorder) {
 		tb.FailNow()
 	}
 }
-
-// func httpOk(tb testing.TB, rr *httptest.ResponseRecorder) {
-// 	httpOkDepth(tb, rr)
-// }

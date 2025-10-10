@@ -14,6 +14,17 @@ import (
 	"github.com/Mic92/niks3/server"
 )
 
+// checkStatusCode returns a checkResponse function that validates the expected status code.
+func checkStatusCode(expectedStatus int) func(*testing.T, *httptest.ResponseRecorder) {
+	return func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+
+		if rr.Code != expectedStatus {
+			t.Errorf("expected http status %d, got %d (%s)", expectedStatus, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	t.Parallel()
 
@@ -56,13 +67,7 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
-	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
-		t.Helper()
-
-		if rr.Code != http.StatusNotFound {
-			t.Errorf("expected http status 404, got %d", rr.Code)
-		}
-	}
+	checkNotFound := checkStatusCode(http.StatusNotFound)
 	testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
@@ -71,7 +76,7 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
 		},
-		checkResponse: &val,
+		checkResponse: &checkNotFound,
 	})
 }
 
@@ -177,20 +182,13 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	invalidBody, err := json.Marshal(map[string]interface{}{})
 	ok(t, err)
 
-	val := func(t *testing.T, rr *httptest.ResponseRecorder) {
-		t.Helper()
-
-		if rr.Code != http.StatusBadRequest {
-			t.Errorf("expected http status 400, got %d", rr.Code)
-		}
-	}
-
+	checkBadRequest := checkStatusCode(http.StatusBadRequest)
 	testRequest(t, &TestRequest{
 		method:        "POST",
 		path:          "/api/pending_closures",
 		body:          invalidBody,
 		handler:       service.CreatePendingClosureHandler,
-		checkResponse: &val,
+		checkResponse: &checkBadRequest,
 	})
 
 	closureKey := "00000000000000000000000000000000"
@@ -301,19 +299,13 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		handler: service.CleanupClosuresOlder,
 	})
 
-	isNotFound := func(t *testing.T, rr *httptest.ResponseRecorder) {
-		t.Helper()
-
-		if rr.Code != http.StatusNotFound {
-			t.Errorf("expected http status 404, got %d (%s)", rr.Code, rr.Body.String())
-		}
-	}
+	checkNotFound2 := checkStatusCode(http.StatusNotFound)
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/api/closures/" + closureKey,
 		body:          body,
 		handler:       service.GetClosureHandler,
-		checkResponse: &isNotFound,
+		checkResponse: &checkNotFound2,
 		pathValues: map[string]string{
 			"key": closureKey,
 		},
