@@ -204,6 +204,26 @@ func estimatePartsNeeded(narSize uint64) int {
 	return parts
 }
 
+func (s *Service) createPendingObjects(
+	ctx context.Context,
+	pendingObjectsParams []pg.InsertPendingObjectsParams,
+	objectsWithNarSize map[string]uint64,
+	result map[string]PendingObject,
+) error {
+	for _, pendingObject := range pendingObjectsParams {
+		narSize := objectsWithNarSize[pendingObject.Key]
+
+		po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
+		if err != nil {
+			return fmt.Errorf("failed to create pending object: %w", err)
+		}
+
+		result[pendingObject.Key] = po
+	}
+
+	return nil
+}
+
 func (s *Service) makePendingObject(ctx context.Context, objectKey string, narSize uint64) (PendingObject, error) {
 	// For narinfo files (small), use simple presigned URL
 	if strings.HasSuffix(objectKey, ".narinfo") {
@@ -281,15 +301,8 @@ func (s *Service) createPendingClosure(
 
 	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
 
-	for _, pendingObject := range pendingClosure.pendingObjects {
-		narSize := objectsWithNarSize[pendingObject.Key]
-
-		po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create pending object: %w", err)
-		}
-
-		pendingObjects[pendingObject.Key] = po
+	if err := s.createPendingObjects(ctx, pendingClosure.pendingObjects, objectsWithNarSize, pendingObjects); err != nil {
+		return nil, err
 	}
 
 	if len(pendingClosure.deletedObjects) > 0 {
@@ -316,15 +329,8 @@ func (s *Service) createPendingClosure(
 			return nil, fmt.Errorf("failed to insert pending objects: %w", err)
 		}
 
-		for _, pendingObject := range pendingObjectsParams {
-			narSize := objectsWithNarSize[pendingObject.Key]
-
-			po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create pending object: %w", err)
-			}
-
-			pendingObjects[pendingObject.Key] = po
+		if err := s.createPendingObjects(ctx, pendingObjectsParams, objectsWithNarSize, pendingObjects); err != nil {
+			return nil, err
 		}
 	}
 
