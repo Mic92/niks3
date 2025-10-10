@@ -55,14 +55,14 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		bearerPrefix := "Bearer "
+		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authToken, bearerPrefix) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
 			return
 		}
 
-		authToken = authToken[len(bearerPrefix):]
+		authToken = strings.TrimPrefix(authToken, bearerPrefix)
 		if subtle.ConstantTimeCompare([]byte(authToken), []byte(s.APIToken)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 

@@ -14,6 +14,19 @@ const (
 	DeletionBatchSize = 1000
 )
 
+func flushBatch(ctx context.Context, keys []string, operation func(context.Context, []string) error, s3Error *error) []string {
+	if len(keys) == 0 {
+		return keys
+	}
+
+	if err := operation(ctx, keys); err != nil {
+		slog.Error("batch operation failed", "error", err)
+		*s3Error = err
+	}
+
+	return keys[:0]
+}
+
 func getObjectsForDeletion(ctx context.Context,
 	pool *pgxpool.Pool,
 	objectCh chan<- minio.ObjectInfo,
@@ -66,13 +79,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 			failedKeys = append(failedKeys, result.ObjectName)
 
 			if len(failedKeys) >= DeletionBatchSize {
-				err := queries.MarkObjectsAsActive(ctx, failedKeys)
-				if err != nil {
-					slog.Error("failed to mark objects as active", "error", err)
-					*s3Error = fmt.Errorf("failed to mark objects as active: %w", err)
-				}
-
-				failedKeys = failedKeys[:0]
+				failedKeys = flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive, s3Error)
 			}
 
 			continue
@@ -81,29 +88,12 @@ func (s *Service) removeS3Objects(ctx context.Context,
 		deletedKeys = append(deletedKeys, result.ObjectName)
 
 		if len(deletedKeys) >= DeletionBatchSize {
-			err := queries.DeleteObjects(ctx, deletedKeys)
-			if err != nil {
-				slog.Error("failed to mark objects as deleted", "error", err)
-				*s3Error = fmt.Errorf("failed to mark objects as deleted: %w", err)
-			}
-
-			deletedKeys = deletedKeys[:0]
+			deletedKeys = flushBatch(ctx, deletedKeys, queries.DeleteObjects, s3Error)
 		}
 	}
 
-	if len(failedKeys) > 0 {
-		err := queries.MarkObjectsAsActive(ctx, failedKeys)
-		if err != nil {
-			*s3Error = fmt.Errorf("failed to mark objects as active: %w", err)
-		}
-	}
-
-	if len(deletedKeys) > 0 {
-		err := queries.DeleteObjects(ctx, deletedKeys)
-		if err != nil {
-			*s3Error = fmt.Errorf("failed to mark objects as deleted: %w", err)
-		}
-	}
+	flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive, s3Error)
+	flushBatch(ctx, deletedKeys, queries.DeleteObjects, s3Error)
 }
 
 func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool) error {

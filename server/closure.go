@@ -42,8 +42,6 @@ func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // CleanupClosuresOlder handles the DELETE /closures endpoint.
