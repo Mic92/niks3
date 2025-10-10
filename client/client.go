@@ -131,6 +131,7 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 	if err != nil {
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Error("Failed to close response body", "error", err)
@@ -168,6 +169,7 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) e
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Error("Failed to close response body", "error", err)
@@ -212,6 +214,7 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Error("Failed to close response body", "error", err)
@@ -243,6 +246,7 @@ func (c *Client) UploadBytesToPresignedURL(ctx context.Context, presignedURL str
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Error("Failed to close response body", "error", err)
@@ -285,6 +289,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 
 			return
 		}
+
 		defer func() {
 			if err := encoder.Close(); err != nil {
 				slog.Error("Failed to close zstd encoder", "error", err)
@@ -416,6 +421,7 @@ func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (s
 	if err != nil {
 		return "", fmt.Errorf("uploading: %w", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Error("Failed to close response body", "error", err)

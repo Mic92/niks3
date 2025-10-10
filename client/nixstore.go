@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,11 +24,11 @@ type PathInfo struct {
 }
 
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
-func GetPathInfoRecursive(storePaths []string) (map[string]*PathInfo, error) {
+func GetPathInfoRecursive(ctx context.Context, storePaths []string) (map[string]*PathInfo, error) {
 	args := []string{"--extra-experimental-features", "nix-command", "path-info", "--recursive", "--json"}
 	args = append(args, storePaths...)
 
-	cmd := exec.Command("nix", args...)
+	cmd := exec.CommandContext(ctx, "nix", args...)
 
 	output, err := cmd.Output()
 	if err != nil {

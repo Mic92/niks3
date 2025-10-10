@@ -41,7 +41,9 @@ func randToken(n int) (string, error) {
 }
 
 func randPort() (uint16, error) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
@@ -133,7 +135,7 @@ func startMinioServer() (*minioServer, error) {
 	}
 
 	//nolint:gosec
-	minioProc := exec.Command("minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
+	minioProc := exec.CommandContext(context.Background(), "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
 	minioProc.SysProcAttr = &syscall.SysProcAttr{}
@@ -157,10 +159,11 @@ func startMinioServer() (*minioServer, error) {
 	}
 
 	// wait for server to start
+	dialer := net.Dialer{}
 	for range 200 {
 		var conn net.Conn
 
-		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+		conn, err = dialer.DialContext(context.Background(), "tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			_ = conn.Close()
 
@@ -197,6 +200,6 @@ func TestService_Miniotest(t *testing.T) {
 	server := createTestService(t)
 	defer server.Close()
 
-	_, err := server.MinioClient.BucketExists(context.Background(), server.Bucket)
+	_, err := server.MinioClient.BucketExists(t.Context(), server.Bucket)
 	ok(t, err)
 }

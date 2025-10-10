@@ -74,7 +74,7 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int)
 	// Get path info for all paths and their closures
 	slog.Info("Getting path info", "count", len(paths))
 
-	pathInfos, err := client.GetPathInfoRecursive(paths)
+	pathInfos, err := client.GetPathInfoRecursive(ctx, paths)
 	if err != nil {
 		return fmt.Errorf("getting path info: %w", err)
 	}
