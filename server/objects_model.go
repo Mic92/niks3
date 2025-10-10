@@ -74,8 +74,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 				continue
 			}
 
-			*s3Error = fmt.Errorf("failed to remove object '%s': %w", result.ObjectName, result.Err)
-			slog.Error("failed to remove object", "object", result.ObjectName, "error", s3Error)
+			*s3Error = fmt.Errorf("failed to remove object %q: %w", result.ObjectName, result.Err)
+			slog.Error("failed to remove object", "object", result.ObjectName, "error", result.Err)
 			failedKeys = append(failedKeys, result.ObjectName)
 
 			if len(failedKeys) >= DeletionBatchSize {

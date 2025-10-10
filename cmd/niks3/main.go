@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Mic92/niks3/client"
@@ -64,7 +66,12 @@ func run() error {
 }
 
 func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int) error {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
 
 	// Create client
 	c, err := client.NewClient(serverURL, authToken)
