@@ -91,12 +91,10 @@ func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
 	ok(t, err)
 	req.handler.ServeHTTP(rr, httpReq)
 
-	if req.checkResponse == nil {
-		if rr.Code < 200 || rr.Code >= 300 {
-			httpOkDepth(t, rr)
-		}
-	} else {
+	if req.checkResponse != nil {
 		(*req.checkResponse)(t, rr)
+	} else if rr.Code < 200 || rr.Code >= 300 {
+		httpOkDepth(t, rr)
 	}
 
 	return rr

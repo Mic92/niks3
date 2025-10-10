@@ -44,9 +44,8 @@ func startPostgresServer() (*postgresServer, error) {
 
 	defer func() {
 		if err != nil {
-			err = os.RemoveAll(tempDir)
-			if err != nil {
-				slog.Warn("Failed to remove temp dir", "error", err)
+			if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+				slog.Warn("Failed to remove temp dir", "error", removeErr)
 			}
 		}
 	}()
@@ -69,8 +68,9 @@ func startPostgresServer() (*postgresServer, error) {
 	postgresProc := exec.CommandContext(context.Background(), "postgres", args...)
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
-	postgresProc.SysProcAttr = &syscall.SysProcAttr{}
-	postgresProc.SysProcAttr.Setsid = true
+	postgresProc.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
 	if err = postgresProc.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start postgres: %w", err)
