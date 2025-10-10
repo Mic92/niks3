@@ -46,9 +46,9 @@ func stripCaseHackSuffix(name string) string {
 		return name
 	}
 
-	// Find position of case hack suffix
-	if pos := strings.Index(name, caseHackSuffix); pos != -1 {
-		return name[:pos]
+	// Only strip if case hack suffix is at the end
+	if strings.HasSuffix(name, caseHackSuffix) {
+		return name[:len(name)-len(caseHackSuffix)]
 	}
 
 	return name
