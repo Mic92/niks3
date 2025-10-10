@@ -482,7 +482,12 @@ func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64
 	fmt.Fprintf(&sb, "Compression: zstd\n")
 
 	// NAR hash and size (uncompressed)
-	fmt.Fprintf(&sb, "NarHash: %s\n", pathInfo.NarHash)
+	// Convert NarHash from SRI format (sha256-base64) to Nix32 format (sha256:nix32)
+	narHash := pathInfo.NarHash
+	if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash); err == nil {
+		narHash = convertedHash
+	}
+	fmt.Fprintf(&sb, "NarHash: %s\n", narHash)
 	fmt.Fprintf(&sb, "NarSize: %d\n", pathInfo.NarSize)
 
 	// FileHash and FileSize for compressed file

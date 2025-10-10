@@ -63,3 +63,48 @@ func TestEncodeNixBase32WithRealHash(t *testing.T) {
 		t.Errorf("client.EncodeNixBase32(sha256(test)) = %q, want %q", result, expected)
 	}
 }
+
+func TestConvertHashToNix32(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{
+			name:     "SRI format to Nix32",
+			input:    "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=",
+			expected: "sha256:020ay2q1av2xs4n842rb3d7vz8qms1dcb87a5yd6azaci20x11lz",
+			wantErr:  false,
+		},
+		{
+			name:     "already Nix32 format",
+			input:    "sha256:020ay2q1av2xs4n842rb3d7vz8qms1dcb87a5yd6azaci20x11lz",
+			expected: "sha256:020ay2q1av2xs4n842rb3d7vz8qms1dcb87a5yd6azaci20x11lz",
+			wantErr:  false,
+		},
+		{
+			name:     "invalid format",
+			input:    "md5:abc123",
+			expected: "",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := client.ConvertHashToNix32(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ConvertHashToNix32() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if result != tt.expected {
+				t.Errorf("client.ConvertHashToNix32() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
