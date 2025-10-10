@@ -105,6 +105,24 @@ func NewClient(serverURL, authToken string) (*Client, error) {
 	}, nil
 }
 
+func deferCloseBody(resp *http.Response) {
+	if err := resp.Body.Close(); err != nil {
+		slog.Error("Failed to close response body", "error", err)
+	}
+}
+
+func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
+	for _, status := range acceptedStatuses {
+		if resp.StatusCode == status {
+			return nil
+		}
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+}
+
 // CreatePendingClosure creates a pending closure and returns upload URLs.
 func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objects []ObjectWithRefs) (*CreatePendingClosureResponse, error) {
 	reqURL := c.baseURL.JoinPath("api/pending_closures")
@@ -132,16 +150,10 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
-		}
-	}()
+	defer deferCloseBody(resp)
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	if err := checkResponse(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return nil, err
 	}
 
 	var result CreatePendingClosureResponse
@@ -170,16 +182,10 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) e
 		return fmt.Errorf("sending request: %w", err)
 	}
 
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
-		}
-	}()
+	defer deferCloseBody(resp)
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
 
 	slog.Info("Completed pending closure", "id", closureID)
@@ -215,16 +221,10 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 		return fmt.Errorf("sending request: %w", err)
 	}
 
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
-		}
-	}()
+	defer deferCloseBody(resp)
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+		return err
 	}
 
 	slog.Info("Completed multipart upload", "object_key", objectKey)
@@ -234,32 +234,14 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 
 // UploadBytesToPresignedURL uploads bytes to a presigned URL.
 func (c *Client) UploadBytesToPresignedURL(ctx context.Context, presignedURL string, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, bytes.NewReader(data))
+	resp, err := c.putBytes(ctx, presignedURL, data)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return err
 	}
 
-	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
-	req.ContentLength = int64(len(data))
+	defer deferCloseBody(resp)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("uploading: %w", err)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, body)
-	}
-
-	return nil
+	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
 }
 
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
@@ -337,7 +319,24 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 	return info, nil
 }
 
-// uploadMultipart uploads a stream in parts using presigned URLs.
+func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req.ContentLength = int64(len(data))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("uploading: %w", err)
+	}
+
+	return resp, nil
+}
+
+// uploadMultipart uploads a stream in parts using presigned URLs (sequential).
 func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) (*CompressedFileInfo, error) {
 	var completedParts []CompletedPart
 
@@ -409,29 +408,15 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 // uploadPart uploads a single part and returns the ETag.
 func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, partURL, bytes.NewReader(data))
+	resp, err := c.putBytes(ctx, partURL, data)
 	if err != nil {
-		return "", fmt.Errorf("creating request: %w", err)
+		return "", err
 	}
 
-	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
-	req.ContentLength = int64(len(data))
+	defer deferCloseBody(resp)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("uploading: %w", err)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return "", fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, body)
+	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+		return "", err
 	}
 
 	// Get ETag from response

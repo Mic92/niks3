@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -208,7 +209,7 @@ func uploadPendingObjects(ctx context.Context, c *client.Client, pendingObjects 
 	var narinfoTasks []uploadTask
 
 	for key, obj := range pendingObjects {
-		if key[len(key)-8:] == ".narinfo" {
+		if strings.HasSuffix(key, ".narinfo") {
 			hash := key[:len(key)-8]
 			narinfoTasks = append(narinfoTasks, uploadTask{
 				key:   key,
@@ -216,10 +217,10 @@ func uploadPendingObjects(ctx context.Context, c *client.Client, pendingObjects 
 				isNar: false,
 				hash:  hash,
 			})
-		} else if len(key) > 4 && key[:4] == "nar/" {
+		} else if strings.HasPrefix(key, "nar/") {
 			// Extract hash from "nar/HASH.nar.zst"
 			filename := key[4:]
-			if len(filename) > 8 && filename[len(filename)-8:] == ".nar.zst" {
+			if strings.HasSuffix(filename, ".nar.zst") {
 				hash := filename[:len(filename)-8]
 				narTasks = append(narTasks, uploadTask{
 					key:   key,
