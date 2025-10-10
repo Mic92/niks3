@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,14 +15,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/minio/minio-go/v7"
 )
 
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
+	multipartPartSize    = 5 * 1024 * 1024 // 5MB parts (S3 minimum)
 )
 
+type MultipartUploadInfo struct {
+	UploadID string   `json:"upload_id"`
+	PartURLs []string `json:"part_urls"`
+}
+
 type PendingObject struct {
-	PresignedURL string `json:"presigned_url"`
+	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files (narinfo)
+	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files (NAR)
 }
 
 type PendingClosureResponse struct {
@@ -158,18 +167,103 @@ func createPendingClosureInner(
 	}, nil
 }
 
-func (s *Service) makePendingObject(ctx context.Context, objectKey string) (PendingObject, error) {
-	// TODO: multi-part uploads
-	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
-		s.Bucket,
-		objectKey,
-		maxSignedURLDuration)
+// estimatePartsNeeded estimates how many multipart parts we'll need based on NarSize.
+// Assumes worst-case: no compression (1:1 ratio) plus buffer for overhead.
+func estimatePartsNeeded(narSize uint64) int {
+	const (
+		minParts = 2
+		maxParts = 100
+	)
+
+	if narSize == 0 {
+		return 10 // Default if unknown
+	}
+
+	// Assume worst case: no compression, file stays same size
+	estimatedSize := narSize
+
+	// Calculate parts needed (5MB per part)
+	partsU64 := (estimatedSize + multipartPartSize - 1) / multipartPartSize
+
+	// Add 20% buffer for compression overhead/metadata
+	partsU64 += (partsU64 / 5)
+
+	// Cap at max before converting to int (ensures safe conversion)
+	if partsU64 > maxParts {
+		return maxParts
+	}
+
+	// Safe conversion now that we know it's <= maxParts
+	parts := int(partsU64)
+
+	// Apply minimum
+	if parts < minParts {
+		return minParts
+	}
+
+	return parts
+}
+
+func (s *Service) makePendingObject(ctx context.Context, objectKey string, narSize uint64) (PendingObject, error) {
+	// For narinfo files (small), use simple presigned URL
+	if strings.HasSuffix(objectKey, ".narinfo") {
+		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
+			s.Bucket,
+			objectKey,
+			maxSignedURLDuration)
+		if err != nil {
+			return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
+		}
+
+		return PendingObject{
+			PresignedURL: presignedURL.String(),
+		}, nil
+	}
+
+	// For NAR files (large), use multipart upload
+	numParts := estimatePartsNeeded(narSize)
+
+	// Create Core client for multipart operations
+	coreClient := minio.Core{Client: s.MinioClient}
+
+	// Initiate multipart upload
+	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
+		ContentType: "application/octet-stream",
+	})
 	if err != nil {
-		return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
+		return PendingObject{}, fmt.Errorf("failed to initiate multipart upload: %w", err)
+	}
+
+	// Presign URLs for each part
+	partURLs := make([]string, numParts)
+	for i := range numParts {
+		partNumber := i + 1 // Part numbers start at 1
+		// Use Client.Presign with query parameters for multipart
+		reqParams := make(url.Values)
+		reqParams.Set("uploadId", uploadID)
+		reqParams.Set("partNumber", strconv.Itoa(partNumber))
+
+		presignedURL, err := s.MinioClient.Presign(ctx,
+			"PUT",
+			s.Bucket,
+			objectKey,
+			maxSignedURLDuration,
+			reqParams)
+		if err != nil {
+			// Cleanup: abort multipart upload
+			_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+
+			return PendingObject{}, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
+		}
+
+		partURLs[i] = presignedURL.String()
 	}
 
 	return PendingObject{
-		PresignedURL: presignedURL.String(),
+		MultipartInfo: &MultipartUploadInfo{
+			UploadID: uploadID,
+			PartURLs: partURLs,
+		},
 	}, nil
 }
 
@@ -178,6 +272,7 @@ func (s *Service) createPendingClosure(
 	pool *pgxpool.Pool,
 	closureKey string,
 	objectsWithRefs map[string][]string,
+	objectsWithNarSize map[string]uint64,
 ) (*PendingClosureResponse, error) {
 	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsWithRefs)
 	if err != nil {
@@ -187,7 +282,9 @@ func (s *Service) createPendingClosure(
 	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
 
 	for _, pendingObject := range pendingClosure.pendingObjects {
-		po, err := s.makePendingObject(ctx, pendingObject.Key)
+		narSize := objectsWithNarSize[pendingObject.Key]
+
+		po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create pending object: %w", err)
 		}
@@ -220,7 +317,9 @@ func (s *Service) createPendingClosure(
 		}
 
 		for _, pendingObject := range pendingObjectsParams {
-			po, err := s.makePendingObject(ctx, pendingObject.Key)
+			narSize := objectsWithNarSize[pendingObject.Key]
+
+			po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create pending object: %w", err)
 			}

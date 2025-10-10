@@ -8,16 +8,19 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/minio/minio-go/v7"
 )
 
-type ObjectWithRefs struct {
-	Key  string   `json:"key"`
-	Refs []string `json:"refs"`
+type objectWithRefs struct {
+	Key     string   `json:"key"`
+	Refs    []string `json:"refs"`
+	NarSize *uint64  `json:"nar_size,omitempty"` // For estimating multipart parts
 }
 
-type CreatePendingClosureRequest struct {
+type createPendingClosureRequest struct {
 	Closure *string          `json:"closure"`
-	Objects []ObjectWithRefs `json:"objects"`
+	Objects []objectWithRefs `json:"objects"`
 }
 
 // POST /pending_closures
@@ -49,7 +52,7 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		}
 	}()
 
-	req := &CreatePendingClosureRequest{}
+	req := &createPendingClosureRequest{}
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
 
@@ -69,12 +72,16 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	objectsWithRefs := make(map[string][]string)
+	objectsWithNarSize := make(map[string]uint64)
 
 	for _, object := range req.Objects {
 		objectsWithRefs[object.Key] = object.Refs
+		if object.NarSize != nil {
+			objectsWithNarSize[object.Key] = *object.NarSize
+		}
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsWithRefs)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsWithRefs, objectsWithNarSize)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
@@ -89,6 +96,79 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 
 		return
 	}
+}
+
+type completedPart struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+}
+
+type completeMultipartRequest struct {
+	ObjectKey string          `json:"object_key"`
+	UploadID  string          `json:"upload_id"`
+	Parts     []completedPart `json:"parts"`
+}
+
+// POST /api/multipart/complete
+// CompleteMultipartUploadHandler completes a multipart upload with the list of ETags.
+func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Received complete multipart upload request", "method", r.Method, "url", r.URL)
+
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			slog.Error("Failed to close request body", "error", err)
+		}
+	}()
+
+	req := &completeMultipartRequest{}
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	if req.ObjectKey == "" {
+		http.Error(w, "missing object_key", http.StatusBadRequest)
+
+		return
+	}
+
+	if req.UploadID == "" {
+		http.Error(w, "missing upload_id", http.StatusBadRequest)
+
+		return
+	}
+
+	if len(req.Parts) == 0 {
+		http.Error(w, "missing parts", http.StatusBadRequest)
+
+		return
+	}
+
+	// Convert to Minio format
+	completeParts := make([]minio.CompletePart, len(req.Parts))
+	for i, part := range req.Parts {
+		completeParts[i] = minio.CompletePart{
+			PartNumber: part.PartNumber,
+			ETag:       part.ETag,
+		}
+	}
+
+	// Create Core client for multipart operations
+	coreClient := minio.Core{Client: s.MinioClient}
+
+	// Complete multipart upload
+	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
+	if err != nil {
+		slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+		http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
+
+		return
+	}
+
+	slog.Info("Completed multipart upload", "object_key", req.ObjectKey, "upload_id", req.UploadID, "parts", len(req.Parts))
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /pending_closures/{key}/commit

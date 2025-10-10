@@ -13,11 +13,309 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/server"
 	minio "github.com/minio/minio-go/v7"
 )
 
 const testAuthToken = "test-auth-token" //nolint:gosec // Test token for integration tests
+
+// pushToServer uses the client package to push store paths.
+func pushToServer(ctx context.Context, serverURL, authToken string, paths []string) error {
+	// Create client
+	c, err := client.NewClient(serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	// Test with 16 concurrent uploads (2x CPU count for I/O-bound work)
+	// TODO: test more configurations in benchmarks
+	c.MaxConcurrentNARUploads = 16
+
+	// Get path info for all paths and their closures
+	pathInfos, err := client.GetPathInfoRecursive(paths)
+	if err != nil {
+		return fmt.Errorf("getting path info: %w", err)
+	}
+
+	// Prepare closures
+	closures, pathInfoByHash, err := prepareClosures(pathInfos)
+	if err != nil {
+		return fmt.Errorf("preparing closures: %w", err)
+	}
+
+	// Create pending closures
+	pendingObjects, pendingIDs, err := createPendingClosures(ctx, c, closures)
+	if err != nil {
+		return fmt.Errorf("creating pending closures: %w", err)
+	}
+
+	// Upload all pending objects
+	if err := uploadPendingObjects(ctx, c, pendingObjects, pathInfoByHash); err != nil {
+		return fmt.Errorf("uploading objects: %w", err)
+	}
+
+	// Complete all pending closures
+	if err := completeClosures(ctx, c, pendingIDs); err != nil {
+		return fmt.Errorf("completing closures: %w", err)
+	}
+
+	return nil
+}
+
+type closureInfo struct {
+	narinfoKey string
+	objects    []client.ObjectWithRefs
+}
+
+func prepareClosures(pathInfos map[string]*client.PathInfo) ([]closureInfo, map[string]*client.PathInfo, error) {
+	closures := make([]closureInfo, 0, len(pathInfos))
+
+	pathInfoByHash := make(map[string]*client.PathInfo)
+
+	for storePath, pathInfo := range pathInfos {
+		hash, err := client.GetStorePathHash(storePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("getting store path hash: %w", err)
+		}
+
+		pathInfoByHash[hash] = pathInfo
+
+		// Extract references as store path hashes
+		var references []string
+
+		for _, ref := range pathInfo.References {
+			refHash, err := client.GetStorePathHash(ref)
+			if err != nil {
+				return nil, nil, fmt.Errorf("getting reference hash: %w", err)
+			}
+
+			references = append(references, refHash)
+		}
+
+		// NAR file object
+		narFilename := hash + ".nar.zst"
+		narKey := "nar/" + narFilename
+
+		// Narinfo references both dependencies and its own NAR file
+		narinfoRefs := make([]string, 0, len(references)+1)
+		narinfoRefs = append(narinfoRefs, references...)
+		narinfoRefs = append(narinfoRefs, narKey)
+		narinfoKey := hash + ".narinfo"
+
+		// Create objects for this closure
+		objects := []client.ObjectWithRefs{
+			{
+				Key:  narinfoKey,
+				Refs: narinfoRefs,
+			},
+			{
+				Key:     narKey,
+				Refs:    []string{},
+				NarSize: &pathInfo.NarSize, // Include NarSize for multipart estimation
+			},
+		}
+
+		closures = append(closures, closureInfo{
+			narinfoKey: narinfoKey,
+			objects:    objects,
+		})
+	}
+
+	return closures, pathInfoByHash, nil
+}
+
+func createPendingClosures(ctx context.Context, c *client.Client, closures []closureInfo) (map[string]client.PendingObject, []string, error) {
+	pendingObjects := make(map[string]client.PendingObject)
+	pendingIDs := make([]string, 0, len(closures))
+
+	for _, closure := range closures {
+		resp, err := c.CreatePendingClosure(ctx, closure.narinfoKey, closure.objects)
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
+		}
+
+		pendingIDs = append(pendingIDs, resp.ID)
+
+		// Collect pending objects
+		for key, obj := range resp.PendingObjects {
+			pendingObjects[key] = obj
+		}
+	}
+
+	return pendingObjects, pendingIDs, nil
+}
+
+func uploadPendingObjects(ctx context.Context, c *client.Client, pendingObjects map[string]client.PendingObject, pathInfoByHash map[string]*client.PathInfo) error {
+	// Separate NAR and narinfo uploads
+	var narTasks []uploadTask
+
+	var narinfoTasks []uploadTask
+
+	for key, obj := range pendingObjects {
+		if key[len(key)-8:] == ".narinfo" {
+			hash := key[:len(key)-8]
+			narinfoTasks = append(narinfoTasks, uploadTask{
+				key:   key,
+				obj:   obj,
+				isNar: false,
+				hash:  hash,
+			})
+		} else if len(key) > 4 && key[:4] == "nar/" {
+			// Extract hash from "nar/HASH.nar.zst"
+			filename := key[4:]
+			if len(filename) > 8 && filename[len(filename)-8:] == ".nar.zst" {
+				hash := filename[:len(filename)-8]
+				narTasks = append(narTasks, uploadTask{
+					key:   key,
+					obj:   obj,
+					isNar: true,
+					hash:  hash,
+				})
+			}
+		}
+	}
+
+	// Upload all NAR files in parallel
+	compressedInfo, err := uploadNARs(ctx, c, narTasks, pathInfoByHash)
+	if err != nil {
+		return err
+	}
+
+	// Upload narinfo files in parallel
+	return uploadNarinfos(ctx, c, narinfoTasks, pathInfoByHash, compressedInfo)
+}
+
+type uploadTask struct {
+	key   string
+	obj   client.PendingObject
+	isNar bool
+	hash  string
+}
+
+func uploadNARs(ctx context.Context, c *client.Client, tasks []uploadTask, pathInfoByHash map[string]*client.PathInfo) (map[string]*client.CompressedFileInfo, error) {
+	// Upload NARs in parallel using worker pool pattern
+	type narResult struct {
+		hash string
+		info *client.CompressedFileInfo
+		err  error
+	}
+
+	resultChan := make(chan narResult, len(tasks))
+	taskChan := make(chan uploadTask, len(tasks))
+
+	var wg sync.WaitGroup
+
+	// Determine number of workers
+	// MaxConcurrentNARUploads of 0 means unlimited
+	numWorkers := c.MaxConcurrentNARUploads
+	if numWorkers <= 0 {
+		numWorkers = len(tasks) // Unlimited - create worker per task
+	}
+
+	// Create fixed number of worker goroutines
+	for range numWorkers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			// Process tasks from channel until it's closed
+			for task := range taskChan {
+				pathInfo, ok := pathInfoByHash[task.hash]
+				if !ok {
+					resultChan <- narResult{
+						hash: task.hash,
+						err:  fmt.Errorf("path info not found for hash %s", task.hash),
+					}
+
+					continue
+				}
+
+				info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, task.obj, task.key)
+				if err != nil {
+					resultChan <- narResult{
+						hash: task.hash,
+						err:  fmt.Errorf("uploading NAR %s: %w", task.key, err),
+					}
+
+					continue
+				}
+
+				resultChan <- narResult{
+					hash: task.hash,
+					info: info,
+				}
+			}
+		}()
+	}
+
+	// Send all tasks to the channel
+	for _, task := range tasks {
+		taskChan <- task
+	}
+
+	close(taskChan) // Signal no more tasks
+
+	// Wait for all workers to complete
+	wg.Wait()
+	close(resultChan)
+
+	// Collect results
+	results := make(map[string]*client.CompressedFileInfo)
+
+	for result := range resultChan {
+		if result.err != nil {
+			return nil, result.err
+		}
+
+		results[result.hash] = result.info
+	}
+
+	return results, nil
+}
+
+func uploadNarinfos(ctx context.Context, c *client.Client, tasks []uploadTask, pathInfoByHash map[string]*client.PathInfo, compressedInfo map[string]*client.CompressedFileInfo) error {
+	for _, task := range tasks {
+		pathInfo, ok := pathInfoByHash[task.hash]
+		if !ok {
+			return fmt.Errorf("path info not found for hash %s", task.hash)
+		}
+
+		// Get compressed info for this NAR
+		info := compressedInfo[task.hash]
+		if info == nil {
+			// This is a server bug: server asked us to upload narinfo without uploading the NAR.
+			// NAR and narinfo must always be uploaded together as a closure.
+			return fmt.Errorf("server inconsistency: asked to upload narinfo %s without uploading corresponding NAR - this is a server bug", task.key)
+		}
+
+		// Generate narinfo content
+		narinfoContent := client.CreateNarinfo(
+			pathInfo,
+			task.hash+".nar.zst",
+			info.Size,
+			info.Hash,
+		)
+
+		// Upload narinfo
+		if err := c.UploadBytesToPresignedURL(ctx, task.obj.PresignedURL, []byte(narinfoContent)); err != nil {
+			return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
+		}
+	}
+
+	return nil
+}
+
+func completeClosures(ctx context.Context, c *client.Client, pendingIDs []string) error {
+	for _, id := range pendingIDs {
+		if err := c.CompletePendingClosure(ctx, id); err != nil {
+			return fmt.Errorf("completing pending closure %s: %w", id, err)
+		}
+	}
+
+	return nil
+}
 
 func TestClientIntegration(t *testing.T) {
 	t.Parallel()
@@ -44,6 +342,7 @@ func TestClientIntegration(t *testing.T) {
 	// Register handlers with auth
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 
 	ts := httptest.NewServer(mux)
@@ -63,21 +362,13 @@ func TestClientIntegration(t *testing.T) {
 	storePath := strings.TrimSpace(string(output))
 	t.Logf("Created store path: %s", storePath)
 
-	// Run the client to upload the store path
-	cmd := exec.Command(testClientPath, "push", storePath)
+	// Use the client package to upload the store path
+	ctx := context.Background()
 
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+ts.URL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
-	output, err = cmd.CombinedOutput()
+	err = pushToServer(ctx, ts.URL, authToken, []string{storePath})
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
-
-	t.Logf("Client output: %s", output)
 
 	// Verify the upload by checking if the objects exist in S3
 	// Extract hash from store path
@@ -157,6 +448,7 @@ func TestClientMultipleUploads(t *testing.T) {
 	// Register handlers
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -180,28 +472,17 @@ func TestClientMultipleUploads(t *testing.T) {
 		t.Logf("Created store path %d: %s", i, storePath)
 	}
 
-	// Run the client with all paths
-	args := []string{"push"}
-	args = append(args, storePaths...)
-
-	cmd := exec.Command(testClientPath, args...)
-
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+ts.URL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
+	// Use the client package to upload all paths
+	ctx := context.Background()
 	start := time.Now()
-	output, err = cmd.CombinedOutput()
+	err = pushToServer(ctx, ts.URL, authToken, storePaths)
 	duration := time.Since(start)
 
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
 
 	t.Logf("Uploaded %d paths in %v", len(storePaths), duration)
-	t.Logf("Client output: %s", output)
 
 	// Verify all uploads
 	for _, storePath := range storePaths {
@@ -267,18 +548,12 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	dependencies := strings.Split(strings.TrimSpace(string(output)), "\n")
 	t.Logf("Found %d dependencies (including self)", len(dependencies))
 
-	// Run the client to upload the store path (should upload all dependencies)
-	cmd := exec.Command(testClientPath, "push", storePath)
+	// Use the client package to upload the store path (should upload all dependencies)
+	ctx := context.Background()
 
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+serverURL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
-	output, err = cmd.CombinedOutput()
+	err = pushToServer(ctx, serverURL, authToken, []string{storePath})
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
 
 	// Verify all dependencies were uploaded
@@ -420,6 +695,7 @@ func TestClientWithDependencies(t *testing.T) {
 	// Register handlers
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 
 	ts := httptest.NewServer(mux)
@@ -457,26 +733,21 @@ func TestClientErrorHandling(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
 
 		// Try to upload a non-store path
-		cmd := exec.Command(testClientPath, "push", "/tmp/nonexistent")
+		ctx := context.Background()
 
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL="+ts.URL,
-			"NIKS3_AUTH_TOKEN="+authToken,
-		)
-
-		output, err := cmd.CombinedOutput()
+		err := pushToServer(ctx, ts.URL, authToken, []string{"/tmp/nonexistent"})
 		if err == nil {
 			t.Fatal("Expected error for invalid store path")
 		}
 
-		outputStr := string(output)
-		if !strings.Contains(outputStr, "nix path-info failed") {
-			t.Errorf("Expected 'nix path-info failed' error, got: %s", outputStr)
+		if !strings.Contains(err.Error(), "nix path-info failed") {
+			t.Errorf("Expected 'nix path-info failed' error, got: %s", err)
 		}
 	})
 
@@ -497,6 +768,7 @@ func TestClientErrorHandling(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -512,16 +784,11 @@ func TestClientErrorHandling(t *testing.T) {
 		storePath := strings.TrimSpace(string(output))
 
 		// Try with invalid auth token
-		cmd := exec.Command(testClientPath, "push", storePath)
+		ctx := context.Background()
 
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL="+ts.URL,
-			"NIKS3_AUTH_TOKEN=invalid-token",
-		)
-
-		output, err = cmd.CombinedOutput()
+		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath})
 		if err == nil {
-			t.Fatalf("Expected error for invalid auth token, but got success. Output: %s", output)
+			t.Fatal("Expected error for invalid auth token")
 		}
 	})
 
@@ -538,16 +805,11 @@ func TestClientErrorHandling(t *testing.T) {
 		storePath := strings.TrimSpace(string(output))
 
 		// Try with unavailable server
-		cmd := exec.Command(testClientPath, "push", storePath)
+		ctx := context.Background()
 
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL=http://localhost:19999",
-			"NIKS3_AUTH_TOKEN=test-token",
-		)
-
-		output, err = cmd.CombinedOutput()
+		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath})
 		if err == nil {
-			t.Fatalf("Expected error for unavailable server, but got success. Output: %s", output)
+			t.Fatal("Expected error for unavailable server")
 		}
 	})
 }

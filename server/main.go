@@ -4,7 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -21,8 +21,8 @@ const (
 	minAPITokenLength = 36
 )
 
-func parseArgs() (*Options, error) {
-	var opts Options
+func parseArgs() (*options, error) {
+	var opts options
 
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
@@ -105,10 +105,12 @@ func parseArgs() (*Options, error) {
 func Main() {
 	opts, err := parseArgs()
 	if err != nil {
-		log.Fatalf("Failed to parse args: %v", err)
+		slog.Error("Failed to parse args", "error", err)
+		os.Exit(1)
 	}
 
-	if err := RunServer(opts); err != nil {
-		log.Fatalf("Failed to run gc service: %v", err)
+	if err := runServer(opts); err != nil {
+		slog.Error("Failed to run server", "error", err)
+		os.Exit(1)
 	}
 }
