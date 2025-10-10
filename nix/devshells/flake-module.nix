@@ -37,7 +37,6 @@
         ];
 
         inputsFrom = [
-          config.packages.niks3-server
           config.packages.niks3
         ];
 
