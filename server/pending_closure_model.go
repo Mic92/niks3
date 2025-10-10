@@ -102,6 +102,10 @@ func createPendingClosureInner(
 	closureKey string,
 	objectsWithRefs map[string][]string,
 ) (*PendingClosure, error) {
+	if !strings.HasSuffix(closureKey, ".narinfo") {
+		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)

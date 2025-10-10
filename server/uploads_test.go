@@ -38,10 +38,12 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 		handler: service.CleanupPendingClosuresHandler,
 	})
 
-	closureKey := "00000000000000000000000000000000"
+	closureHash := "00000000000000000000000000000000"
+	closureKey := closureHash + ".narinfo"
+	narKey := "nar/" + closureHash + ".nar.zst"
 	objects := []map[string]interface{}{
-		{"key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "refs": []string{}},
-		{"key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "refs": []string{}},
+		{"key": closureKey, "refs": []string{narKey}},
+		{"key": narKey, "refs": []string{}},
 	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
@@ -189,6 +191,28 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		body:          invalidBody,
 		handler:       service.CreatePendingClosureHandler,
 		checkResponse: &checkBadRequest,
+	})
+
+	checkBareClosure := checkStatusCode(http.StatusBadRequest)
+	closureHash := "ffffffffffffffffffffffffffffffff"
+	narinfoKey := closureHash + ".narinfo"
+	narKey := "nar/" + closureHash + ".nar.zst"
+
+	bodyBareClosure, err := json.Marshal(map[string]interface{}{
+		"closure": closureHash,
+		"objects": []map[string]interface{}{
+			{"key": narinfoKey, "refs": []string{narKey}},
+			{"key": narKey, "refs": []string{}},
+		},
+	})
+	ok(t, err)
+
+	testRequest(t, &TestRequest{
+		method:        "POST",
+		path:          "/api/pending_closures",
+		body:          bodyBareClosure,
+		handler:       service.CreatePendingClosureHandler,
+		checkResponse: &checkBareClosure,
 	})
 
 	closureKey := "00000000000000000000000000000000"

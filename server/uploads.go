@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -27,20 +28,21 @@ type createPendingClosureRequest struct {
 // Request body:
 //
 //	{
-//	 "closure": "26xbg1ndr7hbcncrlf9nhx5is2b25d13",
+//	 "closure": "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo",
 //	 "objects": [
-//		 "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo",
-//		 "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz"
+//		 {"key": "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", "refs": ["nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz"]},
+//		 {"key": "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz", "refs": []}
 //	 ]
 //	}
 //
 // Response body:
 //
 //	{
-//	  "id": 1,
-//	  "started_at": "2021-08-31T00:00:00Z"
+//	  "id": "1",
+//	  "started_at": "2021-08-31T00:00:00Z",
 //	  "pending_objects": {
-//		  "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo": "https://yours3endpoint?authkey=...",
+//		  "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo": {"presigned_url": "https://yours3endpoint?authkey=..."},
+//		  "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz": {"presigned_url": "https://yours3endpoint?authkey=..."}
 //	   }
 //	}
 func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +63,12 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 
 	if req.Closure == nil {
 		http.Error(w, "missing closure key", http.StatusBadRequest)
+
+		return
+	}
+
+	if !strings.HasSuffix(*req.Closure, ".narinfo") {
+		http.Error(w, "closure key must end with .narinfo", http.StatusBadRequest)
 
 		return
 	}
