@@ -68,9 +68,16 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	queries := pg.New(pool)
 
 	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
-		// if the object was not found, we can ignore it
 		if result.Err != nil {
+			// If object doesn't exist in S3, treat it as successfully deleted
+			// to maintain consistency between S3 and database
 			if minio.ToErrorResponse(result.Err).Code == "NoSuchKey" {
+				deletedKeys = append(deletedKeys, result.ObjectName)
+
+				if len(deletedKeys) >= DeletionBatchSize {
+					deletedKeys = flushBatch(ctx, deletedKeys, queries.DeleteObjects, s3Error)
+				}
+
 				continue
 			}
 
