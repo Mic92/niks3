@@ -14,8 +14,8 @@ WITH ct AS (
 SELECT
     o.key AS key,
     CASE
-        WHEN o.deleted_at IS NULL THEN NULL
-        ELSE ct.now - o.deleted_at
+        WHEN o.first_deleted_at IS NULL THEN NULL
+        ELSE ct.now - o.first_deleted_at
     END AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar []);
@@ -37,9 +37,11 @@ old_closures AS (
 -- Insert pending objects into objects table if they don't already exist
 -- We mark them as deleted so they can be cleaned up later
 inserted_objects AS (
-    INSERT INTO objects (key, deleted_at)
+    INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
     SELECT
         po.key,
+        po.refs,
+        cutoff_time.time,
         cutoff_time.time
     FROM pending_objects AS po
     JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
@@ -126,7 +128,9 @@ stale_objects AS (
 )
 
 UPDATE objects
-SET deleted_at = ct.now
+SET
+    deleted_at = ct.now,
+    first_deleted_at = COALESCE(first_deleted_at, ct.now)
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 RETURNING objects.key;
@@ -148,3 +152,7 @@ SELECT upload_id, object_key
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
 WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1;
+
+-- name: DeleteMultipartUpload :exec
+DELETE FROM multipart_uploads
+WHERE upload_id = $1;

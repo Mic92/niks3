@@ -32,7 +32,8 @@ CREATE TABLE objects
 (
     key varchar(1024) PRIMARY KEY,
     refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects (not transitive)
-    deleted_at timestamp
+    deleted_at timestamp,
+    first_deleted_at timestamp -- Track initial deletion time to prevent resurrection race
 );
 
 -- Create GIN index for efficient reference lookups

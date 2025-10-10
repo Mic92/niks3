@@ -23,9 +23,11 @@ old_closures AS (
 ),
 
 inserted_objects AS (
-    INSERT INTO objects (key, deleted_at)
+    INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
     SELECT
         po.key,
+        po.refs,
+        cutoff_time.time,
         cutoff_time.time
     FROM pending_objects AS po
     JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
@@ -71,6 +73,16 @@ WHERE updated_at < $1
 
 func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) error {
 	_, err := q.db.Exec(ctx, deleteClosures, updatedAt)
+	return err
+}
+
+const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec
+DELETE FROM multipart_uploads
+WHERE upload_id = $1
+`
+
+func (q *Queries) DeleteMultipartUpload(ctx context.Context, uploadID string) error {
+	_, err := q.db.Exec(ctx, deleteMultipartUpload, uploadID)
 	return err
 }
 
@@ -140,8 +152,8 @@ WITH ct AS (
 SELECT
     o.key AS key,
     CASE
-        WHEN o.deleted_at IS NULL THEN NULL
-        ELSE ct.now - o.deleted_at
+        WHEN o.first_deleted_at IS NULL THEN NULL
+        ELSE ct.now - o.first_deleted_at
     END AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
@@ -290,7 +302,9 @@ stale_objects AS (
 )
 
 UPDATE objects
-SET deleted_at = ct.now
+SET
+    deleted_at = ct.now,
+    first_deleted_at = COALESCE(first_deleted_at, ct.now)
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 RETURNING objects.key
