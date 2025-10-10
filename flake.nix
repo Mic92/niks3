@@ -27,6 +27,7 @@
         ./nix/formatter/flake-module.nix
         ./nix/checks/flake-module.nix
         ./nix/nixosModules/flake-module.nix
+        ./nix/benchmark/flake-module.nix
       ];
     };
 }

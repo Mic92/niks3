@@ -28,6 +28,17 @@ It uses `process-compose`. Look in `.envrc` for some env variables that are rela
 
 State is stored in `.data`. For a fresh local dev environment, delete `.data`.
 
+## Benchmarks
+
+A benchmark for uploading a closure to S3 is available.
+
+To run the benchmark:
+
+```bash
+cd server
+go test -bench=BenchmarkMinimalNixOSClosure -benchtime=3x -v
+```
+
 [goose]: https://github.com/pressly/goose
 [pgx]: https://github.com/jackc/pgx
 [sqlc]: https://sqlc.dev/

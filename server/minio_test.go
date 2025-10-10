@@ -60,15 +60,15 @@ func randPort() (uint16, error) {
 	return (uint16)(addr.Port), nil //nolint:gosec
 }
 
-func (s *minioServer) Client(t *testing.T) *minio.Client {
-	t.Helper()
+func (s *minioServer) Client(tb testing.TB) *minio.Client {
+	tb.Helper()
 
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4("minioadmin", s.secret, ""),
 		Secure: false,
 	})
-	ok(t, err)
+	ok(tb, err)
 
 	return minioClient
 }

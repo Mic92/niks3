@@ -17,15 +17,15 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-func createTestService(t *testing.T) *server.Service {
-	t.Helper()
+func createTestService(tb testing.TB) *server.Service {
+	tb.Helper()
 
 	if testPostgresServer == nil {
-		t.Fatal("postgres server not started")
+		tb.Fatal("postgres server not started")
 	}
 
 	if testMinioServer == nil {
-		t.Fatal("minio server not started")
+		tb.Fatal("minio server not started")
 	}
 
 	// create database for test
@@ -35,7 +35,7 @@ func createTestService(t *testing.T) *server.Service {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	err := command.Run()
-	ok(t, err)
+	ok(tb, err)
 
 	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
 
@@ -44,14 +44,14 @@ func createTestService(t *testing.T) *server.Service {
 
 	pool, err := pg.Connect(ctx, connectionString)
 	if err != nil {
-		ok(t, err)
+		ok(tb, err)
 	}
 	// create bucket for test
 	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
-	minioClient := testMinioServer.Client(t)
+	minioClient := testMinioServer.Client(tb)
 
 	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-	ok(t, err)
+	ok(tb, err)
 
 	return &server.Service{
 		Pool:        pool,
