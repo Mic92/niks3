@@ -234,8 +234,8 @@ func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := cleanupPendingClosures(r.Context(), s.Pool, olderThan); err != nil {
-		http.Error(w, fmt.Sprintf("failed to cleanup pending closures: %v", err), http.StatusInternalServerError)
+	if err := cleanupPendingClosures(r.Context(), s.Pool, s.MinioClient, s.Bucket, olderThan); err != nil {
+		http.Error(w, fmt.Sprintf("cleanup failed: %v", err), http.StatusInternalServerError)
 
 		return
 	}

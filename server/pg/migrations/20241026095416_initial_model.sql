@@ -58,6 +58,14 @@ CREATE TABLE pending_objects
 CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
     pending_closure_id
 );
+
+-- Track multipart uploads for cleanup
+CREATE TABLE multipart_uploads (
+    pending_closure_id bigint NOT NULL REFERENCES pending_closures (id) ON DELETE CASCADE,
+    object_key varchar(1024) NOT NULL,
+    upload_id varchar(1024) NOT NULL,
+    PRIMARY KEY (pending_closure_id, object_key)
+);
 -- +goose StatementEnd
 
 -- +goose Down
@@ -68,6 +76,7 @@ DROP INDEX pending_objects_pending_closure_id_idx;
 DROP INDEX closures_updated_at_idx;
 DROP INDEX pending_closures_started_at_idx;
 
+DROP TABLE multipart_uploads;
 DROP TABLE pending_objects;
 DROP TABLE pending_closures;
 DROP TABLE objects;

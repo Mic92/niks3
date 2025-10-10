@@ -138,3 +138,13 @@ WHERE key = any($1::varchar []);
 -- name: DeleteObjects :exec
 DELETE FROM objects
 WHERE key = any($1::varchar []);
+
+-- name: InsertMultipartUpload :exec
+INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
+VALUES ($1, $2, $3);
+
+-- name: GetOldMultipartUploads :many
+SELECT upload_id, object_key
+FROM multipart_uploads mu
+JOIN pending_closures pc ON mu.pending_closure_id = pc.id
+WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1;
