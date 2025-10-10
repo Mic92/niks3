@@ -25,16 +25,17 @@ const (
 )
 
 // uploadBufferPool pools 10MB buffers for multipart uploads to reduce memory allocations.
-var uploadBufferPool = sync.Pool{
+var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() interface{} {
 		buf := make([]byte, multipartPartSize)
+
 		return &buf
 	},
 }
 
 // zstdEncoderPool pools zstd encoders to reduce memory allocations.
 // Each encoder maintains compression history buffers (~60-80MB) that can be reused.
-var zstdEncoderPool = sync.Pool{
+var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() interface{} {
 		// Create encoder with nil writer (will use Reset() to set the actual writer)
 		encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
@@ -42,6 +43,7 @@ var zstdEncoderPool = sync.Pool{
 			// This should never happen with nil writer
 			panic(fmt.Sprintf("failed to create zstd encoder: %v", err))
 		}
+
 		return encoder
 	},
 }
@@ -286,7 +288,14 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 		}()
 
 		// Get encoder from pool and reset it to write to pipe
-		encoder := zstdEncoderPool.Get().(*zstd.Encoder)
+		encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
+		if !ok {
+			pw.CloseWithError(errors.New("failed to get zstd encoder from pool"))
+
+			errChan <- errors.New("failed to get zstd encoder from pool")
+
+			return
+		}
 		defer zstdEncoderPool.Put(encoder)
 
 		encoder.Reset(pw)
@@ -364,8 +373,13 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	var totalSize atomic.Uint64
 
 	// Get buffer from pool
-	bufferPtr := uploadBufferPool.Get().(*[]byte)
+	bufferPtr, ok := uploadBufferPool.Get().(*[]byte)
+	if !ok {
+		return nil, errors.New("failed to get buffer from pool")
+	}
+
 	defer uploadBufferPool.Put(bufferPtr)
+
 	buffer := *bufferPtr
 
 	partNumber := 1
@@ -475,13 +489,18 @@ func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64
 	fmt.Fprintf(&sb, "FileHash: %s\n", fileHash)
 	fmt.Fprintf(&sb, "FileSize: %d\n", compressedSize)
 
-	// References
+	// References (must have space after colon, even if empty)
 	fmt.Fprint(&sb, "References:")
 
 	for _, ref := range pathInfo.References {
 		// Remove /nix/store/ prefix
 		refName := strings.TrimPrefix(ref, "/nix/store/")
 		fmt.Fprintf(&sb, " %s", refName)
+	}
+
+	// Always add a space after "References:" even if empty
+	if len(pathInfo.References) == 0 {
+		fmt.Fprint(&sb, " ")
 	}
 
 	fmt.Fprint(&sb, "\n")
