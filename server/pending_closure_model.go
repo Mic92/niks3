@@ -210,6 +210,7 @@ func estimatePartsNeeded(narSize uint64) int {
 
 func (s *Service) createPendingObjects(
 	ctx context.Context,
+	pendingClosureID int64,
 	pendingObjectsParams []pg.InsertPendingObjectsParams,
 	objectsWithNarSize map[string]uint64,
 	result map[string]PendingObject,
@@ -217,7 +218,7 @@ func (s *Service) createPendingObjects(
 	for _, pendingObject := range pendingObjectsParams {
 		narSize := objectsWithNarSize[pendingObject.Key]
 
-		po, err := s.makePendingObject(ctx, pendingObject.Key, narSize)
+		po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, narSize)
 		if err != nil {
 			return fmt.Errorf("failed to create pending object: %w", err)
 		}
@@ -228,7 +229,7 @@ func (s *Service) createPendingObjects(
 	return nil
 }
 
-func (s *Service) makePendingObject(ctx context.Context, objectKey string, narSize uint64) (PendingObject, error) {
+func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
 	// For narinfo files (small), use simple presigned URL
 	if strings.HasSuffix(objectKey, ".narinfo") {
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
@@ -256,6 +257,16 @@ func (s *Service) makePendingObject(ctx context.Context, objectKey string, narSi
 	})
 	if err != nil {
 		return PendingObject{}, fmt.Errorf("failed to initiate multipart upload: %w", err)
+	}
+
+	// Store upload ID in database
+	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
+		PendingClosureID: pendingClosureID,
+		ObjectKey:        objectKey,
+		UploadID:         uploadID,
+	}); err != nil {
+		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
 	// Presign URLs for each part
@@ -305,7 +316,7 @@ func (s *Service) createPendingClosure(
 
 	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
 
-	if err := s.createPendingObjects(ctx, pendingClosure.pendingObjects, objectsWithNarSize, pendingObjects); err != nil {
+	if err := s.createPendingObjects(ctx, pendingClosure.id, pendingClosure.pendingObjects, objectsWithNarSize, pendingObjects); err != nil {
 		return nil, err
 	}
 
@@ -333,7 +344,7 @@ func (s *Service) createPendingClosure(
 			return nil, fmt.Errorf("failed to insert pending objects: %w", err)
 		}
 
-		if err := s.createPendingObjects(ctx, pendingObjectsParams, objectsWithNarSize, pendingObjects); err != nil {
+		if err := s.createPendingObjects(ctx, pendingClosure.id, pendingObjectsParams, objectsWithNarSize, pendingObjects); err != nil {
 			return nil, err
 		}
 	}
@@ -364,10 +375,28 @@ func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosur
 	return nil
 }
 
-func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, duration time.Duration) error {
+func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, minioClient *minio.Client, bucket string, duration time.Duration) error {
+	queries := pg.New(pool)
 	seconds := int32(duration.Seconds())
-	if err := pg.New(pool).CleanupPendingClosures(ctx, seconds); err != nil {
-		return fmt.Errorf("failed to cleanup pending closure: %w", err)
+	coreClient := minio.Core{Client: minioClient}
+
+	// 1. Get old multipart uploads to abort
+	uploads, err := queries.GetOldMultipartUploads(ctx, seconds)
+	if err != nil {
+		return fmt.Errorf("get old uploads: %w", err)
+	}
+
+	// 2. Abort them in S3
+	for _, upload := range uploads {
+		if err := coreClient.AbortMultipartUpload(ctx, bucket, upload.ObjectKey, upload.UploadID); err != nil {
+			slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
+		}
+	}
+	slog.Info("Aborted multipart uploads", "count", len(uploads))
+
+	// 3. Clean database (cascade deletes multipart_uploads rows)
+	if err := queries.CleanupPendingClosures(ctx, seconds); err != nil {
+		return fmt.Errorf("cleanup pending closures: %w", err)
 	}
 
 	return nil
