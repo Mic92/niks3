@@ -368,8 +368,8 @@ func uploadNarinfos(ctx context.Context, c *client.Client, tasks []uploadTask, p
 				info.Hash,
 			)
 
-			// Upload narinfo (uses simple presigned URL)
-			if err := c.UploadBytesToPresignedURL(ctx, t.obj.PresignedURL, []byte(narinfoContent)); err != nil {
+			// Upload narinfo with zstd compression (uses simple presigned URL)
+			if err := c.UploadNarinfoToPresignedURL(ctx, t.obj.PresignedURL, []byte(narinfoContent)); err != nil {
 				errChan <- fmt.Errorf("uploading narinfo %s: %w", t.key, err)
 
 				return
