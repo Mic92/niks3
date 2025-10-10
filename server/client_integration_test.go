@@ -81,7 +81,7 @@ func prepareClosures(pathInfos map[string]*client.PathInfo) ([]closureInfo, map[
 
 		pathInfoByHash[hash] = pathInfo
 
-		// Extract references as store path hashes
+		// Extract references as object keys (hash.narinfo)
 		var references []string
 
 		for _, ref := range pathInfo.References {
@@ -90,7 +90,8 @@ func prepareClosures(pathInfos map[string]*client.PathInfo) ([]closureInfo, map[
 				return nil, nil, fmt.Errorf("getting reference hash: %w", err)
 			}
 
-			references = append(references, refHash)
+			// Store reference as object key (hash.narinfo) so GC can follow it
+			references = append(references, refHash+".narinfo")
 		}
 
 		// NAR file object
