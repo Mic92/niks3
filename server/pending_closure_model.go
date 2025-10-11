@@ -18,32 +18,6 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-type ObjectType int
-
-const (
-	ObjectTypeNarinfo ObjectType = iota
-	ObjectTypeListing
-	ObjectTypeBuildLog
-	ObjectTypeNAR
-)
-
-func getObjectType(objectKey string) ObjectType {
-	if strings.HasSuffix(objectKey, ".narinfo") {
-		return ObjectTypeNarinfo
-	}
-
-	if strings.HasSuffix(objectKey, ".ls") {
-		return ObjectTypeListing
-	}
-
-	if strings.HasPrefix(objectKey, "log/") {
-		return ObjectTypeBuildLog
-	}
-
-	// Default: assume it's a NAR file
-	return ObjectTypeNAR
-}
-
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
 	multipartPartSize    = 5 * 1024 * 1024 // 5MB parts (S3 minimum)
@@ -55,8 +29,9 @@ type MultipartUploadInfo struct {
 }
 
 type PendingObject struct {
-	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files (narinfo)
-	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files (NAR)
+	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, nar)
+	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files (narinfo, listing, build_log)
+	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files (nar)
 }
 
 type PendingClosureResponse struct {
@@ -126,7 +101,7 @@ func createPendingClosureInner(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
-	objectsWithRefs map[string][]string,
+	objectsMap map[string]objectWithRefs,
 ) (*PendingClosure, error) {
 	if !strings.HasSuffix(closureKey, ".narinfo") {
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
@@ -149,8 +124,8 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
-	keys := make([]string, 0, len(objectsWithRefs))
-	for k := range objectsWithRefs {
+	keys := make([]string, 0, len(objectsMap))
+	for k := range objectsMap {
 		keys = append(keys, k)
 	}
 
@@ -165,17 +140,17 @@ func createPendingClosureInner(
 		if existingObject.DeletedAt != nil {
 			deletedObjects = append(deletedObjects, existingObject.Key)
 		} else {
-			delete(objectsWithRefs, existingObject.Key)
+			delete(objectsMap, existingObject.Key)
 		}
 	}
 
-	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsWithRefs))
+	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
 
-	for objectKey, refs := range objectsWithRefs {
+	for objectKey, obj := range objectsMap {
 		pendingObjects = append(pendingObjects, pg.InsertPendingObjectsParams{
 			PendingClosureID: pendingClosure.ID,
 			Key:              objectKey,
-			Refs:             refs,
+			Refs:             obj.Refs,
 		})
 	}
 
@@ -238,13 +213,18 @@ func (s *Service) createPendingObjects(
 	ctx context.Context,
 	pendingClosureID int64,
 	pendingObjectsParams []pg.InsertPendingObjectsParams,
-	objectsWithNarSize map[string]uint64,
+	objectsMap map[string]objectWithRefs,
 	result map[string]PendingObject,
 ) error {
 	for _, pendingObject := range pendingObjectsParams {
-		narSize := objectsWithNarSize[pendingObject.Key]
+		obj := objectsMap[pendingObject.Key]
 
-		po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, narSize)
+		var narSize uint64
+		if obj.NarSize != nil {
+			narSize = *obj.NarSize
+		}
+
+		po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, obj.Type, narSize)
 		if err != nil {
 			return fmt.Errorf("failed to create pending object: %w", err)
 		}
@@ -255,12 +235,10 @@ func (s *Service) createPendingObjects(
 	return nil
 }
 
-func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
-	objectType := getObjectType(objectKey)
-
+func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, objectType string, narSize uint64) (PendingObject, error) {
 	// Small files use simple presigned URL
 	switch objectType {
-	case ObjectTypeNarinfo, ObjectTypeListing, ObjectTypeBuildLog:
+	case "narinfo", "listing", "build_log":
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 			s.Bucket,
 			objectKey,
@@ -270,15 +248,23 @@ func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64,
 		}
 
 		return PendingObject{
+			Type:         objectType,
 			PresignedURL: presignedURL.String(),
 		}, nil
 
-	case ObjectTypeNAR:
+	case "nar":
 		// NAR files (large) use multipart upload
-		return s.createMultipartUpload(ctx, pendingClosureID, objectKey, narSize)
+		po, err := s.createMultipartUpload(ctx, pendingClosureID, objectKey, narSize)
+		if err != nil {
+			return PendingObject{}, err
+		}
+
+		po.Type = objectType
+
+		return po, nil
 
 	default:
-		return PendingObject{}, fmt.Errorf("unknown object type for key: %s", objectKey)
+		return PendingObject{}, fmt.Errorf("unknown object type %q for key: %s", objectType, objectKey)
 	}
 }
 
@@ -344,17 +330,16 @@ func (s *Service) createPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
-	objectsWithRefs map[string][]string,
-	objectsWithNarSize map[string]uint64,
+	objectsMap map[string]objectWithRefs,
 ) (*PendingClosureResponse, error) {
-	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsWithRefs)
+	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsMap)
 	if err != nil {
 		return nil, err
 	}
 
 	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
 
-	if err := s.createPendingObjects(ctx, pendingClosure.id, pendingClosure.pendingObjects, objectsWithNarSize, pendingObjects); err != nil {
+	if err := s.createPendingObjects(ctx, pendingClosure.id, pendingClosure.pendingObjects, objectsMap, pendingObjects); err != nil {
 		return nil, err
 	}
 
@@ -369,10 +354,11 @@ func (s *Service) createPendingClosure(
 
 		pendingObjectsParams := make([]pg.InsertPendingObjectsParams, 0, len(missingObjects))
 		for objectKey := range missingObjects {
+			obj := objectsMap[objectKey]
 			pendingObjectsParams = append(pendingObjectsParams, pg.InsertPendingObjectsParams{
 				PendingClosureID: pendingClosure.id,
 				Key:              objectKey,
-				Refs:             objectsWithRefs[objectKey],
+				Refs:             obj.Refs,
 			})
 		}
 
@@ -382,7 +368,7 @@ func (s *Service) createPendingClosure(
 			return nil, fmt.Errorf("failed to insert pending objects: %w", err)
 		}
 
-		if err := s.createPendingObjects(ctx, pendingClosure.id, pendingObjectsParams, objectsWithNarSize, pendingObjects); err != nil {
+		if err := s.createPendingObjects(ctx, pendingClosure.id, pendingObjectsParams, objectsMap, pendingObjects); err != nil {
 			return nil, err
 		}
 	}

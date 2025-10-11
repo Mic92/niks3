@@ -67,15 +67,18 @@ func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, er
 		objects := []ObjectWithRefs{
 			{
 				Key:  narinfoKey,
+				Type: ObjectTypeNarinfo,
 				Refs: narinfoRefs,
 			},
 			{
 				Key:     narKey,
+				Type:    ObjectTypeNAR,
 				Refs:    []string{},
 				NarSize: &pathInfo.NarSize, // Include NarSize for multipart estimation
 			},
 			{
 				Key:  lsKey,
+				Type: ObjectTypeListing,
 				Refs: []string{},
 			},
 		}
@@ -94,6 +97,7 @@ func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, er
 
 				objects = append(objects, ObjectWithRefs{
 					Key:  logKey,
+					Type: ObjectTypeBuildLog,
 					Refs: []string{}, // Logs don't reference anything
 				})
 
@@ -140,10 +144,9 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 }
 
 type uploadTask struct {
-	key   string
-	obj   PendingObject
-	isNar bool
-	hash  string
+	key  string
+	obj  PendingObject
+	hash string
 }
 
 // UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, and build logs).
@@ -157,52 +160,43 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 	)
 
 	for key, obj := range pendingObjects {
-		if strings.HasSuffix(key, ".narinfo") {
+		switch obj.Type {
+		case "narinfo":
 			hash := strings.TrimSuffix(key, ".narinfo")
 			narinfoTasks = append(narinfoTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: false,
-				hash:  hash,
+				key:  key,
+				obj:  obj,
+				hash: hash,
 			})
 
-			continue
-		}
-
-		if strings.HasPrefix(key, "nar/") && strings.HasSuffix(key, ".nar.zst") {
+		case "nar":
 			// Extract hash from "nar/HASH.nar.zst"
 			filename := strings.TrimPrefix(key, "nar/")
 			hash := strings.TrimSuffix(filename, ".nar.zst")
 			narTasks = append(narTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: true,
-				hash:  hash,
+				key:  key,
+				obj:  obj,
+				hash: hash,
 			})
 
-			continue
-		}
-
-		if strings.HasSuffix(key, ".ls") {
+		case "listing":
 			// Extract hash from "HASH.ls"
 			hash := strings.TrimSuffix(key, ".ls")
 			lsTasks = append(lsTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: false,
-				hash:  hash,
+				key:  key,
+				obj:  obj,
+				hash: hash,
 			})
 
-			continue
-		}
-
-		if strings.HasPrefix(key, "log/") {
+		case "build_log":
 			logTasks = append(logTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: false,
-				hash:  "", // Not used for logs
+				key:  key,
+				obj:  obj,
+				hash: "", // Not used for logs
 			})
+
+		default:
+			return fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
 		}
 	}
 

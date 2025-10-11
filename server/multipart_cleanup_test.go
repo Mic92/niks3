@@ -28,8 +28,8 @@ func TestMultipartCleanup(t *testing.T) {
 	largeNarSize := uint64(100 * 1024 * 1024) // 100MB
 
 	objects := []map[string]interface{}{
-		{"key": closureKey, "refs": []string{narKey}},
-		{"key": narKey, "refs": []string{}, "nar_size": largeNarSize},
+		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
+		{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": largeNarSize},
 	}
 
 	body, err := json.Marshal(map[string]interface{}{

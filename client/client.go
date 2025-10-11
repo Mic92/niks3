@@ -56,11 +56,22 @@ type Client struct {
 	MaxConcurrentNARUploads int // Maximum number of concurrent NAR uploads (0 = unlimited)
 }
 
+// ObjectType classifies cache objects by their purpose and upload strategy.
+type ObjectType string
+
+const (
+	ObjectTypeNarinfo  ObjectType = "narinfo"
+	ObjectTypeListing  ObjectType = "listing"
+	ObjectTypeBuildLog ObjectType = "build_log"
+	ObjectTypeNAR      ObjectType = "nar"
+)
+
 // ObjectWithRefs represents an object with its dependencies.
 type ObjectWithRefs struct {
-	Key     string   `json:"key"`
-	Refs    []string `json:"refs"`
-	NarSize *uint64  `json:"nar_size,omitempty"` // For estimating multipart parts
+	Key     string     `json:"key"`
+	Type    ObjectType `json:"type"`
+	Refs    []string   `json:"refs"`
+	NarSize *uint64    `json:"nar_size,omitempty"` // For estimating multipart parts
 }
 
 // createPendingClosureRequest is the request to create a pending closure.
@@ -77,8 +88,8 @@ type MultipartUploadInfo struct {
 
 // PendingObject contains upload information for an object.
 type PendingObject struct {
-	PresignedURL string `json:"presigned_url,omitempty"` // For small files
-
+	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, nar)
+	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files
 	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files
 }
 
