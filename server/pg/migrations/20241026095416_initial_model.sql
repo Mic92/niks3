@@ -39,6 +39,9 @@ CREATE TABLE objects
 -- Create GIN index for efficient reference lookups
 CREATE INDEX objects_refs_gin ON objects USING gin (refs);
 
+-- Create partial index for first_deleted_at for efficient deletion queries
+CREATE INDEX objects_first_deleted_at_idx ON objects (first_deleted_at) WHERE first_deleted_at IS NOT NULL;
+
 -- This is where track not yet uploaded closures
 CREATE TABLE pending_closures
 (
@@ -72,6 +75,7 @@ CREATE TABLE multipart_uploads (
 -- +goose Down
 -- +goose StatementBegin
 
+DROP INDEX objects_first_deleted_at_idx;
 DROP INDEX objects_refs_gin;
 DROP INDEX pending_objects_pending_closure_id_idx;
 DROP INDEX closures_updated_at_idx;
