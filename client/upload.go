@@ -150,240 +150,289 @@ type uploadTask struct {
 }
 
 // UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, and build logs).
+// Uses a unified worker pool where:
+// - Logs upload immediately (independent)
+// - NARs upload and queue their listings/narinfos when complete
+// - All object types share the same worker pool for maximum parallelism.
 func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string) error {
-	// Separate NAR, .ls, narinfo, and log uploads
-	var (
-		narTasks     []uploadTask
-		lsTasks      []uploadTask
-		narinfoTasks []uploadTask
-		logTasks     []uploadTask
-	)
+	// Collect pending objects by type
+	pendingByHash := make(map[string]struct {
+		narTask     *uploadTask
+		lsTask      *uploadTask
+		narinfoTask *uploadTask
+	})
+
+	var logTasks []uploadTask
 
 	for key, obj := range pendingObjects {
 		switch obj.Type {
 		case "narinfo":
 			hash := strings.TrimSuffix(key, ".narinfo")
-			narinfoTasks = append(narinfoTasks, uploadTask{
-				key:  key,
-				obj:  obj,
-				hash: hash,
-			})
+			entry := pendingByHash[hash]
+			entry.narinfoTask = &uploadTask{key: key, obj: obj, hash: hash}
+			pendingByHash[hash] = entry
 
 		case "nar":
-			// Extract hash from "nar/HASH.nar.zst"
 			filename := strings.TrimPrefix(key, "nar/")
 			hash := strings.TrimSuffix(filename, ".nar.zst")
-			narTasks = append(narTasks, uploadTask{
-				key:  key,
-				obj:  obj,
-				hash: hash,
-			})
+			entry := pendingByHash[hash]
+			entry.narTask = &uploadTask{key: key, obj: obj, hash: hash}
+			pendingByHash[hash] = entry
 
 		case "listing":
-			// Extract hash from "HASH.ls"
 			hash := strings.TrimSuffix(key, ".ls")
-			lsTasks = append(lsTasks, uploadTask{
-				key:  key,
-				obj:  obj,
-				hash: hash,
-			})
+			entry := pendingByHash[hash]
+			entry.lsTask = &uploadTask{key: key, obj: obj, hash: hash}
+			pendingByHash[hash] = entry
 
 		case "build_log":
-			logTasks = append(logTasks, uploadTask{
-				key:  key,
-				obj:  obj,
-				hash: "", // Not used for logs
-			})
+			logTasks = append(logTasks, uploadTask{key: key, obj: obj, hash: ""})
 
 		default:
 			return fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
 		}
 	}
 
-	// Upload all NAR files in parallel
-	compressedInfo, err := c.uploadNARs(ctx, narTasks, pathInfoByHash)
-	if err != nil {
-		return err
-	}
-
-	// Upload .ls files in parallel
-	if err := c.uploadListings(ctx, lsTasks, compressedInfo); err != nil {
-		return err
-	}
-
-	// Upload build logs
-	if err := c.uploadLogs(ctx, logTasks, logPathsByKey); err != nil {
-		return err
-	}
-
-	// Upload narinfo files in parallel
-	return c.uploadNarinfos(ctx, narinfoTasks, pathInfoByHash, compressedInfo)
+	// Upload all objects with unified worker pool
+	return c.uploadAllObjects(ctx, pendingByHash, logTasks, pathInfoByHash, logPathsByKey)
 }
 
-func (c *Client) uploadNARs(ctx context.Context, tasks []uploadTask, pathInfoByHash map[string]*PathInfo) (map[string]*CompressedFileInfo, error) {
-	// Upload NARs in parallel using worker pool pattern
-	type narResult struct {
-		hash string
-		info *CompressedFileInfo
-		err  error
-	}
+// genericUploadTask represents any upload operation in the unified worker pool.
+type genericUploadTask struct {
+	taskType string // "nar", "listing", "narinfo", "log"
+	task     uploadTask
+	hash     string // For looking up related tasks
+}
 
-	resultChan := make(chan narResult, len(tasks))
-	taskChan := make(chan uploadTask, len(tasks))
+// uploadAllObjects uploads all objects using a unified worker pool.
+// Logs upload independently, NARs upload with their listings in the same goroutine,
+// then narinfos are uploaded separately after all NARs+listings complete.
+func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]struct {
+	narTask     *uploadTask
+	lsTask      *uploadTask
+	narinfoTask *uploadTask
+}, logTasks []uploadTask, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string,
+) error {
+	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
+	var compressedInfoMu sync.Mutex
 
-	var wg sync.WaitGroup
+	compressedInfo := make(map[string]*CompressedFileInfo)
+
+	// Task channel for NAR and log uploads
+	taskChan := make(chan genericUploadTask, len(pendingByHash)+len(logTasks))
+
+	// Track errors
+	errChan := make(chan error, 1)
+
+	var errOnce sync.Once
 
 	// Determine number of workers
-	// MaxConcurrentNARUploads of 0 means unlimited
 	numWorkers := c.MaxConcurrentNARUploads
 	if numWorkers <= 0 {
-		numWorkers = len(tasks) // Unlimited - create worker per task
+		numWorkers = len(pendingByHash) + len(logTasks)
 	}
 
-	// Create fixed number of worker goroutines
+	// Phase 1: Upload NARs (with listings) and logs in parallel
+	var phase1WG sync.WaitGroup
 	for range numWorkers {
-		wg.Add(1)
+		phase1WG.Add(1)
 
 		go func() {
-			defer wg.Done()
+			defer phase1WG.Done()
 
-			// Process tasks from channel until it's closed
 			for task := range taskChan {
-				pathInfo, ok := pathInfoByHash[task.hash]
-				if !ok {
-					resultChan <- narResult{
-						hash: task.hash,
-						err:  fmt.Errorf("path info not found for hash %s", task.hash),
-					}
+				var err error
 
-					continue
+				switch task.taskType {
+				case "nar":
+					err = c.uploadNARWithListing(ctx, task, pendingByHash, pathInfoByHash, compressedInfo, &compressedInfoMu)
+
+				case "log":
+					err = c.uploadLog(ctx, task.task, logPathsByKey)
 				}
 
-				info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, task.obj, task.key)
 				if err != nil {
-					resultChan <- narResult{
-						hash: task.hash,
-						err:  fmt.Errorf("uploading NAR %s: %w", task.key, err),
-					}
-
-					continue
-				}
-
-				resultChan <- narResult{
-					hash: task.hash,
-					info: info,
+					errOnce.Do(func() {
+						errChan <- err
+					})
 				}
 			}
 		}()
 	}
 
-	// Send all tasks to the channel
-	for _, task := range tasks {
-		taskChan <- task
+	// Queue all log tasks
+	for _, task := range logTasks {
+		taskChan <- genericUploadTask{taskType: "log", task: task}
 	}
 
-	close(taskChan) // Signal no more tasks
-
-	// Wait for all workers to complete
-	wg.Wait()
-	close(resultChan)
-
-	// Collect results
-	results := make(map[string]*CompressedFileInfo)
-
-	for result := range resultChan {
-		if result.err != nil {
-			return nil, result.err
-		}
-
-		results[result.hash] = result.info
-	}
-
-	return results, nil
-}
-
-func (c *Client) uploadListings(ctx context.Context, tasks []uploadTask, compressedInfo map[string]*CompressedFileInfo) error {
-	for _, task := range tasks {
-		// Get compressed info for this NAR (which includes the listing)
-		info := compressedInfo[task.hash]
-		if info == nil || info.Listing == nil {
-			return fmt.Errorf("listing not found for hash %s", task.hash)
-		}
-
-		// Upload listing with brotli compression
-		if err := c.UploadListingToPresignedURL(ctx, task.obj.PresignedURL, info.Listing); err != nil {
-			return fmt.Errorf("uploading listing %s: %w", task.key, err)
+	// Queue all NAR tasks
+	for hash, entry := range pendingByHash {
+		if entry.narTask != nil {
+			taskChan <- genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}
 		}
 	}
 
-	return nil
-}
+	close(taskChan)
 
-func (c *Client) uploadLogs(ctx context.Context, tasks []uploadTask, logPathsByKey map[string]string) error {
-	for _, task := range tasks {
-		// Get the local log path
-		logPath, ok := logPathsByKey[task.key]
-		if !ok {
-			// Log was requested by server but not found locally - this shouldn't happen
-			// but we'll log a warning and continue rather than failing the entire upload
-			slog.Warn("Build log not found", "key", task.key)
+	// Wait for phase 1 to complete
+	phase1WG.Wait()
 
-			continue
-		}
-
-		// Compress the log to a temporary file
-		compressedInfo, err := CompressBuildLog(logPath)
+	// Check for errors from phase 1
+	select {
+	case err := <-errChan:
 		if err != nil {
-			slog.Warn("Failed to compress build log", "key", task.key, "log_path", logPath, "error", err)
-
-			continue
+			return err
 		}
+	default:
+	}
 
-		defer func() {
-			if cleanupErr := compressedInfo.Cleanup(); cleanupErr != nil {
-				slog.Warn("Failed to cleanup compressed build log", "key", task.key, "error", cleanupErr)
+	// Phase 2: Upload narinfos for successfully uploaded NARs
+	// Create task channel for narinfos
+	narinfoTaskChan := make(chan genericUploadTask, len(pendingByHash))
+	for hash, entry := range pendingByHash {
+		// Only upload narinfo if NAR was successfully uploaded (check compressedInfo)
+		if _, ok := compressedInfo[hash]; ok && entry.narinfoTask != nil {
+			narinfoTaskChan <- genericUploadTask{taskType: "narinfo", task: *entry.narinfoTask, hash: hash}
+		}
+	}
+
+	close(narinfoTaskChan)
+
+	var phase2WG sync.WaitGroup
+	for range numWorkers {
+		phase2WG.Add(1)
+
+		go func() {
+			defer phase2WG.Done()
+
+			for task := range narinfoTaskChan {
+				if err := c.uploadNarinfo(ctx, task.task, pathInfoByHash[task.hash], compressedInfo[task.hash]); err != nil {
+					errOnce.Do(func() {
+						errChan <- err
+					})
+				}
 			}
 		}()
+	}
 
-		// Upload the compressed log
-		if err := c.UploadBuildLogToPresignedURL(ctx, task.obj.PresignedURL, compressedInfo); err != nil {
-			return fmt.Errorf("uploading build log %s: %w", task.key, err)
-		}
+	phase2WG.Wait()
 
-		slog.Info("Uploaded build log", "key", task.key)
+	// Check for errors from phase 2
+	select {
+	case err := <-errChan:
+		return err
+	default:
 	}
 
 	return nil
 }
 
-func (c *Client) uploadNarinfos(ctx context.Context, tasks []uploadTask, pathInfoByHash map[string]*PathInfo, compressedInfo map[string]*CompressedFileInfo) error {
-	for _, task := range tasks {
-		pathInfo, ok := pathInfoByHash[task.hash]
-		if !ok {
-			return fmt.Errorf("path info not found for hash %s", task.hash)
-		}
+// uploadNARWithListing uploads a NAR and its listing.
+// Successfully uploaded NARs are stored in compressedInfo for later narinfo uploads.
+func (c *Client) uploadNARWithListing(
+	ctx context.Context,
+	task genericUploadTask,
+	pendingByHash map[string]struct {
+		narTask     *uploadTask
+		lsTask      *uploadTask
+		narinfoTask *uploadTask
+	},
+	pathInfoByHash map[string]*PathInfo,
+	compressedInfo map[string]*CompressedFileInfo,
+	compressedInfoMu *sync.Mutex,
+) error {
+	// Upload NAR
+	info, err := c.CompressAndUploadNAR(ctx, pathInfoByHash[task.hash].Path, task.task.obj, task.task.key)
+	if err != nil {
+		return fmt.Errorf("uploading NAR %s: %w", task.task.key, err)
+	}
 
-		// Get compressed info for this NAR
-		info := compressedInfo[task.hash]
-		if info == nil {
-			// This is a server bug: server asked us to upload narinfo without uploading the NAR.
-			// NAR and narinfo must always be uploaded together as a closure.
-			return fmt.Errorf("server inconsistency: asked to upload narinfo %s without uploading corresponding NAR - this is a server bug", task.key)
-		}
+	// Store compressed info for narinfo phase (protected by mutex for concurrent writes)
+	compressedInfoMu.Lock()
 
-		// Generate narinfo content
-		narinfoContent := CreateNarinfo(
-			pathInfo,
-			task.hash+".nar.zst",
-			info.Size,
-			info.Hash,
-		)
+	compressedInfo[task.hash] = info
 
-		// Upload narinfo with zstd compression
-		if err := c.UploadNarinfoToPresignedURL(ctx, task.obj.PresignedURL, []byte(narinfoContent)); err != nil {
-			return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
+	compressedInfoMu.Unlock()
+
+	// Upload listing immediately in same goroutine
+	entry := pendingByHash[task.hash]
+	if entry.lsTask != nil {
+		if err := c.uploadListing(ctx, *entry.lsTask, info); err != nil {
+			return err
 		}
 	}
+
+	return nil
+}
+
+// uploadListing uploads a listing file.
+func (c *Client) uploadListing(ctx context.Context, task uploadTask, info *CompressedFileInfo) error {
+	if info.Listing == nil {
+		return fmt.Errorf("listing not found for hash %s", task.hash)
+	}
+
+	// Upload listing with brotli compression
+	if err := c.UploadListingToPresignedURL(ctx, task.obj.PresignedURL, info.Listing); err != nil {
+		return fmt.Errorf("uploading listing %s: %w", task.key, err)
+	}
+
+	slog.Info("Uploaded listing", "key", task.key)
+
+	return nil
+}
+
+// uploadLog uploads a build log.
+func (c *Client) uploadLog(ctx context.Context, task uploadTask, logPathsByKey map[string]string) error {
+	// Get the local log path
+	logPath, ok := logPathsByKey[task.key]
+	if !ok {
+		// Log was requested by server but not found locally - this shouldn't happen
+		// but we'll log a warning and continue rather than failing the entire upload
+		slog.Warn("Build log not found", "key", task.key)
+
+		return nil // Don't fail the entire upload
+	}
+
+	// Compress the log to a temporary file
+	compressedInfo, err := CompressBuildLog(logPath)
+	if err != nil {
+		slog.Warn("Failed to compress build log", "key", task.key, "log_path", logPath, "error", err)
+
+		return nil // Don't fail the entire upload
+	}
+
+	defer func() {
+		if cleanupErr := compressedInfo.Cleanup(); cleanupErr != nil {
+			slog.Warn("Failed to cleanup compressed build log", "key", task.key, "error", cleanupErr)
+		}
+	}()
+
+	// Upload the compressed log
+	if err := c.UploadBuildLogToPresignedURL(ctx, task.obj.PresignedURL, compressedInfo); err != nil {
+		return fmt.Errorf("uploading build log %s: %w", task.key, err)
+	}
+
+	slog.Info("Uploaded build log", "key", task.key)
+
+	return nil
+}
+
+// uploadNarinfo uploads a narinfo file.
+func (c *Client) uploadNarinfo(ctx context.Context, task uploadTask, pathInfo *PathInfo, info *CompressedFileInfo) error {
+	// Generate narinfo content
+	narinfoContent := CreateNarinfo(
+		pathInfo,
+		task.hash+".nar.zst",
+		info.Size,
+		info.Hash,
+	)
+
+	// Upload narinfo with zstd compression
+	if err := c.UploadNarinfoToPresignedURL(ctx, task.obj.PresignedURL, []byte(narinfoContent)); err != nil {
+		return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
+	}
+
+	slog.Info("Uploaded narinfo", "key", task.key)
 
 	return nil
 }

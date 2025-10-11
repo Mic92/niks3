@@ -54,7 +54,7 @@ type Client struct {
 	baseURL                 *url.URL
 	authToken               string
 	httpClient              *http.Client
-	MaxConcurrentNARUploads int // Maximum number of concurrent NAR uploads (0 = unlimited)
+	MaxConcurrentNARUploads int // Maximum number of concurrent uploads (0 = unlimited)
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
