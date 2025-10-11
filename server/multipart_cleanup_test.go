@@ -47,6 +47,7 @@ func TestMultipartCleanup(t *testing.T) {
 	})
 
 	var pendingClosureResponse server.PendingClosureResponse
+
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 

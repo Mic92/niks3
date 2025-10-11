@@ -90,8 +90,9 @@ type CreatePendingClosureResponse struct {
 
 // CompressedFileInfo contains information about a compressed file.
 type CompressedFileInfo struct {
-	Size uint64
-	Hash string
+	Size    uint64
+	Hash    string
+	Listing *NarListing // Directory listing (if generated)
 }
 
 // CompletedPart represents a completed multipart part.
@@ -317,15 +318,34 @@ func (c *Client) UploadNarinfoToPresignedURL(ctx context.Context, presignedURL s
 	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed.Bytes(), headers)
 }
 
+// UploadListingToPresignedURL compresses a NAR listing with brotli and uploads it with Content-Encoding header.
+// The listing is stored as a .ls file, compatible with Nix's lazy NAR accessor format.
+func (c *Client) UploadListingToPresignedURL(ctx context.Context, presignedURL string, listing *NarListing) error {
+	// Compress listing with brotli
+	compressed, err := CompressListingWithBrotli(listing)
+	if err != nil {
+		return fmt.Errorf("compressing listing: %w", err)
+	}
+
+	// Upload with Content-Encoding header
+	headers := map[string]string{
+		"Content-Encoding": "br",
+	}
+
+	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed, headers)
+}
+
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
+// It also generates a directory listing during serialization.
 func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pendingObj PendingObject, objectKey string) (*CompressedFileInfo, error) {
 	slog.Info("Compressing and uploading NAR", "store_path", storePath)
 
 	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
 	pr, pw := io.Pipe()
 
-	// Channel to receive errors from the compression goroutine
+	// Channels to receive errors and listing from the compression goroutine
 	errChan := make(chan error, 1)
+	listingChan := make(chan *NarListing, 1)
 
 	// Start compression in goroutine
 	go func() {
@@ -342,6 +362,8 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 
 			errChan <- errors.New("failed to get zstd encoder from pool")
 
+			listingChan <- nil
+
 			return
 		}
 		defer zstdEncoderPool.Put(encoder)
@@ -354,16 +376,21 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 			}
 		}()
 
-		// Serialize NAR directly to the compressed stream
-		if err := DumpPath(encoder, storePath); err != nil {
+		// Serialize NAR with listing directly to the compressed stream
+		listing, err := DumpPathWithListing(encoder, storePath)
+		if err != nil {
 			pw.CloseWithError(fmt.Errorf("serializing NAR: %w", err))
 
 			errChan <- err
+
+			listingChan <- nil
 
 			return
 		}
 
 		errChan <- nil
+
+		listingChan <- listing
 	}()
 
 	var info *CompressedFileInfo
@@ -386,8 +413,16 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 		return nil, compressErr
 	}
 
+	// Get the listing
+	listing := <-listingChan
+
 	if err != nil {
 		return nil, err
+	}
+
+	// Add listing to info
+	if info != nil {
+		info.Listing = listing
 	}
 
 	slog.Info("Uploaded NAR", "object_key", objectKey, "size", info.Size, "hash", info.Hash)
@@ -536,6 +571,7 @@ func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64
 	if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash); err == nil {
 		narHash = convertedHash
 	}
+
 	fmt.Fprintf(&sb, "NarHash: %s\n", narHash)
 	fmt.Fprintf(&sb, "NarSize: %d\n", pathInfo.NarSize)
 

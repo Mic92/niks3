@@ -84,9 +84,11 @@ func TestGCBugBareHashReferences(t *testing.T) {
 
 	// Check if bug occurred
 	bugOccurred := false
+
 	for _, key := range markedForDeletion {
 		if key == hashB+".narinfo" || key == "nar/"+hashB+".nar.zst" {
 			bugOccurred = true
+
 			break
 		}
 	}
@@ -94,6 +96,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	if bugOccurred {
 		t.Errorf("REGRESSION: GC incorrectly marked B's objects for deletion even though A references them")
 		t.Errorf("Objects marked for deletion:")
+
 		for _, key := range markedForDeletion {
 			if strings.Contains(key, hashB) {
 				t.Errorf("  - %s", key)

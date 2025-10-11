@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -51,8 +52,10 @@ func randPort() (uint16, error) {
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
 		_ = ln.Close()
-		return 0, fmt.Errorf("listener did not return *net.TCPAddr")
+
+		return 0, errors.New("listener did not return *net.TCPAddr")
 	}
+
 	port := uint16(addr.Port) //nolint:gosec
 	_ = ln.Close()
 

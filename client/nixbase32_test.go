@@ -35,6 +35,7 @@ func TestEncodeNixBase32(t *testing.T) {
 			var input []byte
 			if tt.input != "" {
 				var err error
+
 				input, err = hex.DecodeString(tt.input)
 				if err != nil {
 					t.Fatalf("Failed to decode hex input: %v", err)
@@ -99,9 +100,11 @@ func TestConvertHashToNix32(t *testing.T) {
 
 			result, err := client.ConvertHashToNix32(tt.input)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ConvertHashToNix32() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("client.ConvertHashToNix32() error = %v, wantErr %v", err, tt.wantErr)
+
 				return
 			}
+
 			if result != tt.expected {
 				t.Errorf("client.ConvertHashToNix32() = %q, want %q", result, tt.expected)
 			}

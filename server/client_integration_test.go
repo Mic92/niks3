@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,12 +12,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/server"
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
 
@@ -33,289 +36,9 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	// Tested 8, 16, 24: 16 showed best throughput (3.33s vs 3.59s and 3.62s)
 	c.MaxConcurrentNARUploads = 16
 
-	// Get path info for all paths and their closures
-	pathInfos, err := client.GetPathInfoRecursive(ctx, paths)
-	if err != nil {
-		return fmt.Errorf("getting path info: %w", err)
-	}
-
-	// Prepare closures
-	closures, pathInfoByHash, err := prepareClosures(pathInfos)
-	if err != nil {
-		return fmt.Errorf("preparing closures: %w", err)
-	}
-
-	// Create pending closures
-	pendingObjects, pendingIDs, err := createPendingClosures(ctx, c, closures)
-	if err != nil {
-		return fmt.Errorf("creating pending closures: %w", err)
-	}
-
-	// Upload all pending objects
-	if err := uploadPendingObjects(ctx, c, pendingObjects, pathInfoByHash); err != nil {
-		return fmt.Errorf("uploading objects: %w", err)
-	}
-
-	// Complete all pending closures
-	if err := completeClosures(ctx, c, pendingIDs); err != nil {
-		return fmt.Errorf("completing closures: %w", err)
-	}
-
-	return nil
-}
-
-type closureInfo struct {
-	narinfoKey string
-	objects    []client.ObjectWithRefs
-}
-
-func prepareClosures(pathInfos map[string]*client.PathInfo) ([]closureInfo, map[string]*client.PathInfo, error) {
-	closures := make([]closureInfo, 0, len(pathInfos))
-
-	pathInfoByHash := make(map[string]*client.PathInfo)
-
-	for storePath, pathInfo := range pathInfos {
-		hash, err := client.GetStorePathHash(storePath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("getting store path hash: %w", err)
-		}
-
-		pathInfoByHash[hash] = pathInfo
-
-		// Extract references as object keys (hash.narinfo)
-		var references []string
-
-		for _, ref := range pathInfo.References {
-			refHash, err := client.GetStorePathHash(ref)
-			if err != nil {
-				return nil, nil, fmt.Errorf("getting reference hash: %w", err)
-			}
-
-			// Store reference as object key (hash.narinfo) so GC can follow it
-			references = append(references, refHash+".narinfo")
-		}
-
-		// NAR file object
-		narFilename := hash + ".nar.zst"
-		narKey := "nar/" + narFilename
-
-		// Narinfo references both dependencies and its own NAR file
-		narinfoRefs := make([]string, 0, len(references)+1)
-		narinfoRefs = append(narinfoRefs, references...)
-		narinfoRefs = append(narinfoRefs, narKey)
-		narinfoKey := hash + ".narinfo"
-
-		// Create objects for this closure
-		objects := []client.ObjectWithRefs{
-			{
-				Key:  narinfoKey,
-				Refs: narinfoRefs,
-			},
-			{
-				Key:     narKey,
-				Refs:    []string{},
-				NarSize: &pathInfo.NarSize, // Include NarSize for multipart estimation
-			},
-		}
-
-		closures = append(closures, closureInfo{
-			narinfoKey: narinfoKey,
-			objects:    objects,
-		})
-	}
-
-	return closures, pathInfoByHash, nil
-}
-
-func createPendingClosures(ctx context.Context, c *client.Client, closures []closureInfo) (map[string]client.PendingObject, []string, error) {
-	pendingObjects := make(map[string]client.PendingObject)
-	pendingIDs := make([]string, 0, len(closures))
-
-	for _, closure := range closures {
-		resp, err := c.CreatePendingClosure(ctx, closure.narinfoKey, closure.objects)
-		if err != nil {
-			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
-		}
-
-		pendingIDs = append(pendingIDs, resp.ID)
-
-		// Collect pending objects
-		for key, obj := range resp.PendingObjects {
-			pendingObjects[key] = obj
-		}
-	}
-
-	return pendingObjects, pendingIDs, nil
-}
-
-func uploadPendingObjects(ctx context.Context, c *client.Client, pendingObjects map[string]client.PendingObject, pathInfoByHash map[string]*client.PathInfo) error {
-	// Separate NAR and narinfo uploads
-	var narTasks []uploadTask
-
-	var narinfoTasks []uploadTask
-
-	for key, obj := range pendingObjects {
-		if strings.HasSuffix(key, ".narinfo") {
-			hash := strings.TrimSuffix(key, ".narinfo")
-			narinfoTasks = append(narinfoTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: false,
-				hash:  hash,
-			})
-
-			continue
-		}
-
-		if strings.HasPrefix(key, "nar/") && strings.HasSuffix(key, ".nar.zst") {
-			// Extract hash from "nar/HASH.nar.zst"
-			filename := strings.TrimPrefix(key, "nar/")
-			hash := strings.TrimSuffix(filename, ".nar.zst")
-			narTasks = append(narTasks, uploadTask{
-				key:   key,
-				obj:   obj,
-				isNar: true,
-				hash:  hash,
-			})
-		}
-	}
-
-	// Upload all NAR files in parallel
-	compressedInfo, err := uploadNARs(ctx, c, narTasks, pathInfoByHash)
-	if err != nil {
-		return err
-	}
-
-	// Upload narinfo files in parallel
-	return uploadNarinfos(ctx, c, narinfoTasks, pathInfoByHash, compressedInfo)
-}
-
-type uploadTask struct {
-	key   string
-	obj   client.PendingObject
-	isNar bool
-	hash  string
-}
-
-func uploadNARs(ctx context.Context, c *client.Client, tasks []uploadTask, pathInfoByHash map[string]*client.PathInfo) (map[string]*client.CompressedFileInfo, error) {
-	// Upload NARs in parallel using worker pool pattern
-	type narResult struct {
-		hash string
-		info *client.CompressedFileInfo
-		err  error
-	}
-
-	resultChan := make(chan narResult, len(tasks))
-	taskChan := make(chan uploadTask, len(tasks))
-
-	var wg sync.WaitGroup
-
-	// Determine number of workers
-	// MaxConcurrentNARUploads of 0 means unlimited
-	numWorkers := c.MaxConcurrentNARUploads
-	if numWorkers <= 0 {
-		numWorkers = len(tasks) // Unlimited - create worker per task
-	}
-
-	// Create fixed number of worker goroutines
-	for range numWorkers {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			// Process tasks from channel until it's closed
-			for task := range taskChan {
-				pathInfo, ok := pathInfoByHash[task.hash]
-				if !ok {
-					resultChan <- narResult{
-						hash: task.hash,
-						err:  fmt.Errorf("path info not found for hash %s", task.hash),
-					}
-
-					continue
-				}
-
-				info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, task.obj, task.key)
-				if err != nil {
-					resultChan <- narResult{
-						hash: task.hash,
-						err:  fmt.Errorf("uploading NAR %s: %w", task.key, err),
-					}
-
-					continue
-				}
-
-				resultChan <- narResult{
-					hash: task.hash,
-					info: info,
-				}
-			}
-		}()
-	}
-
-	// Send all tasks to the channel
-	for _, task := range tasks {
-		taskChan <- task
-	}
-
-	close(taskChan) // Signal no more tasks
-
-	// Wait for all workers to complete
-	wg.Wait()
-	close(resultChan)
-
-	// Collect results
-	results := make(map[string]*client.CompressedFileInfo)
-
-	for result := range resultChan {
-		if result.err != nil {
-			return nil, result.err
-		}
-
-		results[result.hash] = result.info
-	}
-
-	return results, nil
-}
-
-func uploadNarinfos(ctx context.Context, c *client.Client, tasks []uploadTask, pathInfoByHash map[string]*client.PathInfo, compressedInfo map[string]*client.CompressedFileInfo) error {
-	for _, task := range tasks {
-		pathInfo, ok := pathInfoByHash[task.hash]
-		if !ok {
-			return fmt.Errorf("path info not found for hash %s", task.hash)
-		}
-
-		// Get compressed info for this NAR
-		info := compressedInfo[task.hash]
-		if info == nil {
-			// This is a server bug: server asked us to upload narinfo without uploading the NAR.
-			// NAR and narinfo must always be uploaded together as a closure.
-			return fmt.Errorf("server inconsistency: asked to upload narinfo %s without uploading corresponding NAR - this is a server bug", task.key)
-		}
-
-		// Generate narinfo content
-		narinfoContent := client.CreateNarinfo(
-			pathInfo,
-			task.hash+".nar.zst",
-			info.Size,
-			info.Hash,
-		)
-
-		// Upload narinfo
-		if err := c.UploadBytesToPresignedURL(ctx, task.obj.PresignedURL, []byte(narinfoContent)); err != nil {
-			return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
-		}
-	}
-
-	return nil
-}
-
-func completeClosures(ctx context.Context, c *client.Client, pendingIDs []string) error {
-	for _, id := range pendingIDs {
-		if err := c.CompletePendingClosure(ctx, id); err != nil {
-			return fmt.Errorf("completing pending closure %s: %w", id, err)
-		}
+	// Use the high-level PushPaths method
+	if err := c.PushPaths(ctx, paths); err != nil {
+		return fmt.Errorf("pushing paths: %w", err)
 	}
 
 	return nil
@@ -393,8 +116,17 @@ func TestClientIntegration(t *testing.T) {
 		}
 	}()
 
-	// Read and verify narinfo content
-	narinfoContent, err := io.ReadAll(narinfoObj)
+	// Read and decompress narinfo content (it's compressed with zstd)
+	compressedContent, err := io.ReadAll(narinfoObj)
+	ok(t, err)
+
+	// Decompress with zstd
+	decoder, err := zstd.NewReader(bytes.NewReader(compressedContent))
+	ok(t, err)
+
+	defer decoder.Close()
+
+	narinfoContent, err := io.ReadAll(decoder)
 	ok(t, err)
 
 	t.Logf("Retrieved narinfo from S3:\n%s", narinfoContent)
@@ -423,6 +155,46 @@ func TestClientIntegration(t *testing.T) {
 	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 	if err != nil {
 		t.Errorf("NAR file not found in S3: %v", err)
+	}
+
+	// Check if .ls file exists in S3 (compressed with brotli)
+	lsKey := hash + ".ls"
+
+	lsObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, lsKey, minio.GetObjectOptions{})
+	ok(t, err)
+
+	defer func() {
+		if err := lsObj.Close(); err != nil {
+			t.Logf("Failed to close ls object: %v", err)
+		}
+	}()
+
+	// Read and decompress .ls content (it's compressed with brotli)
+	compressedLsContent, err := io.ReadAll(lsObj)
+	ok(t, err)
+
+	t.Logf("Retrieved .ls file from S3 (compressed size: %d bytes)", len(compressedLsContent))
+
+	// Decompress with brotli
+	brReader := brotli.NewReader(bytes.NewReader(compressedLsContent))
+	lsContent, err := io.ReadAll(brReader)
+	ok(t, err)
+
+	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
+
+	// Verify it's valid JSON
+	var listing map[string]interface{}
+	if err := json.Unmarshal(lsContent, &listing); err != nil {
+		t.Errorf("Failed to parse .ls content as JSON: %v", err)
+	}
+
+	// Verify it has the expected structure
+	if version, ok := listing["version"].(float64); !ok || version != 1 {
+		t.Errorf("Expected version 1, got %v", listing["version"])
+	}
+
+	if _, ok := listing["root"]; !ok {
+		t.Errorf(".ls file missing 'root' field")
 	}
 }
 
