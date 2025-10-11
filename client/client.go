@@ -552,12 +552,15 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	buffer := *bufferPtr
 
 	partNumber := 1
+	reachedEOF := false
 
 	for partNumber <= len(multipartInfo.PartURLs) {
 		// Read up to multipartPartSize for this part
 		n, readErr := io.ReadFull(r, buffer)
 		if errors.Is(readErr, io.EOF) {
 			// Done reading
+			reachedEOF = true
+
 			break
 		}
 
@@ -591,8 +594,26 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 		if errors.Is(readErr, io.ErrUnexpectedEOF) {
 			// Short read indicates end of stream
+			reachedEOF = true
+
 			break
 		}
+	}
+
+	// Detect if we exhausted PartURLs without reaching EOF (indicating insufficient parts)
+	if !reachedEOF {
+		// Attempt a minimal read to check for remaining data (reuse existing buffer)
+		_, probeErr := io.ReadFull(r, buffer[:1])
+
+		// If we can read data (or get ErrUnexpectedEOF which means partial data exists),
+		// the stream has more content than the provided PartURLs can handle
+		if probeErr == nil || errors.Is(probeErr, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf(
+				"insufficient part URLs for %s: stream contains more data than %d parts can accommodate; "+
+					"server should over-provision part URLs when estimating from NarSize",
+				objectKey, len(multipartInfo.PartURLs))
+		}
+		// probeErr == io.EOF is acceptable - we happened to end exactly at a part boundary
 	}
 
 	// Complete the multipart upload
