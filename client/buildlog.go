@@ -70,9 +70,12 @@ func (info *CompressedBuildLogInfo) Cleanup() error {
 		return nil
 	}
 
-	if err := os.Remove(info.TempFile); err != nil {
+	if err := os.Remove(info.TempFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing temp file %s: %w", info.TempFile, err)
 	}
+
+	// Clear TempFile to make subsequent calls no-ops
+	info.TempFile = ""
 
 	return nil
 }
