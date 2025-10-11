@@ -19,6 +19,7 @@ nixosTest {
         "nix-command"
         "flakes"
       ];
+      nix.settings.substituters = [ ];
 
       services.niks3 = {
         enable = true;
@@ -146,5 +147,33 @@ nixosTest {
                 --no-check-sigs \
                 {test_path}
     """)
+
+    # Create a simple derivation that produces build log output
+    server.succeed("""
+    cat > /tmp/test-drv.nix << 'EOF'
+    derivation {
+      name = "test-build-log";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo 'test build log output'; echo 'hello world' > $out" ];
+    }
+    EOF
+    """)
+
+    test_output = server.succeed("nix-build --log-format bar-with-logs /tmp/test-drv.nix").strip()
+    print(f"Test output path: {test_output}")
+
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
+      ${niks3}/bin/niks3 push {test_output}
+    """)
+
+    log_output = server.succeed(f"""
+      export AWS_ACCESS_KEY_ID=minioadmin
+      export AWS_SECRET_ACCESS_KEY=minioadmin
+      nix log --store '{binary_cache_url}' {test_output}
+    """)
+    assert "test build log output" in log_output, "Build log missing expected output"
   '';
 }
