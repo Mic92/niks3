@@ -42,8 +42,8 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	closureKey := closureHash + ".narinfo"
 	narKey := "nar/" + closureHash + ".nar.zst"
 	objects := []map[string]interface{}{
-		{"key": closureKey, "refs": []string{narKey}},
-		{"key": narKey, "refs": []string{}},
+		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
+		{"key": narKey, "type": "nar", "refs": []string{}},
 	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": closureKey,
@@ -201,8 +201,8 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	bodyBareClosure, err := json.Marshal(map[string]interface{}{
 		"closure": closureHash,
 		"objects": []map[string]interface{}{
-			{"key": narinfoKey, "refs": []string{narKey}},
-			{"key": narKey, "refs": []string{}},
+			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
+			{"key": narKey, "type": "nar", "refs": []string{}},
 		},
 	})
 	ok(t, err)
@@ -219,8 +219,8 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	firstObject := closureKey + ".narinfo"           // This should be the narinfo file
 	secondObject := "nar/" + closureKey + ".nar.zst" // This should be the NAR file
 	objects := []map[string]interface{}{
-		{"key": firstObject, "refs": []string{secondObject}}, // narinfo references the NAR file
-		{"key": secondObject, "refs": []string{}},            // NAR file has no references
+		{"key": firstObject, "type": "narinfo", "refs": []string{secondObject}}, // narinfo references the NAR file
+		{"key": secondObject, "type": "nar", "refs": []string{}},                // NAR file has no references
 	}
 	body, err := json.Marshal(map[string]interface{}{
 		"closure": firstObject, // Send the narinfo key as closure key
@@ -288,9 +288,9 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	thirdObject := "cccccccccccccccccccccccccccccccc.narinfo"
 
 	objects2 := []map[string]interface{}{
-		{"key": firstObject, "refs": []string{}},
-		{"key": secondObject, "refs": []string{firstObject}},
-		{"key": thirdObject, "refs": []string{secondObject}},
+		{"key": firstObject, "type": "narinfo", "refs": []string{}},
+		{"key": secondObject, "type": "nar", "refs": []string{firstObject}},
+		{"key": thirdObject, "type": "narinfo", "refs": []string{secondObject}},
 	}
 	body2, err := json.Marshal(map[string]interface{}{
 		"closure": "11111111111111111111111111111111.narinfo", // Send the narinfo key as closure key

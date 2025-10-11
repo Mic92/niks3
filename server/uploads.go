@@ -17,6 +17,7 @@ import (
 
 type objectWithRefs struct {
 	Key     string   `json:"key"`
+	Type    string   `json:"type"`
 	Refs    []string `json:"refs"`
 	NarSize *uint64  `json:"nar_size,omitempty"` // For estimating multipart parts
 }
@@ -81,17 +82,12 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	objectsWithRefs := make(map[string][]string)
-	objectsWithNarSize := make(map[string]uint64)
-
+	objectsMap := make(map[string]objectWithRefs)
 	for _, object := range req.Objects {
-		objectsWithRefs[object.Key] = object.Refs
-		if object.NarSize != nil {
-			objectsWithNarSize[object.Key] = *object.NarSize
-		}
+		objectsMap[object.Key] = object
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsWithRefs, objectsWithNarSize)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
