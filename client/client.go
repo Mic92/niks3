@@ -555,14 +555,14 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 	for partNumber <= len(multipartInfo.PartURLs) {
 		// Read up to multipartPartSize for this part
-		n, err := io.ReadFull(r, buffer)
-		if errors.Is(err, io.EOF) {
+		n, readErr := io.ReadFull(r, buffer)
+		if errors.Is(readErr, io.EOF) {
 			// Done reading
 			break
 		}
 
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf("reading part %d: %w", partNumber, err)
+		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("reading part %d: %w", partNumber, readErr)
 		}
 
 		partData := buffer[:n]
@@ -589,7 +589,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 		partNumber++
 
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		if errors.Is(readErr, io.ErrUnexpectedEOF) {
+			// Short read indicates end of stream
 			break
 		}
 	}
