@@ -21,8 +21,8 @@ func BenchmarkDumpPathLargeClosure(b *testing.B) {
 	b.ResetTimer()
 
 	for range b.N {
-		if err := client.DumpPath(io.Discard, root); err != nil {
-			b.Fatalf("DumpPath failed: %v", err)
+		if _, err := client.DumpPathWithListing(io.Discard, root); err != nil {
+			b.Fatalf("DumpPathWithListing failed: %v", err)
 		}
 	}
 }

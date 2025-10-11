@@ -230,8 +230,8 @@ func (s *Service) createPendingObjects(
 }
 
 func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
-	// For narinfo files (small), use simple presigned URL
-	if strings.HasSuffix(objectKey, ".narinfo") {
+	// For small files (narinfo and .ls), use simple presigned URL
+	if strings.HasSuffix(objectKey, ".narinfo") || strings.HasSuffix(objectKey, ".ls") {
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 			s.Bucket,
 			objectKey,
@@ -266,6 +266,7 @@ func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64,
 		UploadID:         uploadID,
 	}); err != nil {
 		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
@@ -392,6 +393,7 @@ func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, minioClient
 			slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
 		}
 	}
+
 	slog.Info("Aborted multipart uploads", "count", len(uploads))
 
 	// 3. Clean database (cascade deletes multipart_uploads rows)

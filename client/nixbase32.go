@@ -13,7 +13,7 @@ import (
 const nixBase32Alphabet = "0123456789abcdfghijklmnpqrsvwxyz"
 
 // EncodeNixBase32 encodes bytes into Nix's base32 format.
-// This implementation is based on Nix's BaseNix32::encode in src/libutil/base-nix-32.cc
+// This implementation is based on Nix's BaseNix32::encode in src/libutil/base-nix-32.cc.
 func EncodeNixBase32(input []byte) string {
 	if len(input) == 0 {
 		return ""
@@ -36,6 +36,7 @@ func EncodeNixBase32(input []byte) string {
 		if i < len(input) {
 			c = input[i] >> j
 		}
+
 		if i+1 < len(input) {
 			c |= input[i+1] << (8 - j)
 		}
