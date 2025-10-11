@@ -184,6 +184,40 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 	return items, nil
 }
 
+const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
+SELECT key
+FROM objects
+WHERE deleted_at IS NOT NULL
+  AND deleted_at < timezone('UTC', now()) - interval '1 second' * $1
+LIMIT $2
+`
+
+type GetObjectsReadyForDeletionParams struct {
+	GracePeriodSeconds interface{} `json:"grace_period_seconds"`
+	LimitCount         int32       `json:"limit_count"`
+}
+
+// Returns objects marked for > grace_period, safe to delete from S3
+func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
 SELECT upload_id, object_key
 FROM multipart_uploads mu
@@ -261,18 +295,18 @@ func (q *Queries) MarkObjectsAsActive(ctx context.Context, dollar_1 []string) er
 	return err
 }
 
-const markObjectsForDeletion = `-- name: MarkObjectsForDeletion :many
+const markStaleObjects = `-- name: MarkStaleObjects :exec
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
 closure_reach AS (
     -- Start with all closure keys
-    SELECT o.key, o.refs 
+    SELECT o.key, o.refs
     FROM objects o
     INNER JOIN closures c ON o.key = c.key
     UNION
     -- Recursively add all referenced objects
-    SELECT o.key, o.refs 
+    SELECT o.key, o.refs
     FROM objects o
     INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
 ),
@@ -293,40 +327,20 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND (
-            o.deleted_at IS NULL
-            OR o.deleted_at < ct.now - interval '1 hour'
-        )
+        AND o.deleted_at IS NULL  -- Only mark fresh objects
     FOR UPDATE
     LIMIT $1
 )
-
 UPDATE objects
 SET
     deleted_at = ct.now,
-    first_deleted_at = COALESCE(first_deleted_at, ct.now)
+    first_deleted_at = ct.now
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
-RETURNING objects.key
 `
 
 // Find all objects reachable from any closure
-func (q *Queries) MarkObjectsForDeletion(ctx context.Context, limit int32) ([]string, error) {
-	rows, err := q.db.Query(ctx, markObjectsForDeletion, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func (q *Queries) MarkStaleObjects(ctx context.Context, limit int32) error {
+	_, err := q.db.Exec(ctx, markStaleObjects, limit)
+	return err
 }

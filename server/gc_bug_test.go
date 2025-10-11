@@ -78,9 +78,27 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	_, err = queries.GetClosure(ctx, hashA+".narinfo")
 	ok(t, err)
 
-	// Run GC
-	markedForDeletion, err := queries.MarkObjectsForDeletion(ctx, 1000)
+	// Run GC (mark stale objects)
+	err = queries.MarkStaleObjects(ctx, 1000)
 	ok(t, err)
+
+	// Check what objects were marked for deletion
+	rows, err := service.Pool.Query(ctx, "SELECT key FROM objects WHERE deleted_at IS NOT NULL")
+	ok(t, err)
+
+	defer rows.Close()
+
+	var markedForDeletion []string
+	for rows.Next() {
+		var key string
+
+		err = rows.Scan(&key)
+		ok(t, err)
+
+		markedForDeletion = append(markedForDeletion, key)
+	}
+
+	ok(t, rows.Err())
 
 	// Check if bug occurred
 	bugOccurred := false
