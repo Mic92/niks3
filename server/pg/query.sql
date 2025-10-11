@@ -86,55 +86,6 @@ SELECT DISTINCT key FROM closure_reach;
 DELETE FROM closures
 WHERE updated_at < $1;
 
--- name: MarkObjectsForDeletion :many
-WITH RECURSIVE ct AS (
-    SELECT timezone('UTC', now()) AS now
-),
--- Find all objects reachable from any closure
-closure_reach AS (
-    -- Start with all closure keys
-    SELECT o.key, o.refs 
-    FROM objects o
-    INNER JOIN closures c ON o.key = c.key
-    UNION
-    -- Recursively add all referenced objects
-    SELECT o.key, o.refs 
-    FROM objects o
-    INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
-),
-reachable_objects AS (
-    SELECT DISTINCT key FROM closure_reach
-),
-stale_objects AS (
-    SELECT o.key
-    FROM objects AS o, ct
-    WHERE
-        NOT EXISTS (
-            SELECT 1
-            FROM reachable_objects ro
-            WHERE ro.key = o.key
-        )
-        AND NOT EXISTS (
-            SELECT 1
-            FROM pending_objects AS po
-            WHERE po.key = o.key
-        )
-        AND (
-            o.deleted_at IS NULL
-            OR o.deleted_at < ct.now - interval '1 hour'
-        )
-    FOR UPDATE
-    LIMIT $1
-)
-
-UPDATE objects
-SET
-    deleted_at = ct.now,
-    first_deleted_at = COALESCE(first_deleted_at, ct.now)
-FROM stale_objects, ct
-WHERE objects.key = stale_objects.key
-RETURNING objects.key;
-
 -- name: MarkObjectsAsActive :exec
 UPDATE objects SET deleted_at = NULL
 WHERE key = any($1::varchar []);
@@ -156,3 +107,55 @@ WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1;
 -- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
+
+-- name: MarkStaleObjects :exec
+WITH RECURSIVE ct AS (
+    SELECT timezone('UTC', now()) AS now
+),
+-- Find all objects reachable from any closure
+closure_reach AS (
+    -- Start with all closure keys
+    SELECT o.key, o.refs
+    FROM objects o
+    INNER JOIN closures c ON o.key = c.key
+    UNION
+    -- Recursively add all referenced objects
+    SELECT o.key, o.refs
+    FROM objects o
+    INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
+),
+reachable_objects AS (
+    SELECT DISTINCT key FROM closure_reach
+),
+stale_objects AS (
+    SELECT o.key
+    FROM objects AS o, ct
+    WHERE
+        NOT EXISTS (
+            SELECT 1
+            FROM reachable_objects ro
+            WHERE ro.key = o.key
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pending_objects AS po
+            WHERE po.key = o.key
+        )
+        AND o.deleted_at IS NULL  -- Only mark fresh objects
+    FOR UPDATE
+    LIMIT $1
+)
+UPDATE objects
+SET
+    deleted_at = ct.now,
+    first_deleted_at = ct.now
+FROM stale_objects, ct
+WHERE objects.key = stale_objects.key;
+
+-- name: GetObjectsReadyForDeletion :many
+-- Returns objects marked for > grace_period, safe to delete from S3
+SELECT key
+FROM objects
+WHERE deleted_at IS NOT NULL
+  AND deleted_at < timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)
+LIMIT sqlc.arg(limit_count);

@@ -68,7 +68,10 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = s.cleanupOrphanObjects(r.Context(), s.Pool); err != nil {
+	// Use same grace period for object cleanup as pending closure cleanup
+	// This ensures no pending closure can resurrect an object being deleted
+	gracePeriod := int32(age.Seconds())
+	if err = s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod); err != nil {
 		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
 
 		return
