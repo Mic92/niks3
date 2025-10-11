@@ -187,8 +187,8 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
 SELECT key
 FROM objects
-WHERE deleted_at IS NOT NULL
-  AND deleted_at < timezone('UTC', now()) - interval '1 second' * $1
+WHERE first_deleted_at IS NOT NULL
+  AND first_deleted_at < timezone('UTC', now()) - interval '1 second' * $1
 LIMIT $2
 `
 
@@ -334,7 +334,7 @@ stale_objects AS (
 UPDATE objects
 SET
     deleted_at = ct.now,
-    first_deleted_at = ct.now
+    first_deleted_at = COALESCE(first_deleted_at, ct.now)
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 `
