@@ -18,6 +18,32 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
+type ObjectType int
+
+const (
+	ObjectTypeNarinfo ObjectType = iota
+	ObjectTypeListing
+	ObjectTypeBuildLog
+	ObjectTypeNAR
+)
+
+func getObjectType(objectKey string) ObjectType {
+	if strings.HasSuffix(objectKey, ".narinfo") {
+		return ObjectTypeNarinfo
+	}
+
+	if strings.HasSuffix(objectKey, ".ls") {
+		return ObjectTypeListing
+	}
+
+	if strings.HasPrefix(objectKey, "log/") {
+		return ObjectTypeBuildLog
+	}
+
+	// Default: assume it's a NAR file
+	return ObjectTypeNAR
+}
+
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
 	multipartPartSize    = 5 * 1024 * 1024 // 5MB parts (S3 minimum)
@@ -230,8 +256,11 @@ func (s *Service) createPendingObjects(
 }
 
 func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
-	// For small files (narinfo and .ls), use simple presigned URL
-	if strings.HasSuffix(objectKey, ".narinfo") || strings.HasSuffix(objectKey, ".ls") {
+	objectType := getObjectType(objectKey)
+
+	// Small files use simple presigned URL
+	switch objectType {
+	case ObjectTypeNarinfo, ObjectTypeListing, ObjectTypeBuildLog:
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 			s.Bucket,
 			objectKey,
@@ -243,9 +272,17 @@ func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64,
 		return PendingObject{
 			PresignedURL: presignedURL.String(),
 		}, nil
-	}
 
-	// For NAR files (large), use multipart upload
+	case ObjectTypeNAR:
+		// NAR files (large) use multipart upload
+		return s.createMultipartUpload(ctx, pendingClosureID, objectKey, narSize)
+
+	default:
+		return PendingObject{}, fmt.Errorf("unknown object type for key: %s", objectKey)
+	}
+}
+
+func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
 	numParts := estimatePartsNeeded(narSize)
 
 	// Create Core client for multipart operations

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -333,6 +334,44 @@ func (c *Client) UploadListingToPresignedURL(ctx context.Context, presignedURL s
 	}
 
 	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed, headers)
+}
+
+// UploadBuildLogToPresignedURL uploads a compressed build log with Content-Encoding header.
+// This follows Nix's convention for compressed build logs stored at log/<drvPath>.
+// The compressedInfo must point to a temporary file created by CompressBuildLog.
+func (c *Client) UploadBuildLogToPresignedURL(ctx context.Context, presignedURL string, compressedInfo *CompressedBuildLogInfo) error {
+	// Open the compressed temp file
+	file, err := os.Open(compressedInfo.TempFile)
+	if err != nil {
+		return fmt.Errorf("opening compressed log: %w", err)
+	}
+
+	defer func() {
+		if err := file.Close(); err != nil {
+			slog.Error("Failed to close file", "error", err)
+		}
+	}()
+
+	// Create upload request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, file)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Length", strconv.FormatInt(compressedInfo.Size, 10))
+	req.ContentLength = compressedInfo.Size
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	req.Header.Set("Content-Encoding", "zstd")
+
+	// Upload
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploading: %w", err)
+	}
+	defer deferCloseBody(resp)
+
+	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
 }
 
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.

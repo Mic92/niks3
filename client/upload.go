@@ -15,15 +15,24 @@ type ClosureInfo struct {
 	Objects    []ObjectWithRefs
 }
 
-// PrepareClosures prepares closures from path info, including NAR, .ls, and narinfo objects.
-func PrepareClosures(pathInfos map[string]*PathInfo) ([]ClosureInfo, map[string]*PathInfo, error) {
+// PrepareClosuresResult contains the result of preparing closures.
+type PrepareClosuresResult struct {
+	Closures       []ClosureInfo
+	PathInfoByHash map[string]*PathInfo
+	LogPathsByKey  map[string]string // Maps log object key -> local log file path
+}
+
+// PrepareClosures prepares closures from path info, including NAR, .ls, narinfo, and build log objects.
+// Build logs are automatically discovered for output paths and included by default.
+func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
 	closures := make([]ClosureInfo, 0, len(pathInfos))
 	pathInfoByHash := make(map[string]*PathInfo)
+	logPathsByKey := make(map[string]string)
 
 	for storePath, pathInfo := range pathInfos {
 		hash, err := GetStorePathHash(storePath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("getting store path hash: %w", err)
+			return nil, fmt.Errorf("getting store path hash: %w", err)
 		}
 
 		pathInfoByHash[hash] = pathInfo
@@ -34,7 +43,7 @@ func PrepareClosures(pathInfos map[string]*PathInfo) ([]ClosureInfo, map[string]
 		for _, ref := range pathInfo.References {
 			refHash, err := GetStorePathHash(ref)
 			if err != nil {
-				return nil, nil, fmt.Errorf("getting reference hash: %w", err)
+				return nil, fmt.Errorf("getting reference hash: %w", err)
 			}
 
 			// Store reference as object key (hash.narinfo) so GC can follow it
@@ -71,13 +80,41 @@ func PrepareClosures(pathInfos map[string]*PathInfo) ([]ClosureInfo, map[string]
 			},
 		}
 
+		// Check if this path has a deriver (i.e., was built) and has a build log
+		if pathInfo.Deriver != nil && *pathInfo.Deriver != "" {
+			drvPath := *pathInfo.Deriver
+
+			logPath, err := GetBuildLogPath(drvPath)
+			if err != nil {
+				slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
+			} else if logPath != "" {
+				// Build log exists - add log object
+				drvName := strings.TrimPrefix(drvPath, "/nix/store/")
+				logKey := "log/" + drvName
+
+				objects = append(objects, ObjectWithRefs{
+					Key:  logKey,
+					Refs: []string{}, // Logs don't reference anything
+				})
+
+				// Track the log path for later upload
+				logPathsByKey[logKey] = logPath
+
+				slog.Info("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
+			}
+		}
+
 		closures = append(closures, ClosureInfo{
 			NarinfoKey: narinfoKey,
 			Objects:    objects,
 		})
 	}
 
-	return closures, pathInfoByHash, nil
+	return &PrepareClosuresResult{
+		Closures:       closures,
+		PathInfoByHash: pathInfoByHash,
+		LogPathsByKey:  logPathsByKey,
+	}, nil
 }
 
 // CreatePendingClosures creates pending closures and returns all pending objects and closure IDs.
@@ -109,13 +146,14 @@ type uploadTask struct {
 	hash  string
 }
 
-// UploadPendingObjects uploads all pending objects (NARs, .ls files, and narinfos).
-func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo) error {
-	// Separate NAR, .ls, and narinfo uploads
+// UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, and build logs).
+func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string) error {
+	// Separate NAR, .ls, narinfo, and log uploads
 	var (
 		narTasks     []uploadTask
 		lsTasks      []uploadTask
 		narinfoTasks []uploadTask
+		logTasks     []uploadTask
 	)
 
 	for key, obj := range pendingObjects {
@@ -154,6 +192,17 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 				isNar: false,
 				hash:  hash,
 			})
+
+			continue
+		}
+
+		if strings.HasPrefix(key, "log/") {
+			logTasks = append(logTasks, uploadTask{
+				key:   key,
+				obj:   obj,
+				isNar: false,
+				hash:  "", // Not used for logs
+			})
 		}
 	}
 
@@ -165,6 +214,11 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 
 	// Upload .ls files in parallel
 	if err := c.uploadListings(ctx, lsTasks, compressedInfo); err != nil {
+		return err
+	}
+
+	// Upload build logs
+	if err := c.uploadLogs(ctx, logTasks, logPathsByKey); err != nil {
 		return err
 	}
 
@@ -271,6 +325,43 @@ func (c *Client) uploadListings(ctx context.Context, tasks []uploadTask, compres
 	return nil
 }
 
+func (c *Client) uploadLogs(ctx context.Context, tasks []uploadTask, logPathsByKey map[string]string) error {
+	for _, task := range tasks {
+		// Get the local log path
+		logPath, ok := logPathsByKey[task.key]
+		if !ok {
+			// Log was requested by server but not found locally - this shouldn't happen
+			// but we'll log a warning and continue rather than failing the entire upload
+			slog.Warn("Build log not found", "key", task.key)
+
+			continue
+		}
+
+		// Compress the log to a temporary file
+		compressedInfo, err := CompressBuildLog(logPath)
+		if err != nil {
+			slog.Warn("Failed to compress build log", "key", task.key, "log_path", logPath, "error", err)
+
+			continue
+		}
+
+		defer func() {
+			if cleanupErr := compressedInfo.Cleanup(); cleanupErr != nil {
+				slog.Warn("Failed to cleanup compressed build log", "key", task.key, "error", cleanupErr)
+			}
+		}()
+
+		// Upload the compressed log
+		if err := c.UploadBuildLogToPresignedURL(ctx, task.obj.PresignedURL, compressedInfo); err != nil {
+			return fmt.Errorf("uploading build log %s: %w", task.key, err)
+		}
+
+		slog.Info("Uploaded build log", "key", task.key)
+	}
+
+	return nil
+}
+
 func (c *Client) uploadNarinfos(ctx context.Context, tasks []uploadTask, pathInfoByHash map[string]*PathInfo, compressedInfo map[string]*CompressedFileInfo) error {
 	for _, task := range tasks {
 		pathInfo, ok := pathInfoByHash[task.hash]
@@ -327,13 +418,17 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	slog.Info("Found paths in closure", "count", len(pathInfos))
 
 	// Prepare closures
-	closures, pathInfoByHash, err := PrepareClosures(pathInfos)
+	result, err := PrepareClosures(pathInfos)
 	if err != nil {
 		return fmt.Errorf("preparing closures: %w", err)
 	}
 
+	if len(result.LogPathsByKey) > 0 {
+		slog.Info("Found build logs", "count", len(result.LogPathsByKey))
+	}
+
 	// Create pending closures and collect what needs uploading
-	pendingObjects, pendingIDs, err := c.CreatePendingClosures(ctx, closures)
+	pendingObjects, pendingIDs, err := c.CreatePendingClosures(ctx, result.Closures)
 	if err != nil {
 		return fmt.Errorf("creating pending closures: %w", err)
 	}
@@ -343,7 +438,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	// Upload all pending objects
 	startTime := time.Now()
 
-	if err := c.UploadPendingObjects(ctx, pendingObjects, pathInfoByHash); err != nil {
+	if err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey); err != nil {
 		return fmt.Errorf("uploading objects: %w", err)
 	}
 
