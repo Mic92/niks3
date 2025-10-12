@@ -1,12 +1,17 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // ClosureInfo represents a closure with its associated objects.
@@ -17,17 +22,52 @@ type ClosureInfo struct {
 
 // PrepareClosuresResult contains the result of preparing closures.
 type PrepareClosuresResult struct {
-	Closures       []ClosureInfo
-	PathInfoByHash map[string]*PathInfo
-	LogPathsByKey  map[string]string // Maps log object key -> local log file path
+	Closures          []ClosureInfo
+	PathInfoByHash    map[string]*PathInfo
+	LogPathsByKey     map[string]string           // Maps log object key -> local log file path
+	RealisationsByKey map[string]*RealisationInfo // Maps realisation key -> realisation info
 }
 
-// PrepareClosures prepares closures from path info, including NAR, .ls, narinfo, and build log objects.
+// compressWithZstd compresses data using zstd compression.
+// Uses the pooled encoder from client.go for efficiency.
+func compressWithZstd(data []byte) ([]byte, error) {
+	var compressed bytes.Buffer
+
+	encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
+	if !ok {
+		return nil, errors.New("failed to get zstd encoder from pool")
+	}
+	defer zstdEncoderPool.Put(encoder)
+
+	encoder.Reset(&compressed)
+
+	if _, err := encoder.Write(data); err != nil {
+		return nil, fmt.Errorf("compressing data: %w", err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("closing zstd encoder: %w", err)
+	}
+
+	return compressed.Bytes(), nil
+}
+
+// PrepareClosures prepares closures from path info, including NAR, .ls, narinfo, build log, and realisation objects.
 // Build logs are automatically discovered for output paths and included by default.
-func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
+// Realisations are queried for CA derivations and included automatically.
+func PrepareClosures(ctx context.Context, pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
 	closures := make([]ClosureInfo, 0, len(pathInfos))
 	pathInfoByHash := make(map[string]*PathInfo)
 	logPathsByKey := make(map[string]string)
+
+	// Query realisations for CA paths
+	realisations, err := QueryRealisations(ctx, pathInfos)
+	if err != nil {
+		// Log warning but don't fail - realisations are optional
+		slog.Warn("Failed to query realisations (CA derivations may not upload correctly)", "error", err)
+
+		realisations = make(map[string]*RealisationInfo)
+	}
 
 	for storePath, pathInfo := range pathInfos {
 		hash, err := GetStorePathHash(storePath)
@@ -57,10 +97,20 @@ func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, er
 		// .ls file (directory listing with brotli compression)
 		lsKey := hash + ".ls"
 
-		// Narinfo references both dependencies, its own NAR file, and .ls file
-		narinfoRefs := make([]string, 0, len(references)+2)
+		// Check if this path has realisation objects
+		var realisationKeys []string
+
+		for realisationKey, realisation := range realisations {
+			if realisation.OutPath == storePath {
+				realisationKeys = append(realisationKeys, realisationKey)
+			}
+		}
+
+		// Narinfo references both dependencies, its own NAR file, .ls file, and any realisations
+		narinfoRefs := make([]string, 0, len(references)+2+len(realisationKeys))
 		narinfoRefs = append(narinfoRefs, references...)
 		narinfoRefs = append(narinfoRefs, narKey, lsKey)
+		narinfoRefs = append(narinfoRefs, realisationKeys...)
 		narinfoKey := hash + ".narinfo"
 
 		// Create objects for this closure
@@ -108,6 +158,15 @@ func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, er
 			}
 		}
 
+		// Add realisation objects for CA derivations
+		for _, realisationKey := range realisationKeys {
+			objects = append(objects, ObjectWithRefs{
+				Key:  realisationKey,
+				Type: ObjectTypeRealisation,
+				Refs: []string{}, // Realisations don't reference other objects
+			})
+		}
+
 		closures = append(closures, ClosureInfo{
 			NarinfoKey: narinfoKey,
 			Objects:    objects,
@@ -115,9 +174,10 @@ func PrepareClosures(pathInfos map[string]*PathInfo) (*PrepareClosuresResult, er
 	}
 
 	return &PrepareClosuresResult{
-		Closures:       closures,
-		PathInfoByHash: pathInfoByHash,
-		LogPathsByKey:  logPathsByKey,
+		Closures:          closures,
+		PathInfoByHash:    pathInfoByHash,
+		LogPathsByKey:     logPathsByKey,
+		RealisationsByKey: realisations,
 	}, nil
 }
 
@@ -149,12 +209,12 @@ type uploadTask struct {
 	hash string
 }
 
-// UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, and build logs).
+// UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, build logs, and realisations).
 // Uses a unified worker pool where:
-// - Logs upload immediately (independent)
+// - Logs and realisations upload immediately (independent)
 // - NARs upload and queue their listings/narinfos when complete
 // - All object types share the same worker pool for maximum parallelism.
-func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string) error {
+func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo) error {
 	// Collect pending objects by type
 	pendingByHash := make(map[string]struct {
 		narTask     *uploadTask
@@ -162,7 +222,10 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 		narinfoTask *uploadTask
 	})
 
-	var logTasks []uploadTask
+	var (
+		logTasks         []uploadTask
+		realisationTasks []uploadTask
+	)
 
 	for key, obj := range pendingObjects {
 		switch obj.Type {
@@ -188,38 +251,41 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 		case "build_log":
 			logTasks = append(logTasks, uploadTask{key: key, obj: obj, hash: ""})
 
+		case "realisation":
+			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj, hash: ""})
+
 		default:
 			return fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
 		}
 	}
 
 	// Upload all objects with unified worker pool
-	return c.uploadAllObjects(ctx, pendingByHash, logTasks, pathInfoByHash, logPathsByKey)
+	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, pathInfoByHash, logPathsByKey, realisationsByKey)
 }
 
 // genericUploadTask represents any upload operation in the unified worker pool.
 type genericUploadTask struct {
-	taskType string // "nar", "listing", "narinfo", "log"
+	taskType string // "nar", "listing", "narinfo", "log", "realisation"
 	task     uploadTask
 	hash     string // For looking up related tasks
 }
 
 // uploadAllObjects uploads all objects using a unified worker pool.
-// Logs upload independently, NARs upload with their listings in the same goroutine,
+// Logs and realisations upload independently, NARs upload with their listings in the same goroutine,
 // then narinfos are uploaded separately after all NARs+listings complete.
 func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]struct {
 	narTask     *uploadTask
 	lsTask      *uploadTask
 	narinfoTask *uploadTask
-}, logTasks []uploadTask, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string,
+}, logTasks []uploadTask, realisationTasks []uploadTask, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo,
 ) error {
 	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
 	var compressedInfoMu sync.Mutex
 
 	compressedInfo := make(map[string]*CompressedFileInfo)
 
-	// Task channel for NAR and log uploads
-	taskChan := make(chan genericUploadTask, len(pendingByHash)+len(logTasks))
+	// Task channel for NAR, log, and realisation uploads
+	taskChan := make(chan genericUploadTask, len(pendingByHash)+len(logTasks)+len(realisationTasks))
 
 	// Track errors
 	errChan := make(chan error, 1)
@@ -229,10 +295,10 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
 	if numWorkers <= 0 {
-		numWorkers = len(pendingByHash) + len(logTasks)
+		numWorkers = len(pendingByHash) + len(logTasks) + len(realisationTasks)
 	}
 
-	// Phase 1: Upload NARs (with listings) and logs in parallel
+	// Phase 1: Upload NARs (with listings), logs, and realisations in parallel
 	var phase1WG sync.WaitGroup
 	for range numWorkers {
 		phase1WG.Add(1)
@@ -249,6 +315,9 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 
 				case "log":
 					err = c.uploadLog(ctx, task.task, logPathsByKey)
+
+				case "realisation":
+					err = c.uploadRealisation(ctx, task.task, realisationsByKey)
 				}
 
 				if err != nil {
@@ -263,6 +332,11 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 	// Queue all log tasks
 	for _, task := range logTasks {
 		taskChan <- genericUploadTask{taskType: "log", task: task}
+	}
+
+	// Queue all realisation tasks
+	for _, task := range realisationTasks {
+		taskChan <- genericUploadTask{taskType: "realisation", task: task}
 	}
 
 	// Queue all NAR tasks
@@ -417,6 +491,44 @@ func (c *Client) uploadLog(ctx context.Context, task uploadTask, logPathsByKey m
 	return nil
 }
 
+// uploadRealisation uploads a realisation (.doi) file for CA derivations.
+func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisationsByKey map[string]*RealisationInfo) error {
+	// Get the realisation info
+	realisationInfo, ok := realisationsByKey[task.key]
+	if !ok {
+		// Realisation was requested by server but not found locally - this shouldn't happen
+		// but we'll log a warning and continue rather than failing the entire upload
+		slog.Warn("Realisation not found", "key", task.key)
+
+		return nil // Don't fail the entire upload
+	}
+
+	// Marshal realisation to JSON
+	jsonData, err := json.Marshal(realisationInfo)
+	if err != nil {
+		return fmt.Errorf("marshaling realisation %s: %w", task.key, err)
+	}
+
+	// Compress with zstd (like narinfo)
+	compressed, err := compressWithZstd(jsonData)
+	if err != nil {
+		return fmt.Errorf("compressing realisation %s: %w", task.key, err)
+	}
+
+	// Upload with Content-Encoding header
+	headers := map[string]string{
+		"Content-Encoding": "zstd",
+	}
+
+	if err := c.UploadBytesToPresignedURLWithHeaders(ctx, task.obj.PresignedURL, compressed, headers); err != nil {
+		return fmt.Errorf("uploading realisation %s: %w", task.key, err)
+	}
+
+	slog.Info("Uploaded realisation", "key", task.key)
+
+	return nil
+}
+
 // uploadNarinfo uploads a narinfo file.
 func (c *Client) uploadNarinfo(ctx context.Context, task uploadTask, pathInfo *PathInfo, info *CompressedFileInfo) error {
 	// Generate narinfo content
@@ -461,13 +573,17 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	slog.Info("Found paths in closure", "count", len(pathInfos))
 
 	// Prepare closures
-	result, err := PrepareClosures(pathInfos)
+	result, err := PrepareClosures(ctx, pathInfos)
 	if err != nil {
 		return fmt.Errorf("preparing closures: %w", err)
 	}
 
 	if len(result.LogPathsByKey) > 0 {
 		slog.Info("Found build logs", "count", len(result.LogPathsByKey))
+	}
+
+	if len(result.RealisationsByKey) > 0 {
+		slog.Info("Found realisations for CA derivations", "count", len(result.RealisationsByKey))
 	}
 
 	// Create pending closures and collect what needs uploading
@@ -481,7 +597,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	// Upload all pending objects
 	startTime := time.Now()
 
-	if err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey); err != nil {
+	if err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey, result.RealisationsByKey); err != nil {
 		return fmt.Errorf("uploading objects: %w", err)
 	}
 
