@@ -21,9 +21,15 @@ func flushBatch(ctx context.Context, keys []string, operation func(context.Conte
 
 	if err := operation(ctx, keys); err != nil {
 		slog.Error("batch operation failed", "error", err)
-		*s3Error = err
+		// Only set s3Error if it's not already set (preserve first error)
+		if *s3Error == nil {
+			*s3Error = err
+		}
+		// Return keys unchanged to allow retry
+		return keys
 	}
 
+	// Only clear keys on success
 	return keys[:0]
 }
 
