@@ -1,8 +1,9 @@
 package server_test
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,15 +29,14 @@ type postgresServer struct {
 func (s *postgresServer) Cleanup() {
 	defer func() {
 		if err := os.RemoveAll(s.tempDir); err != nil {
-			// Use standard log for test files since slog might not be appropriate in test cleanup
-			log.Printf("Failed to remove postgres temp directory: %v", err)
+			slog.Warn("Failed to remove postgres temp directory", "error", err)
 		}
 	}()
 
 	terminateProcess(s.cmd)
 }
 
-func startPostgresServer() (*postgresServer, error) {
+func startPostgresServer(ctx context.Context) (*postgresServer, error) {
 	tempDir, err := os.MkdirTemp("", "postgres")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -44,15 +44,14 @@ func startPostgresServer() (*postgresServer, error) {
 
 	defer func() {
 		if err != nil {
-			err = os.RemoveAll(tempDir)
-			if err != nil {
-				log.Printf("Failed to remove temp dir: %v", err)
+			if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+				slog.Warn("Failed to remove temp dir", "error", removeErr)
 			}
 		}
 	}()
 	// initialize the database
 	dbPath := filepath.Join(tempDir, "data")
-	initdb := exec.Command("initdb", "-D", dbPath, "-U", "postgres")
+	initdb := exec.CommandContext(ctx, "initdb", "-D", dbPath, "-U", "postgres")
 	initdb.Stdout = os.Stdout
 	initdb.Stderr = os.Stderr
 
@@ -66,11 +65,12 @@ func startPostgresServer() (*postgresServer, error) {
 		args = append(args, "-c", "log_statement=all", "-c", "log_min_duration_statement=0")
 	}
 
-	postgresProc := exec.Command("postgres", args...)
+	postgresProc := exec.CommandContext(ctx, "postgres", args...)
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
-	postgresProc.SysProcAttr = &syscall.SysProcAttr{}
-	postgresProc.SysProcAttr.Setsid = true
+	postgresProc.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
 	if err = postgresProc.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start postgres: %w", err)
@@ -88,7 +88,12 @@ func startPostgresServer() (*postgresServer, error) {
 	}()
 
 	for range 30 {
-		waitForPostgres := exec.Command("pg_isready", "-h", tempDir, "-U", "postgres")
+		// Check if context has been cancelled/timed out
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("timeout waiting for postgres to start: %w", ctx.Err())
+		}
+
+		waitForPostgres := exec.CommandContext(ctx, "pg_isready", "-h", tempDir, "-U", "postgres")
 		waitForPostgres.Stdout = os.Stdout
 		waitForPostgres.Stderr = os.Stderr
 

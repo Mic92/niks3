@@ -16,7 +16,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-type Options struct {
+type options struct {
 	DBConnectionString string
 	HTTPAddr           string
 
@@ -37,6 +37,11 @@ type Service struct {
 	APIToken    string
 }
 
+// Close closes the database connection pool.
+func (s *Service) Close() {
+	s.Pool.Close()
+}
+
 const (
 	dbConnectionTimeout = 10 * time.Second
 )
@@ -50,14 +55,14 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		bearerPrefix := "Bearer "
+		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authToken, bearerPrefix) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
 			return
 		}
 
-		authToken = authToken[len(bearerPrefix):]
+		authToken = strings.TrimPrefix(authToken, bearerPrefix)
 		if subtle.ConstantTimeCompare([]byte(authToken), []byte(s.APIToken)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
@@ -68,7 +73,7 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func RunServer(opts *Options) error {
+func runServer(opts *options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
 	defer cancel()
 
@@ -103,6 +108,7 @@ func RunServer(opts *Options) error {
 	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
 	mux.HandleFunc("DELETE /api/pending_closures", service.AuthMiddleware(service.CleanupPendingClosuresHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.AuthMiddleware(service.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", service.AuthMiddleware(service.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
 
@@ -119,10 +125,6 @@ func RunServer(opts *Options) error {
 	}
 
 	return nil
-}
-
-func (s *Service) Close() {
-	s.Pool.Close()
 }
 
 // InitializeBucket ensures the bucket has the required nix-cache-info file.

@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,11 +15,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/server"
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
 
 const testAuthToken = "test-auth-token" //nolint:gosec // Test token for integration tests
+
+// pushToServer uses the client package to push store paths.
+func pushToServer(ctx context.Context, serverURL, authToken string, paths []string) error {
+	// Create client
+	c, err := client.NewClient(serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	// Test with 16 concurrent uploads (optimal based on benchmarks)
+	// Tested 8, 16, 24: 16 showed best throughput (3.33s vs 3.59s and 3.62s)
+	c.MaxConcurrentNARUploads = 16
+
+	// Use the high-level PushPaths method
+	if err := c.PushPaths(ctx, paths); err != nil {
+		return fmt.Errorf("pushing paths: %w", err)
+	}
+
+	return nil
+}
 
 func TestClientIntegration(t *testing.T) {
 	t.Parallel()
@@ -27,16 +52,15 @@ func TestClientIntegration(t *testing.T) {
 	defer service.Close()
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -44,6 +68,7 @@ func TestClientIntegration(t *testing.T) {
 	// Register handlers with auth
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 
 	ts := httptest.NewServer(mux)
@@ -54,8 +79,11 @@ func TestClientIntegration(t *testing.T) {
 	err = os.WriteFile(tempFile, []byte("test content for niks3 integration test"), 0o600)
 	ok(t, err)
 
+	// Use the client package to upload the store path
+	ctx := t.Context()
+
 	// Add the file to nix store
-	output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to add file to nix store: %v\nOutput: %s", err, output)
 	}
@@ -63,21 +91,10 @@ func TestClientIntegration(t *testing.T) {
 	storePath := strings.TrimSpace(string(output))
 	t.Logf("Created store path: %s", storePath)
 
-	// Run the client to upload the store path
-	cmd := exec.Command(testClientPath, "push", storePath)
-
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+ts.URL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
-	output, err = cmd.CombinedOutput()
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath})
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
-
-	t.Logf("Client output: %s", output)
 
 	// Verify the upload by checking if the objects exist in S3
 	// Extract hash from store path
@@ -90,7 +107,7 @@ func TestClientIntegration(t *testing.T) {
 
 	// Check if narinfo exists in S3
 	narinfoKey := hash + ".narinfo"
-	narinfoObj, err := testService.MinioClient.GetObject(context.Background(), testService.Bucket, narinfoKey, minio.GetObjectOptions{})
+	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
 	defer func() {
@@ -99,8 +116,17 @@ func TestClientIntegration(t *testing.T) {
 		}
 	}()
 
-	// Read and verify narinfo content
-	narinfoContent, err := io.ReadAll(narinfoObj)
+	// Read and decompress narinfo content (it's compressed with zstd)
+	compressedContent, err := io.ReadAll(narinfoObj)
+	ok(t, err)
+
+	// Decompress with zstd
+	decoder, err := zstd.NewReader(bytes.NewReader(compressedContent))
+	ok(t, err)
+
+	defer decoder.Close()
+
+	narinfoContent, err := io.ReadAll(decoder)
 	ok(t, err)
 
 	t.Logf("Retrieved narinfo from S3:\n%s", narinfoContent)
@@ -126,9 +152,49 @@ func TestClientIntegration(t *testing.T) {
 	// Also check if NAR file exists in S3 (compressed with zstd)
 	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-	_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 	if err != nil {
 		t.Errorf("NAR file not found in S3: %v", err)
+	}
+
+	// Check if .ls file exists in S3 (compressed with brotli)
+	lsKey := hash + ".ls"
+
+	lsObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, lsKey, minio.GetObjectOptions{})
+	ok(t, err)
+
+	defer func() {
+		if err := lsObj.Close(); err != nil {
+			t.Logf("Failed to close ls object: %v", err)
+		}
+	}()
+
+	// Read and decompress .ls content (it's compressed with brotli)
+	compressedLsContent, err := io.ReadAll(lsObj)
+	ok(t, err)
+
+	t.Logf("Retrieved .ls file from S3 (compressed size: %d bytes)", len(compressedLsContent))
+
+	// Decompress with brotli
+	brReader := brotli.NewReader(bytes.NewReader(compressedLsContent))
+	lsContent, err := io.ReadAll(brReader)
+	ok(t, err)
+
+	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
+
+	// Verify it's valid JSON
+	var listing map[string]interface{}
+	if err := json.Unmarshal(lsContent, &listing); err != nil {
+		t.Errorf("Failed to parse .ls content as JSON: %v", err)
+	}
+
+	// Verify it has the expected structure
+	if version, ok := listing["version"].(float64); !ok || version != 1 {
+		t.Errorf("Expected version 1, got %v", listing["version"])
+	}
+
+	if _, ok := listing["root"]; !ok {
+		t.Errorf(".ls file missing 'root' field")
 	}
 }
 
@@ -140,16 +206,15 @@ func TestClientMultipleUploads(t *testing.T) {
 	defer service.Close()
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -157,9 +222,13 @@ func TestClientMultipleUploads(t *testing.T) {
 	// Register handlers
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
+
+	// Use the client package to upload all paths
+	ctx := t.Context()
 
 	// Create multiple test files and add them to nix store
 	storePaths := make([]string, 0, 3)
@@ -172,7 +241,7 @@ func TestClientMultipleUploads(t *testing.T) {
 		err = os.WriteFile(tempFile, []byte(content), 0o600)
 		ok(t, err)
 
-		output, err = exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		output, err = exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
@@ -180,28 +249,15 @@ func TestClientMultipleUploads(t *testing.T) {
 		t.Logf("Created store path %d: %s", i, storePath)
 	}
 
-	// Run the client with all paths
-	args := []string{"push"}
-	args = append(args, storePaths...)
-
-	cmd := exec.Command(testClientPath, args...)
-
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+ts.URL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
 	start := time.Now()
-	output, err = cmd.CombinedOutput()
+	err = pushToServer(ctx, ts.URL, testAuthToken, storePaths)
 	duration := time.Since(start)
 
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
 
 	t.Logf("Uploaded %d paths in %v", len(storePaths), duration)
-	t.Logf("Client output: %s", output)
 
 	// Verify all uploads
 	for _, storePath := range storePaths {
@@ -211,18 +267,18 @@ func TestClientMultipleUploads(t *testing.T) {
 		// Check if narinfo exists in S3
 		narinfoKey := hash + ".narinfo"
 
-		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
+		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		ok(t, err)
 
 		// Check if NAR exists in S3 (compressed with zstd)
 		narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-		_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+		_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 		ok(t, err)
 	}
 }
 
-func buildNixDerivation(t *testing.T) string {
+func buildNixDerivation(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	// Create a simple Nix expression that has dependencies
 	// We'll use a shell script that depends on bash
@@ -239,10 +295,10 @@ func buildNixDerivation(t *testing.T) string {
 	ok(t, err)
 
 	// Build the derivation
-	output, err := exec.Command("nix-build", nixExpr, "--no-out-link").CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link").CombinedOutput()
 	if err != nil {
 		// If nix-build fails, try with nix build
-		output, err = exec.Command("nix", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
+		output, err = exec.CommandContext(ctx, "nix", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
 		if err != nil {
 			t.Skipf("Failed to build nix expression (nix environment not set up): %v\nOutput: %s", err, output)
 		}
@@ -256,10 +312,10 @@ func buildNixDerivation(t *testing.T) string {
 	return storePath
 }
 
-func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePath, serverURL, authToken string) int {
+func runClientAndVerifyUpload(ctx context.Context, t *testing.T, testService *server.Service, storePath, serverURL, authToken string) int {
 	t.Helper()
 	// Get dependencies using nix-store -qR
-	output, err := exec.Command("nix-store", "-qR", storePath).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "nix-store", "-qR", storePath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to query dependencies: %v\nOutput: %s", err, output)
 	}
@@ -267,18 +323,10 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	dependencies := strings.Split(strings.TrimSpace(string(output)), "\n")
 	t.Logf("Found %d dependencies (including self)", len(dependencies))
 
-	// Run the client to upload the store path (should upload all dependencies)
-	cmd := exec.Command(testClientPath, "push", storePath)
-
-	cmd.Env = append(os.Environ(),
-		"NIKS3_SERVER_URL="+serverURL,
-		"NIKS3_AUTH_TOKEN="+authToken,
-		"RUST_LOG=info",
-	)
-
-	output, err = cmd.CombinedOutput()
+	// Use the client package to upload the store path (should upload all dependencies)
+	err = pushToServer(ctx, serverURL, authToken, []string{storePath})
 	if err != nil {
-		t.Fatalf("Client failed: %v\nOutput: %s", err, output)
+		t.Fatalf("Client failed: %v", err)
 	}
 
 	// Verify all dependencies were uploaded
@@ -300,7 +348,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 		// Check if narinfo exists in S3
 		narinfoKey := hash + ".narinfo"
 
-		_, err := testService.MinioClient.StatObject(context.Background(), testService.Bucket, narinfoKey, minio.StatObjectOptions{})
+		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narinfoKey, minio.StatObjectOptions{})
 		if err != nil {
 			// Some dependencies might already exist, which is fine
 			t.Logf("Narinfo not found for %s (might already exist): %v", dep, err)
@@ -310,7 +358,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 			// Also verify NAR exists (compressed with zstd)
 			narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
 
-			_, err = testService.MinioClient.StatObject(context.Background(), testService.Bucket, narKey, minio.StatObjectOptions{})
+			_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
 			if err != nil {
 				t.Errorf("NAR not found for %s: %v", dep, err)
 			}
@@ -325,7 +373,7 @@ func runClientAndVerifyUpload(t *testing.T, testService *server.Service, storePa
 	return uploadedCount
 }
 
-func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePath string) {
+func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *server.Service, storePath string) {
 	t.Helper()
 	// Create a temporary store directory
 	tempStore := filepath.Join(t.TempDir(), "nix-store")
@@ -346,7 +394,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 
 	// First test that we can fetch nix-cache-info (like Nix's own tests do)
 	// #nosec G204 -- test code with controlled inputs
-	cmd := exec.Command("nix", "eval", "--impure", "--expr",
+	cmd := exec.CommandContext(ctx, "nix", "eval", "--impure", "--expr",
 		fmt.Sprintf(`builtins.fetchurl { name = "foo"; url = "s3://%s/nix-cache-info?endpoint=http://%s&region=eu-west-1"; }`, testService.Bucket, endpoint))
 	cmd.Env = testEnv
 
@@ -354,7 +402,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	ok(t, err)
 
 	// Get info about the store (like Nix's tests)
-	cmd = exec.Command("nix", "store", "info", "--store", binaryCacheURL)
+	cmd = exec.CommandContext(ctx, "nix", "store", "info", "--store", binaryCacheURL)
 	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
@@ -364,7 +412,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	hash := strings.Split(filepath.Base(storePath), "-")[0]
 	narinfoKey := hash + ".narinfo"
 
-	narinfoObj, err := testService.MinioClient.GetObject(context.Background(),
+	narinfoObj, err := testService.MinioClient.GetObject(ctx,
 		testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
@@ -376,7 +424,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	ok(t, err)
 
 	// Use --no-check-sigs like in Nix's tests
-	cmd = exec.Command("nix", "copy",
+	cmd = exec.CommandContext(ctx, "nix", "copy",
 		"--no-check-sigs",
 		"--from", binaryCacheURL,
 		storePath)
@@ -389,7 +437,7 @@ func testRetrieveWithNixCopy(t *testing.T, testService *server.Service, storePat
 	}
 
 	// Verify the path exists locally now
-	cmd = exec.Command("nix", "path-info", storePath)
+	cmd = exec.CommandContext(ctx, "nix", "path-info", storePath)
 
 	_, err = cmd.CombinedOutput()
 	ok(t, err)
@@ -403,16 +451,15 @@ func TestClientWithDependencies(t *testing.T) {
 	t.Cleanup(func() { service.Close() })
 
 	// Create test server with auth
-	authToken := testAuthToken
 	testService := &server.Service{
 		Pool:        service.Pool,
 		MinioClient: service.MinioClient,
 		Bucket:      service.Bucket,
-		APIToken:    authToken,
+		APIToken:    testAuthToken,
 	}
 
 	// Initialize the bucket with nix-cache-info
-	err := testService.InitializeBucket(context.Background())
+	err := testService.InitializeBucket(t.Context())
 	ok(t, err)
 
 	mux := http.NewServeMux()
@@ -420,20 +467,22 @@ func TestClientWithDependencies(t *testing.T) {
 	// Register handlers
 	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 
 	ts := httptest.NewServer(mux)
 
 	t.Cleanup(func() { ts.Close() })
 
-	storePath := buildNixDerivation(t)
+	ctx := t.Context()
+	storePath := buildNixDerivation(ctx, t)
 
-	runClientAndVerifyUpload(t, testService, storePath, ts.URL, authToken)
+	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, testAuthToken)
 
 	// Test that we can retrieve the content using nix copy
 	t.Run("RetrieveWithNixCopy", func(t *testing.T) {
 		t.Parallel()
-		testRetrieveWithNixCopy(t, testService, storePath)
+		testRetrieveWithNixCopy(t.Context(), t, testService, storePath)
 	})
 }
 
@@ -447,36 +496,30 @@ func TestClientErrorHandling(t *testing.T) {
 		defer service.Close()
 
 		// Create test server
-		authToken := "test-auth-token" //nolint:gosec // test credential
 		testService := &server.Service{
 			Pool:        service.Pool,
 			MinioClient: service.MinioClient,
 			Bucket:      service.Bucket,
-			APIToken:    authToken,
+			APIToken:    testAuthToken,
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
 
 		// Try to upload a non-store path
-		cmd := exec.Command(testClientPath, "push", "/tmp/nonexistent")
+		ctx := t.Context()
 
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL="+ts.URL,
-			"NIKS3_AUTH_TOKEN="+authToken,
-		)
-
-		output, err := cmd.CombinedOutput()
+		err := pushToServer(ctx, ts.URL, testAuthToken, []string{"/tmp/nonexistent"})
 		if err == nil {
 			t.Fatal("Expected error for invalid store path")
 		}
 
-		outputStr := string(output)
-		if !strings.Contains(outputStr, "nix path-info failed") {
-			t.Errorf("Expected 'nix path-info failed' error, got: %s", outputStr)
+		if !strings.Contains(err.Error(), "nix path-info failed") {
+			t.Errorf("Expected 'nix path-info failed' error, got: %s", err)
 		}
 	})
 
@@ -486,17 +529,18 @@ func TestClientErrorHandling(t *testing.T) {
 		service := createTestService(t)
 		defer service.Close()
 
-		// Create test server with different auth token
-		authToken := "correct-auth-token" //nolint:gosec // test credential
+		// Create test server with correct auth token
+		correctAuthToken := "correct-auth-token" //nolint:gosec // test credential
 		testService := &server.Service{
 			Pool:        service.Pool,
 			MinioClient: service.MinioClient,
 			Bucket:      service.Bucket,
-			APIToken:    authToken,
+			APIToken:    correctAuthToken,
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
 		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -506,48 +550,39 @@ func TestClientErrorHandling(t *testing.T) {
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		// Try with invalid auth token
+		ctx := t.Context()
+
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
 
-		// Try with invalid auth token
-		cmd := exec.Command(testClientPath, "push", storePath)
-
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL="+ts.URL,
-			"NIKS3_AUTH_TOKEN=invalid-token",
-		)
-
-		output, err = cmd.CombinedOutput()
+		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath})
 		if err == nil {
-			t.Fatalf("Expected error for invalid auth token, but got success. Output: %s", output)
+			t.Fatal("Expected error for invalid auth token")
 		}
 	})
 
 	t.Run("ServerNotAvailable", func(t *testing.T) {
 		t.Parallel()
+
+		// Try with unavailable server
+		ctx := t.Context()
+
 		// Create a valid store path
 		tempFile := filepath.Join(t.TempDir(), "test.txt")
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		output, err := exec.Command("nix-store", "--add", tempFile).CombinedOutput()
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
 
-		// Try with unavailable server
-		cmd := exec.Command(testClientPath, "push", storePath)
-
-		cmd.Env = append(os.Environ(),
-			"NIKS3_SERVER_URL=http://localhost:19999",
-			"NIKS3_AUTH_TOKEN=test-token",
-		)
-
-		output, err = cmd.CombinedOutput()
+		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath})
 		if err == nil {
-			t.Fatalf("Expected error for unavailable server, but got success. Output: %s", output)
+			t.Fatal("Expected error for unavailable server")
 		}
 	})
 }

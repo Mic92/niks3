@@ -22,10 +22,6 @@
           pkgs.goose # db migrations
           pkgs.sqlc # type safe querying
 
-          # Rust development
-          pkgs.rustfmt
-          pkgs.clippy
-
           # Database and storage tools
           pkgs.postgresql_16
           pkgs.minio-client
@@ -37,7 +33,6 @@
         ];
 
         inputsFrom = [
-          config.packages.niks3-server
           config.packages.niks3
         ];
 

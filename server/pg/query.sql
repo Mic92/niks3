@@ -14,8 +14,8 @@ WITH ct AS (
 SELECT
     o.key AS key,
     CASE
-        WHEN o.deleted_at IS NULL THEN NULL
-        ELSE ct.now - o.deleted_at
+        WHEN o.first_deleted_at IS NULL THEN NULL
+        ELSE ct.now - o.first_deleted_at
     END AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar []);
@@ -37,9 +37,11 @@ old_closures AS (
 -- Insert pending objects into objects table if they don't already exist
 -- We mark them as deleted so they can be cleaned up later
 inserted_objects AS (
-    INSERT INTO objects (key, deleted_at)
+    INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
     SELECT
         po.key,
+        po.refs,
+        cutoff_time.time,
         cutoff_time.time
     FROM pending_objects AS po
     JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
@@ -84,19 +86,41 @@ SELECT DISTINCT key FROM closure_reach;
 DELETE FROM closures
 WHERE updated_at < $1;
 
--- name: MarkObjectsForDeletion :many
+-- name: MarkObjectsAsActive :exec
+UPDATE objects SET deleted_at = NULL
+WHERE key = any($1::varchar []);
+
+-- name: DeleteObjects :exec
+DELETE FROM objects
+WHERE key = any($1::varchar []);
+
+-- name: InsertMultipartUpload :exec
+INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
+VALUES ($1, $2, $3);
+
+-- name: GetOldMultipartUploads :many
+SELECT upload_id, object_key
+FROM multipart_uploads mu
+JOIN pending_closures pc ON mu.pending_closure_id = pc.id
+WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1;
+
+-- name: DeleteMultipartUpload :exec
+DELETE FROM multipart_uploads
+WHERE upload_id = $1;
+
+-- name: MarkStaleObjects :exec
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
 -- Find all objects reachable from any closure
 closure_reach AS (
     -- Start with all closure keys
-    SELECT o.key, o.refs 
+    SELECT o.key, o.refs
     FROM objects o
     INNER JOIN closures c ON o.key = c.key
     UNION
     -- Recursively add all referenced objects
-    SELECT o.key, o.refs 
+    SELECT o.key, o.refs
     FROM objects o
     INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
 ),
@@ -117,24 +141,21 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND (
-            o.deleted_at IS NULL
-            OR o.deleted_at < ct.now - interval '1 hour'
-        )
+        AND o.deleted_at IS NULL  -- Only mark fresh objects
     FOR UPDATE
     LIMIT $1
 )
-
 UPDATE objects
-SET deleted_at = ct.now
+SET
+    deleted_at = ct.now,
+    first_deleted_at = COALESCE(first_deleted_at, ct.now)
 FROM stale_objects, ct
-WHERE objects.key = stale_objects.key
-RETURNING objects.key;
+WHERE objects.key = stale_objects.key;
 
--- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar []);
-
--- name: DeleteObjects :exec
-DELETE FROM objects
-WHERE key = any($1::varchar []);
+-- name: GetObjectsReadyForDeletion :many
+-- Returns objects marked for > grace_period, safe to delete from S3
+SELECT key
+FROM objects
+WHERE first_deleted_at IS NOT NULL
+  AND first_deleted_at < timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)
+LIMIT sqlc.arg(limit_count);

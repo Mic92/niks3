@@ -32,11 +32,15 @@ CREATE TABLE objects
 (
     key varchar(1024) PRIMARY KEY,
     refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects (not transitive)
-    deleted_at timestamp
+    deleted_at timestamp,
+    first_deleted_at timestamp -- Track initial deletion time to prevent resurrection race
 );
 
 -- Create GIN index for efficient reference lookups
 CREATE INDEX objects_refs_gin ON objects USING gin (refs);
+
+-- Create partial index for first_deleted_at for efficient deletion queries
+CREATE INDEX objects_first_deleted_at_idx ON objects (first_deleted_at) WHERE first_deleted_at IS NOT NULL;
 
 -- This is where track not yet uploaded closures
 CREATE TABLE pending_closures
@@ -58,16 +62,26 @@ CREATE TABLE pending_objects
 CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
     pending_closure_id
 );
+
+-- Track multipart uploads for cleanup
+CREATE TABLE multipart_uploads (
+    pending_closure_id bigint NOT NULL REFERENCES pending_closures (id) ON DELETE CASCADE,
+    object_key varchar(1024) NOT NULL,
+    upload_id varchar(1024) NOT NULL,
+    PRIMARY KEY (pending_closure_id, object_key)
+);
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
 
+DROP INDEX objects_first_deleted_at_idx;
 DROP INDEX objects_refs_gin;
 DROP INDEX pending_objects_pending_closure_id_idx;
 DROP INDEX closures_updated_at_idx;
 DROP INDEX pending_closures_started_at_idx;
 
+DROP TABLE multipart_uploads;
 DROP TABLE pending_objects;
 DROP TABLE pending_closures;
 DROP TABLE objects;

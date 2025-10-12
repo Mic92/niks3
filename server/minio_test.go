@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"os"
@@ -41,33 +41,36 @@ func randToken(n int) (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func randPort() (uint16, error) {
-	ln, err := net.Listen("tcp", "localhost:0")
+func randPort(ctx context.Context) (uint16, error) {
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
 
-	_ = ln.Close()
-
-	time.Sleep(1 * time.Second)
-
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
-		return 0, fmt.Errorf("failed to get port: %w", err)
+		_ = ln.Close()
+
+		return 0, errors.New("listener did not return *net.TCPAddr")
 	}
 
-	return (uint16)(addr.Port), nil //nolint:gosec
+	port := uint16(addr.Port) //nolint:gosec
+	_ = ln.Close()
+
+	return port, nil
 }
 
-func (s *minioServer) Client(t *testing.T) *minio.Client {
-	t.Helper()
+func (s *minioServer) Client(tb testing.TB) *minio.Client {
+	tb.Helper()
 
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4("minioadmin", s.secret, ""),
 		Secure: false,
 	})
-	ok(t, err)
+	ok(tb, err)
 
 	return minioClient
 }
@@ -107,14 +110,14 @@ func terminateProcess(cmd *exec.Cmd) {
 func (s *minioServer) Cleanup() {
 	defer func() {
 		if err := os.RemoveAll(s.tempDir); err != nil {
-			log.Printf("Failed to remove minio temp directory: %v", err)
+			slog.Warn("Failed to remove minio temp directory", "error", err)
 		}
 	}()
 
 	terminateProcess(s.cmd)
 }
 
-func startMinioServer() (*minioServer, error) {
+func startMinioServer(ctx context.Context) (*minioServer, error) {
 	tempDir, err := os.MkdirTemp("", "minio")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -122,23 +125,24 @@ func startMinioServer() (*minioServer, error) {
 
 	defer func() {
 		if err != nil {
-			if err := os.RemoveAll(tempDir); err != nil {
-				log.Printf("Failed to remove temp directory during startup cleanup: %v", err)
+			if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+				slog.Warn("Failed to remove temp directory during startup cleanup", "error", removeErr)
 			}
 		}
 	}()
 
-	port, err := randPort()
+	port, err := randPort(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
 	//nolint:gosec
-	minioProc := exec.Command("minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
+	minioProc := exec.CommandContext(ctx, "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
-	minioProc.SysProcAttr = &syscall.SysProcAttr{}
-	minioProc.SysProcAttr.Setsid = true
+	minioProc.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
 	// random hex string
 	secret, err := randToken(20)
@@ -154,14 +158,21 @@ func startMinioServer() (*minioServer, error) {
 	minioProc.Env = env
 
 	if err = minioProc.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start postgres: %w", err)
+		return nil, fmt.Errorf("failed to start minio: %w", err)
 	}
 
 	// wait for server to start
+	dialer := net.Dialer{}
+
 	for range 200 {
+		// Check if context has been cancelled/timed out
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("timeout waiting for minio server to start: %w", ctx.Err())
+		}
+
 		var conn net.Conn
 
-		conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+		conn, err = dialer.DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			_ = conn.Close()
 
@@ -198,6 +209,6 @@ func TestService_Miniotest(t *testing.T) {
 	server := createTestService(t)
 	defer server.Close()
 
-	_, err := server.MinioClient.BucketExists(context.Background(), server.Bucket)
+	_, err := server.MinioClient.BucketExists(t.Context(), server.Bucket)
 	ok(t, err)
 }

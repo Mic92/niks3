@@ -4,6 +4,7 @@
   minio-client,
   getent,
   niks3,
+  pkgs,
   ...
 }:
 
@@ -13,6 +14,12 @@ nixosTest {
   nodes = {
     server = {
       imports = [ ../nixosModules/niks3.nix ];
+
+      nix.settings.experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+      nix.settings.substituters = [ ];
 
       services.niks3 = {
         enable = true;
@@ -82,9 +89,10 @@ nixosTest {
         requires = [ "minio-setup.service" ];
       };
 
-      # Add niks3 client to the server
+      # Add niks3 client and hello to the server
       environment.systemPackages = [
         niks3
+        pkgs.hello
       ];
 
       networking.firewall.allowedTCPPorts = [
@@ -105,13 +113,12 @@ nixosTest {
     server.wait_for_open_port(5751)
     server.wait_for_open_port(9000)
 
-    # Create a test derivation to upload
-    print("Creating test store path...")
-    server.succeed("echo 'test content' > /tmp/test-file")
-    test_path = server.succeed("nix-store --add /tmp/test-file").strip()
-    print(f"Test store path: {test_path}")
+    # Use hello package to get a real closure with dependencies
+    test_path = "${pkgs.hello}"
+    print(f"Hello store path: {test_path}")
 
-    # Test pushing a store path using the niks3 client
+    # Test pushing the closure using the niks3 client
+    print("Pushing closure to cache...")
     server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
       NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
@@ -124,5 +131,49 @@ nixosTest {
       NIKS3_AUTH_TOKEN=invalid-token \
       ${niks3}/bin/niks3 push {test_path}
     """)
+
+    # Test pulling from the binary cache using S3 protocol
+    server.succeed("mkdir -p /tmp/test-store")
+
+    # Configure S3 binary cache URL
+    binary_cache_url = "s3://niks3-test?endpoint=http://localhost:9000&region=us-east-1"
+
+    # Pull from the S3 cache to a local store
+    server.succeed(f"""
+      export AWS_ACCESS_KEY_ID=minioadmin
+      export AWS_SECRET_ACCESS_KEY=minioadmin
+      nix copy --from '{binary_cache_url}' \
+                --to /tmp/test-store \
+                --no-check-sigs \
+                {test_path}
+    """)
+
+    # Create a simple derivation that produces build log output
+    server.succeed("""
+    cat > /tmp/test-drv.nix << 'EOF'
+    derivation {
+      name = "test-build-log";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo 'test build log output'; echo 'hello world' > $out" ];
+    }
+    EOF
+    """)
+
+    test_output = server.succeed("nix-build --log-format bar-with-logs /tmp/test-drv.nix").strip()
+    print(f"Test output path: {test_output}")
+
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
+      ${niks3}/bin/niks3 push {test_output}
+    """)
+
+    log_output = server.succeed(f"""
+      export AWS_ACCESS_KEY_ID=minioadmin
+      export AWS_SECRET_ACCESS_KEY=minioadmin
+      nix log --store '{binary_cache_url}' {test_output}
+    """)
+    assert "test build log output" in log_output, "Build log missing expected output"
   '';
 }
