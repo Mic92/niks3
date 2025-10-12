@@ -117,7 +117,7 @@ func (s *minioServer) Cleanup() {
 	terminateProcess(s.cmd)
 }
 
-func startMinioServer() (*minioServer, error) {
+func startMinioServer(ctx context.Context) (*minioServer, error) {
 	tempDir, err := os.MkdirTemp("", "minio")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -137,7 +137,7 @@ func startMinioServer() (*minioServer, error) {
 	}
 
 	//nolint:gosec
-	minioProc := exec.CommandContext(context.Background(), "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
+	minioProc := exec.CommandContext(ctx, "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
 	minioProc.Stdout = os.Stdout
 	minioProc.Stderr = os.Stderr
 	minioProc.SysProcAttr = &syscall.SysProcAttr{
@@ -164,9 +164,14 @@ func startMinioServer() (*minioServer, error) {
 	// wait for server to start
 	dialer := net.Dialer{}
 	for range 200 {
+		// Check if context has been cancelled/timed out
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("timeout waiting for minio server to start: %w", ctx.Err())
+		}
+
 		var conn net.Conn
 
-		conn, err = dialer.DialContext(context.Background(), "tcp", fmt.Sprintf("localhost:%d", port))
+		conn, err = dialer.DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			_ = conn.Close()
 

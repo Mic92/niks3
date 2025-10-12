@@ -1,12 +1,16 @@
 package server_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"testing"
 )
 
 func innerTestMain(m *testing.M) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var err error
 
 	// unload environment variables from the devenv
@@ -15,7 +19,7 @@ func innerTestMain(m *testing.M) int {
 	_ = os.Unsetenv("PGUSER")
 	_ = os.Unsetenv("PGHOST")
 
-	testPostgresServer, err = startPostgresServer()
+	testPostgresServer, err = startPostgresServer(ctx)
 	defer testPostgresServer.Cleanup()
 
 	if err != nil {
@@ -24,7 +28,7 @@ func innerTestMain(m *testing.M) int {
 		return 1
 	}
 
-	testMinioServer, err = startMinioServer()
+	testMinioServer, err = startMinioServer(ctx)
 	defer testMinioServer.Cleanup()
 
 	if err != nil {
