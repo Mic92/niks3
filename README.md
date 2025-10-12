@@ -36,7 +36,7 @@ To run the benchmark:
 
 ```bash
 cd server
-go test -bench=BenchmarkMinimalNixOSClosure -benchtime=3x -v
+go test -bench=BenchmarkPythonClosure -benchtime=3x -v
 ```
 
 [goose]: https://github.com/pressly/goose

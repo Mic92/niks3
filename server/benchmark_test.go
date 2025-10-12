@@ -12,16 +12,16 @@ import (
 	"github.com/Mic92/niks3/server"
 )
 
-// BenchmarkMinimalNixOSClosure benchmarks building a Python closure with
+// BenchmarkPythonClosure benchmarks building a Python closure with
 // common dependencies and uploading it to S3.
 //
 // This benchmark measures the end-to-end performance of:
 // 1. Building a Python environment with popular packages (if not already built)
 // 2. Uploading the entire closure to S3 via the niks3 server
 //
-// The Python closure is defined in nix/benchmark/benchmark-closure.nix
-// and can be built with: nix build .#benchmark-closure.
-func BenchmarkMinimalNixOSClosure(b *testing.B) {
+// The Python closure is defined in nix/benchmark/python-closure.nix
+// and can be built with: nix build .#python-closure.
+func BenchmarkPythonClosure(b *testing.B) {
 	ctx := context.Background()
 
 	// Find the git repository root
@@ -35,7 +35,7 @@ func BenchmarkMinimalNixOSClosure(b *testing.B) {
 	// Build the Python closure once before benchmarking
 	b.Log("Building Python closure (this may take a while on first run)...")
 
-	cmd := exec.CommandContext(ctx, "nix", "build", ".#benchmark-closure", "--print-out-paths", "--no-link")
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "build", ".#python-closure", "--print-out-paths", "--no-link")
 	cmd.Dir = projectRoot
 
 	output, err := cmd.Output()
@@ -52,7 +52,7 @@ func BenchmarkMinimalNixOSClosure(b *testing.B) {
 	b.Logf("Built closure: %s", closurePath)
 
 	// Get closure size for reporting
-	sizeOutput, err := exec.CommandContext(ctx, "nix", "path-info", "-Sh", closurePath).CombinedOutput()
+	sizeOutput, err := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "path-info", "-Sh", closurePath).CombinedOutput()
 	if err != nil {
 		b.Logf("Warning: Could not determine closure size: %v", err)
 	} else {
