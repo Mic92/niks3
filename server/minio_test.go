@@ -41,10 +41,10 @@ func randToken(n int) (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func randPort() (uint16, error) {
+func randPort(ctx context.Context) (uint16, error) {
 	lc := net.ListenConfig{}
 
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, fmt.Errorf("failed to listen: %w", err)
 	}
@@ -131,7 +131,7 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 		}
 	}()
 
-	port, err := randPort()
+	port, err := randPort(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
@@ -163,6 +163,7 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 
 	// wait for server to start
 	dialer := net.Dialer{}
+
 	for range 200 {
 		// Check if context has been cancelled/timed out
 		if ctx.Err() != nil {

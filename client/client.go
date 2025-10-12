@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -495,7 +494,9 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 	// If upload failed, signal compressor to stop and wait for it to exit
 	if err != nil {
 		_ = pw.CloseWithError(err)
+
 		<-errChan // drain to prevent goroutine leak
+
 		return nil, err
 	}
 
