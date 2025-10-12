@@ -4,7 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -17,12 +17,25 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+func readSecretFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return strings.TrimSpace(string(content)), nil
+}
+
 const (
 	minAPITokenLength = 36
 )
 
-func parseArgs() (*Options, error) {
-	var opts Options
+func parseArgs() (*options, error) {
+	var opts options
 
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
@@ -48,31 +61,26 @@ func parseArgs() (*Options, error) {
 		return nil, errors.New("missing required flag: --db")
 	}
 
-	if s3AccessKeyPath != "" {
-		accessKey, err := os.ReadFile(s3AccessKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read S3 access key file: %w", err)
-		}
+	var err error
 
-		opts.S3AccessKey = strings.TrimSpace(string(accessKey))
+	var secret string
+
+	if secret, err = readSecretFile(s3AccessKeyPath); err != nil {
+		return nil, fmt.Errorf("failed to read S3 access key file: %w", err)
+	} else if secret != "" {
+		opts.S3AccessKey = secret
 	}
 
-	if s3SecretKeyPath != "" {
-		secretKey, err := os.ReadFile(s3SecretKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read S3 secret key file: %w", err)
-		}
-
-		opts.S3SecretKey = strings.TrimSpace(string(secretKey))
+	if secret, err = readSecretFile(s3SecretKeyPath); err != nil {
+		return nil, fmt.Errorf("failed to read S3 secret key file: %w", err)
+	} else if secret != "" {
+		opts.S3SecretKey = secret
 	}
 
-	if apiTokenPath != "" {
-		apiToken, err := os.ReadFile(apiTokenPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read API token file: %w", err)
-		}
-
-		opts.APIToken = strings.TrimSpace(string(apiToken))
+	if secret, err = readSecretFile(apiTokenPath); err != nil {
+		return nil, fmt.Errorf("failed to read API token file: %w", err)
+	} else if secret != "" {
+		opts.APIToken = secret
 	}
 
 	if opts.S3Endpoint == "" {
@@ -105,10 +113,12 @@ func parseArgs() (*Options, error) {
 func Main() {
 	opts, err := parseArgs()
 	if err != nil {
-		log.Fatalf("Failed to parse args: %v", err)
+		slog.Error("Failed to parse args", "error", err)
+		os.Exit(1)
 	}
 
-	if err := RunServer(opts); err != nil {
-		log.Fatalf("Failed to run gc service: %v", err)
+	if err := runServer(opts); err != nil {
+		slog.Error("Failed to run server", "error", err)
+		os.Exit(1)
 	}
 }

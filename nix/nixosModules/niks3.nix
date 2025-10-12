@@ -14,9 +14,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../packages/niks3-server.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ./niks3-server.nix { }";
-      description = "The niks3-server package to use.";
+      default = pkgs.callPackage ../packages/niks3.nix { };
+      defaultText = lib.literalExpression "pkgs.callPackage ./niks3.nix { }";
+      description = "The niks3 package to use.";
     };
 
     httpAddr = lib.mkOption {

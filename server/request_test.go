@@ -17,41 +17,41 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-func createTestService(t *testing.T) *server.Service {
-	t.Helper()
+func createTestService(tb testing.TB) *server.Service {
+	tb.Helper()
 
 	if testPostgresServer == nil {
-		t.Fatal("postgres server not started")
+		tb.Fatal("postgres server not started")
 	}
 
 	if testMinioServer == nil {
-		t.Fatal("minio server not started")
+		tb.Fatal("minio server not started")
 	}
 
 	// create database for test
 	dbName := "db" + strconv.Itoa(int(testDBCount.Add(1)))
 	//nolint:gosec
-	command := exec.Command("createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
+	command := exec.CommandContext(tb.Context(), "createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	err := command.Run()
-	ok(t, err)
+	ok(tb, err)
 
 	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(tb.Context(), 10*time.Second)
 	defer cancel()
 
 	pool, err := pg.Connect(ctx, connectionString)
 	if err != nil {
-		ok(t, err)
+		ok(tb, err)
 	}
 	// create bucket for test
 	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
-	minioClient := testMinioServer.Client(t)
+	minioClient := testMinioServer.Client(tb)
 
 	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-	ok(t, err)
+	ok(tb, err)
 
 	return &server.Service{
 		Pool:        pool,
@@ -76,7 +76,7 @@ func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
 
 	rr := httptest.NewRecorder()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, req.method, req.path, bytes.NewBuffer(req.body))
@@ -91,12 +91,10 @@ func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
 	ok(t, err)
 	req.handler.ServeHTTP(rr, httpReq)
 
-	if req.checkResponse == nil {
-		if rr.Code < 200 || rr.Code >= 300 {
-			httpOkDepth(t, rr)
-		}
-	} else {
+	if req.checkResponse != nil {
 		(*req.checkResponse)(t, rr)
+	} else if rr.Code < 200 || rr.Code >= 300 {
+		httpOkDepth(t, rr)
 	}
 
 	return rr

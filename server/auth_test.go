@@ -26,7 +26,7 @@ func TestService_AuthMiddleware(t *testing.T) {
 		},
 	})
 
-	checkResponse := func(t *testing.T, w *httptest.ResponseRecorder) {
+	checkUnauthorized := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
 
 		if w.Code != http.StatusUnauthorized {
@@ -35,13 +35,12 @@ func TestService_AuthMiddleware(t *testing.T) {
 	}
 
 	testRequest(t, &TestRequest{
-		method:  "GET",
-		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
-		// checkResponse *func(*testing.T, *httptest.ResponseRecorder)
-		checkResponse: &checkResponse,
+		method:        "GET",
+		path:          "/health",
+		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		checkResponse: &checkUnauthorized,
 		header: map[string]string{
-			"Authorization": "Bearer " + "wrongtoken",
+			"Authorization": "Bearer wrongtoken",
 		},
 	})
 }
