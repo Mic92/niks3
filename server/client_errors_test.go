@@ -1,0 +1,114 @@
+package server_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Mic92/niks3/server"
+)
+
+func TestClientErrorHandling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("InvalidStorePath", func(t *testing.T) {
+		t.Parallel()
+
+		service := createTestService(t)
+		defer service.Close()
+
+		// Create test server
+		testService := &server.Service{
+			Pool:        service.Pool,
+			MinioClient: service.MinioClient,
+			Bucket:      service.Bucket,
+			APIToken:    testAuthToken,
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
+		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+
+		ts := httptest.NewServer(mux)
+		defer ts.Close()
+
+		// Try to upload a non-store path
+		ctx := t.Context()
+
+		err := pushToServer(ctx, ts.URL, testAuthToken, []string{"/tmp/nonexistent"})
+		if err == nil {
+			t.Fatal("Expected error for invalid store path")
+		}
+
+		if !strings.Contains(err.Error(), "nix path-info failed") {
+			t.Errorf("Expected 'nix path-info failed' error, got: %s", err)
+		}
+	})
+
+	t.Run("InvalidAuthToken", func(t *testing.T) {
+		t.Parallel()
+
+		service := createTestService(t)
+		defer service.Close()
+
+		// Create test server with correct auth token
+		correctAuthToken := "correct-auth-token" //nolint:gosec // test credential
+		testService := &server.Service{
+			Pool:        service.Pool,
+			MinioClient: service.MinioClient,
+			Bucket:      service.Bucket,
+			APIToken:    correctAuthToken,
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
+		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
+		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+
+		ts := httptest.NewServer(mux)
+		defer ts.Close()
+
+		// Create a valid store path
+		tempFile := filepath.Join(t.TempDir(), "test.txt")
+		err := os.WriteFile(tempFile, []byte("test"), 0o600)
+		ok(t, err)
+
+		// Try with invalid auth token
+		ctx := t.Context()
+
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
+		ok(t, err)
+
+		storePath := strings.TrimSpace(string(output))
+
+		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath})
+		if err == nil {
+			t.Fatal("Expected error for invalid auth token")
+		}
+	})
+
+	t.Run("ServerNotAvailable", func(t *testing.T) {
+		t.Parallel()
+
+		// Try with unavailable server
+		ctx := t.Context()
+
+		// Create a valid store path
+		tempFile := filepath.Join(t.TempDir(), "test.txt")
+		err := os.WriteFile(tempFile, []byte("test"), 0o600)
+		ok(t, err)
+
+		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
+		ok(t, err)
+
+		storePath := strings.TrimSpace(string(output))
+
+		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath})
+		if err == nil {
+			t.Fatal("Expected error for unavailable server")
+		}
+	})
+}
