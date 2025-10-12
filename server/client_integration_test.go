@@ -298,7 +298,7 @@ func buildNixDerivation(ctx context.Context, t *testing.T) string {
 	output, err := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link").CombinedOutput()
 	if err != nil {
 		// If nix-build fails, try with nix build
-		output, err = exec.CommandContext(ctx, "nix", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
+		output, err = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "build", "-f", nixExpr, "--no-link", "--print-out-paths").CombinedOutput()
 		if err != nil {
 			t.Skipf("Failed to build nix expression (nix environment not set up): %v\nOutput: %s", err, output)
 		}
@@ -394,7 +394,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 
 	// First test that we can fetch nix-cache-info (like Nix's own tests do)
 	// #nosec G204 -- test code with controlled inputs
-	cmd := exec.CommandContext(ctx, "nix", "eval", "--impure", "--expr",
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "eval", "--impure", "--expr",
 		fmt.Sprintf(`builtins.fetchurl { name = "foo"; url = "s3://%s/nix-cache-info?endpoint=http://%s&region=eu-west-1"; }`, testService.Bucket, endpoint))
 	cmd.Env = testEnv
 
@@ -402,7 +402,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	ok(t, err)
 
 	// Get info about the store (like Nix's tests)
-	cmd = exec.CommandContext(ctx, "nix", "store", "info", "--store", binaryCacheURL)
+	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "store", "info", "--store", binaryCacheURL)
 	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
@@ -424,7 +424,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	ok(t, err)
 
 	// Use --no-check-sigs like in Nix's tests
-	cmd = exec.CommandContext(ctx, "nix", "copy",
+	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "copy",
 		"--no-check-sigs",
 		"--from", binaryCacheURL,
 		storePath)
@@ -437,7 +437,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	}
 
 	// Verify the path exists locally now
-	cmd = exec.CommandContext(ctx, "nix", "path-info", storePath)
+	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "path-info", storePath)
 
 	_, err = cmd.CombinedOutput()
 	ok(t, err)
