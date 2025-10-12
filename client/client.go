@@ -282,7 +282,6 @@ func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presi
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "application/octet-stream")
 
@@ -521,7 +520,6 @@ func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.R
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "application/octet-stream")
 
