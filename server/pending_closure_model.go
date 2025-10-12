@@ -238,7 +238,7 @@ func (s *Service) createPendingObjects(
 func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, objectType string, narSize uint64) (PendingObject, error) {
 	// Small files use simple presigned URL
 	switch objectType {
-	case "narinfo", "listing", "build_log":
+	case "narinfo", "listing", "build_log", "realisation":
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 			s.Bucket,
 			objectKey,

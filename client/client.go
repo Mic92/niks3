@@ -60,10 +60,11 @@ type Client struct {
 type ObjectType string
 
 const (
-	ObjectTypeNarinfo  ObjectType = "narinfo"
-	ObjectTypeListing  ObjectType = "listing"
-	ObjectTypeBuildLog ObjectType = "build_log"
-	ObjectTypeNAR      ObjectType = "nar"
+	ObjectTypeNarinfo     ObjectType = "narinfo"
+	ObjectTypeListing     ObjectType = "listing"
+	ObjectTypeBuildLog    ObjectType = "build_log"
+	ObjectTypeNAR         ObjectType = "nar"
+	ObjectTypeRealisation ObjectType = "realisation"
 )
 
 // ObjectWithRefs represents an object with its dependencies.
