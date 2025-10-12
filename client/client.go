@@ -492,6 +492,13 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 		return nil, errors.New("no upload method provided")
 	}
 
+	// If upload failed, signal compressor to stop and wait for it to exit
+	if err != nil {
+		_ = pw.CloseWithError(err)
+		<-errChan // drain to prevent goroutine leak
+		return nil, err
+	}
+
 	// Check for compression errors
 	if compressErr := <-errChan; compressErr != nil {
 		return nil, compressErr
@@ -499,10 +506,6 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 
 	// Get the listing
 	listing := <-listingChan
-
-	if err != nil {
-		return nil, err
-	}
 
 	// Add listing to info
 	if info != nil {
