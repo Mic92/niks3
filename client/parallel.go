@@ -20,12 +20,13 @@ type genericUploadTask struct {
 	hash     string // For looking up related tasks
 }
 
-// UploadPendingObjects uploads all pending objects (NARs, .ls files, narinfos, build logs, and realisations).
+// UploadPendingObjects uploads all pending objects (NARs, .ls files, build logs, and realisations).
+// Returns narinfo metadata for each closure to be signed and uploaded by the server.
 // Uses a unified worker pool where:
 // - Logs and realisations upload immediately (independent)
-// - NARs upload and queue their listings/narinfos when complete
-// - All object types share the same worker pool for maximum parallelism.
-func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo) error {
+// - NARs upload and queue their listings when complete
+// - Narinfo metadata is collected (not uploaded) for server-side signing.
+func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo) (map[string]NarinfoMetadata, error) {
 	// Collect pending objects by type
 	pendingByHash := make(map[string]struct {
 		narTask     *uploadTask
@@ -66,23 +67,23 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj, hash: ""})
 
 		default:
-			return fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
+			return nil, fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
 		}
 	}
 
-	// Upload all objects with unified worker pool
+	// Upload all objects with unified worker pool and collect narinfo metadata
 	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, pathInfoByHash, logPathsByKey, realisationsByKey)
 }
 
 // uploadAllObjects uploads all objects using a unified worker pool.
 // Logs and realisations upload independently, NARs upload with their listings in the same goroutine,
-// then narinfos are uploaded separately after all NARs+listings complete.
+// then narinfo metadata is collected for server-side signing.
 func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]struct {
 	narTask     *uploadTask
 	lsTask      *uploadTask
 	narinfoTask *uploadTask
 }, logTasks []uploadTask, realisationTasks []uploadTask, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo,
-) error {
+) (map[string]NarinfoMetadata, error) {
 	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
 	var compressedInfoMu sync.Mutex
 
@@ -159,48 +160,49 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 	select {
 	case err := <-errChan:
 		if err != nil {
-			return err
+			return nil, err
 		}
 	default:
 	}
 
-	// Phase 2: Upload narinfos for successfully uploaded NARs
-	// Create task channel for narinfos
-	narinfoTaskChan := make(chan genericUploadTask, len(pendingByHash))
+	// Phase 2: Collect narinfo metadata for successfully uploaded NARs
+	narinfoMetadata := make(map[string]NarinfoMetadata)
+
 	for hash, entry := range pendingByHash {
-		// Only upload narinfo if NAR was successfully uploaded (check compressedInfo)
-		if _, ok := compressedInfo[hash]; ok && entry.narinfoTask != nil {
-			narinfoTaskChan <- genericUploadTask{taskType: "narinfo", task: *entry.narinfoTask, hash: hash}
+		// Only collect metadata if NAR was successfully uploaded (check compressedInfo)
+		info, ok := compressedInfo[hash]
+		if !ok || entry.narinfoTask == nil {
+			continue
 		}
+
+		pathInfo := pathInfoByHash[hash]
+		if pathInfo == nil {
+			continue
+		}
+
+		// Convert NarHash to Nix32 format for the narinfo
+		narHash := pathInfo.NarHash
+		if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash); err == nil {
+			narHash = convertedHash
+		}
+
+		// Create narinfo metadata
+		metadata := NarinfoMetadata{
+			StorePath:   pathInfo.Path,
+			URL:         "nar/" + hash + ".nar.zst",
+			Compression: "zstd",
+			NarHash:     narHash,
+			NarSize:     pathInfo.NarSize,
+			FileHash:    info.Hash,
+			FileSize:    info.Size,
+			References:  pathInfo.References,
+			Deriver:     pathInfo.Deriver,
+			Signatures:  pathInfo.Signatures,
+			CA:          pathInfo.CA,
+		}
+
+		narinfoMetadata[entry.narinfoTask.key] = metadata
 	}
 
-	close(narinfoTaskChan)
-
-	var phase2WG sync.WaitGroup
-	for range numWorkers {
-		phase2WG.Add(1)
-
-		go func() {
-			defer phase2WG.Done()
-
-			for task := range narinfoTaskChan {
-				if err := c.uploadNarinfo(ctx, task.task, pathInfoByHash[task.hash], compressedInfo[task.hash]); err != nil {
-					errOnce.Do(func() {
-						errChan <- err
-					})
-				}
-			}
-		}()
-	}
-
-	phase2WG.Wait()
-
-	// Check for errors from phase 2
-	select {
-	case err := <-errChan:
-		return err
-	default:
-	}
-
-	return nil
+	return narinfoMetadata, nil
 }

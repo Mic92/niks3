@@ -48,6 +48,7 @@ func TestGetStorePathHash(t *testing.T) {
 			hash, err := client.GetStorePathHash(tt.storePath)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetStorePathHash() error = %v, wantErr %v", err, tt.wantErr)
+
 				return
 			}
 

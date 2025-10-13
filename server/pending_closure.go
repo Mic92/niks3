@@ -21,8 +21,8 @@ const (
 )
 
 type PendingObject struct {
-	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, nar)
-	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files (narinfo, listing, build_log)
+	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, realisation, nar)
+	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files (listing, build_log, realisation)
 	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files (nar)
 }
 
@@ -191,9 +191,16 @@ func (s *Service) createPendingObjects(
 }
 
 func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, objectType string, narSize uint64) (PendingObject, error) {
-	// Small files use simple presigned URL
+	// Small files (excluding narinfo) use simple presigned URL
 	switch objectType {
-	case "narinfo", "listing", "build_log", "realisation":
+	case "narinfo":
+		// Narinfo files are signed and uploaded by the server during commit
+		// No presigned URL needed - return empty object
+		return PendingObject{
+			Type: objectType,
+		}, nil
+
+	case "listing", "build_log", "realisation":
 		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 			s.Bucket,
 			objectKey,

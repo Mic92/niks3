@@ -64,8 +64,6 @@ func verifyRealisationFiles(ctx context.Context, t *testing.T, testService *serv
 		realisationObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, realisationKey, minio.GetObjectOptions{})
 		ok(t, err)
 
-		defer realisationObj.Close()
-
 		compressedRealisation, err := io.ReadAll(realisationObj)
 		ok(t, err)
 
@@ -155,7 +153,11 @@ func TestClientCADerivations(t *testing.T) {
 	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
-	defer narinfoObj.Close()
+	defer func() {
+		if err := narinfoObj.Close(); err != nil {
+			t.Logf("Failed to close narinfo object: %v", err)
+		}
+	}()
 
 	// Decompress and parse narinfo
 	compressedContent, err := io.ReadAll(narinfoObj)

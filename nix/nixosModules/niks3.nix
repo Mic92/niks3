@@ -95,6 +95,17 @@ in
       '';
     };
 
+    signKeyFiles = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
+      default = [ ];
+      description = ''
+        List of paths to signing key files for signing narinfo files.
+        Each file should contain an Ed25519 key in the format "name:base64-key".
+        Multiple keys can be provided for key rotation.
+      '';
+      example = lib.literalExpression ''[ /run/secrets/niks3-sign-key ]'';
+    };
+
     user = lib.mkOption {
       type = lib.types.str;
       default = "niks3";
@@ -163,7 +174,13 @@ in
             --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}" \
             --s3-access-key-path "${cfg.s3.accessKeyFile}" \
             --s3-secret-key-path "${cfg.s3.secretKeyFile}" \
-            --api-token-path "${cfg.apiTokenFile}"
+            --api-token-path "${cfg.apiTokenFile}"${
+              lib.optionalString (cfg.signKeyFiles != [ ]) ''
+                \
+                           ${lib.concatMapStringsSep " \\\n            " (
+                             file: "--sign-key-path \"${file}\""
+                           ) cfg.signKeyFiles}''
+            }
         '';
         User = cfg.user;
         Group = cfg.group;
