@@ -188,7 +188,7 @@ const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND first_deleted_at < timezone('UTC', now()) - interval '1 second' * $1
+  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1
 LIMIT $2
 `
 
@@ -197,7 +197,7 @@ type GetObjectsReadyForDeletionParams struct {
 	LimitCount         int32       `json:"limit_count"`
 }
 
-// Returns objects marked for > grace_period, safe to delete from S3
+// Returns objects marked for >= grace_period, safe to delete from S3
 func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.LimitCount)
 	if err != nil {

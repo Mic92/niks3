@@ -62,15 +62,33 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if age < 0 {
+		http.Error(w, "older-than must not be negative", http.StatusBadRequest)
+
+		return
+	}
+
 	if err = cleanupClosureOlderThan(r.Context(), s.Pool, age); err != nil {
 		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
 
-	// Use same grace period for object cleanup as pending closure cleanup
-	// This ensures no pending closure can resurrect an object being deleted
-	gracePeriod := int32(age.Seconds())
+	// Check if force mode is enabled
+	force := r.URL.Query().Get("force") == "true"
+
+	var gracePeriod int32
+	if force {
+		// Force mode: immediate deletion (grace period = 0)
+		gracePeriod = 0
+
+		slog.Warn("Force mode enabled - objects will be deleted immediately without grace period")
+	} else {
+		// Use same grace period for object cleanup as pending closure cleanup
+		// This ensures no pending closure can resurrect an object being deleted
+		gracePeriod = int32(age.Seconds())
+	}
+
 	if err = s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod); err != nil {
 		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
 

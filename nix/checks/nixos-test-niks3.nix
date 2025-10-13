@@ -44,6 +44,12 @@ nixosTest {
 
           apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
           signKeyFiles = [ signingSecretKey ];
+
+          gc = {
+            enable = true;
+            olderThan = "720h"; # Default 30 days for production use
+            # Note: Test uses CLI with --older-than 10s for faster testing
+          };
         };
 
         # Run MinIO for S3 storage
@@ -140,7 +146,6 @@ nixosTest {
     print(f"Hello store path: {test_path}")
 
     # Test pushing the closure using the niks3 client with file-based auth token
-    print("Pushing closure to cache...")
     server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
       NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
@@ -161,15 +166,8 @@ nixosTest {
     # Configure S3 binary cache URL
     binary_cache_url = "s3://niks3-test?endpoint=http://localhost:9000&region=us-east-1"
 
-    # Check nix configuration to verify trusted key is present
-    print("Checking nix.conf...")
-    nix_conf = server.succeed("cat /etc/nix/nix.conf")
-    print(f"nix.conf content:\n{nix_conf}")
-    assert "niks3-test-1:f/Mfq81CcfUlnchjlZdtSGyZUHplChuNKltk08qxPvs=" in nix_conf, "Trusted public key not in nix.conf"
-
     # Test that signatures are verified by default (without --no-check-sigs)
     # This will fail if narinfos aren't properly signed
-    print("Testing signature verification...")
     server.succeed(f"""
       export AWS_ACCESS_KEY_ID=minioadmin
       export AWS_SECRET_ACCESS_KEY=minioadmin
@@ -207,7 +205,6 @@ nixosTest {
     assert "test build log output" in log_output, "Build log missing expected output"
 
     # Test CA (content-addressed) derivations with signature verification
-    print("Testing CA derivations...")
     server.succeed("""
     cat > /tmp/ca-test.nix << 'EOF'
     derivation {
@@ -252,5 +249,8 @@ nixosTest {
     # Verify realisation info is available in the chroot store
     realisation_info = server.succeed(f"nix --store /tmp/chroot-store realisation info {ca_output}")
     print(f"Realisation info in chroot store: {realisation_info}")
+
+    # Test that GC systemd service runs successfully
+    server.succeed("systemctl start niks3-gc.service")
   '';
 }

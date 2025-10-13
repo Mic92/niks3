@@ -117,6 +117,47 @@ in
       default = "niks3";
       description = "Group under which the niks3 server runs.";
     };
+
+    gc = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether to enable automatic garbage collection.
+          When enabled, a systemd timer will periodically clean up old closures and orphan objects.
+        '';
+      };
+
+      olderThan = lib.mkOption {
+        type = lib.types.str;
+        default = "720h"; # 30 days
+        example = "168h"; # 7 days
+        description = ''
+          Duration string for how old closures must be before being garbage collected.
+          Accepts Go duration format (e.g., "720h" for 30 days, "168h" for 7 days).
+        '';
+      };
+
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "daily";
+        example = "*-*-* 02:00:00";
+        description = ''
+          When to run garbage collection. Uses systemd timer calendar format.
+          Default is "daily" (runs once per day at midnight).
+          See systemd.time(7) for more details.
+        '';
+      };
+
+      randomizedDelaySec = lib.mkOption {
+        type = lib.types.int;
+        default = 1800; # 30 minutes
+        description = ''
+          Add a randomized delay (in seconds) before starting garbage collection.
+          This helps distribute load when multiple instances are running.
+        '';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -215,6 +256,63 @@ in
         # State directory
         StateDirectory = "niks3";
         StateDirectoryMode = "0700";
+      };
+    };
+
+    systemd.services.niks3-gc = lib.mkIf cfg.gc.enable {
+      description = "niks3 garbage collection";
+      after = [
+        "network.target"
+        "niks3.service"
+      ];
+      requires = [ "niks3.service" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = ''
+          ${cfg.package}/bin/niks3 gc \
+            --server-url "http://${cfg.httpAddr}" \
+            --auth-token-path "${cfg.apiTokenFile}" \
+            --older-than "${cfg.gc.olderThan}"
+        '';
+        User = cfg.user;
+        Group = cfg.group;
+
+        # Hardening
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectControlGroups = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        RemoveIPC = true;
+        LockPersonality = true;
+        SystemCallFilter = [
+          "@system-service"
+          "~@privileged"
+        ];
+        SystemCallArchitectures = "native";
+      };
+    };
+
+    systemd.timers.niks3-gc = lib.mkIf cfg.gc.enable {
+      description = "niks3 garbage collection timer";
+      wantedBy = [ "timers.target" ];
+
+      timerConfig = {
+        OnCalendar = cfg.gc.schedule;
+        RandomizedDelaySec = cfg.gc.randomizedDelaySec;
+        Persistent = true;
       };
     };
   };
