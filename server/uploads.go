@@ -371,13 +371,6 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Validate that narinfos map is non-empty
-	if len(req.Narinfos) == 0 {
-		http.Error(w, "no narinfo metadata provided", http.StatusBadRequest)
-
-		return
-	}
-
 	// Get list of valid pending objects for this closure to validate against
 	queries := pg.New(s.Pool)
 
@@ -393,6 +386,15 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	validKeys := make(map[string]bool, len(validObjectKeys))
 	for _, key := range validObjectKeys {
 		validKeys[key] = true
+	}
+
+	// Validate that narinfos map is non-empty only if the closure has valid objects
+	// If validObjectKeys is empty, the closure was likely cleaned up, so we should
+	// proceed to commitPendingClosure which will return the proper 404
+	if len(validObjectKeys) > 0 && len(req.Narinfos) == 0 {
+		http.Error(w, "no narinfo metadata provided", http.StatusBadRequest)
+
+		return
 	}
 
 	// Validate and process each narinfo
