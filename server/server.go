@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
+	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5/pgxpool"
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -28,6 +29,8 @@ type options struct {
 	S3Bucket    string
 
 	APIToken string
+
+	SignKeyPaths []string
 }
 
 type Service struct {
@@ -35,6 +38,7 @@ type Service struct {
 	MinioClient *minio.Client
 	Bucket      string
 	APIToken    string
+	SigningKeys []*signing.Key
 }
 
 // Close closes the database connection pool.
@@ -92,6 +96,23 @@ func runServer(opts *options) error {
 	}
 
 	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
+
+	// Load signing keys
+	if len(opts.SignKeyPaths) == 0 {
+		slog.Warn("No signing keys configured; narinfo signing will rely on CA entries only (if any)")
+	} else {
+		service.SigningKeys = make([]*signing.Key, 0, len(opts.SignKeyPaths))
+	}
+
+	for _, path := range opts.SignKeyPaths {
+		key, err := signing.LoadKeyFromFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to load signing key from %s: %w", path, err)
+		}
+
+		service.SigningKeys = append(service.SigningKeys, key)
+		slog.Info("Loaded signing key", "name", key.Name, "path", path)
+	}
 
 	// Initialize the bucket with nix-cache-info if it doesn't exist
 	// Use a 30-second timeout to prevent hanging indefinitely

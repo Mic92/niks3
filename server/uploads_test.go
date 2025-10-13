@@ -69,11 +69,17 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
 	ok(t, err)
 
+	// Try to complete the cleaned up closure - should fail with not found
+	emptyNarinfos, err := json.Marshal(map[string]interface{}{
+		"narinfos": map[string]interface{}{},
+	})
+	ok(t, err)
+
 	checkNotFound := checkStatusCode(http.StatusNotFound)
 	testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
-		body:    body,
+		body:    emptyNarinfos,
 		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
@@ -248,18 +254,40 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
 
+	// Upload non-narinfo objects and collect narinfo metadata
+	narinfoMetadata := make(map[string]map[string]interface{})
+
 	for key, pendingObject := range pendingClosureResponse.PendingObjects {
-		if pendingObject.MultipartInfo != nil {
+		switch {
+		case pendingObject.Type == "narinfo":
+			// Narinfo is handled server-side - collect metadata instead
+			narinfoMetadata[key] = map[string]interface{}{
+				"store_path":  "/nix/store/" + closureKey + "-test-package",
+				"url":         "nar/" + closureKey + ".nar.zst",
+				"compression": "zstd",
+				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
+				"nar_size":    1000,
+				"file_hash":   "sha256:1111111111111111111111111111111111111111111111111111",
+				"file_size":   500,
+				"references":  []string{},
+			}
+		case pendingObject.MultipartInfo != nil:
 			handleMultipartUpload(ctx, t, key, pendingObject, service)
-		} else {
+		default:
 			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
 		}
 	}
 
+	// Send completion request with narinfo metadata
+	completionBody, err := json.Marshal(map[string]interface{}{
+		"narinfos": narinfoMetadata,
+	})
+	ok(t, err)
+
 	testRequest(t, &TestRequest{
 		method:  "POST",
 		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
-		body:    body,
+		body:    completionBody,
 		handler: service.CommitPendingClosureHandler,
 		pathValues: map[string]string{
 			"id": pendingClosureResponse.ID,
@@ -312,9 +340,18 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
 	ok(t, err)
 
+	// Should only return the one new narinfo object
 	v, ok := pendingClosureResponse2.PendingObjects[thirdObject]
-	if len(pendingClosureResponse2.PendingObjects) != 1 || !ok || v.PresignedURL == "" {
-		t.Errorf("expected 1 object, got %v", pendingClosureResponse2)
+	if len(pendingClosureResponse2.PendingObjects) != 1 || !ok {
+		t.Errorf("expected 1 object (thirdObject), got %v", pendingClosureResponse2)
+	}
+	// Narinfo should have Type set but no PresignedURL (handled server-side)
+	if v.Type != "narinfo" {
+		t.Errorf("expected narinfo type, got %s", v.Type)
+	}
+
+	if v.PresignedURL != "" {
+		t.Errorf("narinfo should not have presigned URL (server-side upload), got %s", v.PresignedURL)
 	}
 
 	testRequest(t, &TestRequest{

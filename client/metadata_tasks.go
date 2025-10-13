@@ -35,26 +35,6 @@ func compressWithZstd(data []byte) ([]byte, error) {
 	return compressed.Bytes(), nil
 }
 
-// uploadNarinfo uploads a narinfo file.
-func (c *Client) uploadNarinfo(ctx context.Context, task uploadTask, pathInfo *PathInfo, info *CompressedFileInfo) error {
-	// Generate narinfo content
-	narinfoContent := CreateNarinfo(
-		pathInfo,
-		task.hash+".nar.zst",
-		info.Size,
-		info.Hash,
-	)
-
-	// Upload narinfo with zstd compression
-	if err := c.UploadNarinfoToPresignedURL(ctx, task.obj.PresignedURL, []byte(narinfoContent)); err != nil {
-		return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
-	}
-
-	slog.Info("Uploaded narinfo", "key", task.key)
-
-	return nil
-}
-
 // uploadLog uploads a build log.
 func (c *Client) uploadLog(ctx context.Context, task uploadTask, logPathsByKey map[string]string) error {
 	// Get the local log path

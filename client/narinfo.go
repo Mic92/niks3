@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -35,6 +36,9 @@ func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64
 	// References (must have space after colon, even if empty)
 	fmt.Fprint(&sb, "References:")
 
+	// Sort references for deterministic output
+	sort.Strings(pathInfo.References)
+
 	for _, ref := range pathInfo.References {
 		// Remove /nix/store/ prefix
 		refName := strings.TrimPrefix(ref, "/nix/store/")
@@ -56,6 +60,9 @@ func CreateNarinfo(pathInfo *PathInfo, narFilename string, compressedSize uint64
 
 	// Signatures (optional)
 	if len(pathInfo.Signatures) > 0 {
+		// Sort signatures for deterministic output
+		sort.Strings(pathInfo.Signatures)
+
 		for _, sig := range pathInfo.Signatures {
 			fmt.Fprintf(&sb, "Sig: %s\n", sig)
 		}
