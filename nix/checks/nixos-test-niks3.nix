@@ -131,22 +131,27 @@ nixosTest {
     server.wait_for_open_port(5751)
     server.wait_for_open_port(9000)
 
+    # Create auth token file for testing
+    server.succeed("mkdir -p /tmp/test-config")
+    server.succeed("echo -n 'test-token-that-is-at-least-36-characters-long' > /tmp/test-config/auth-token")
+
     # Use hello package to get a real closure with dependencies
     test_path = "${pkgs.hello}"
     print(f"Hello store path: {test_path}")
 
-    # Test pushing the closure using the niks3 client
+    # Test pushing the closure using the niks3 client with file-based auth token
     print("Pushing closure to cache...")
     server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
       ${niks3}/bin/niks3 push {test_path}
     """)
 
-    # Test with invalid auth token (should fail)
+    # Test with invalid auth token file (should fail)
+    server.succeed("echo -n 'invalid-token' > /tmp/test-config/invalid-token")
     server.fail(f"""
       NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN=invalid-token \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/invalid-token \
       ${niks3}/bin/niks3 push {test_path}
     """)
 
@@ -190,7 +195,7 @@ nixosTest {
 
     server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
       ${niks3}/bin/niks3 push {test_output}
     """)
 
@@ -224,7 +229,7 @@ nixosTest {
     # Push CA derivation to cache
     server.succeed(f"""
       NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN=test-token-that-is-at-least-36-characters-long \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
       ${niks3}/bin/niks3 push {ca_output}
     """)
 
