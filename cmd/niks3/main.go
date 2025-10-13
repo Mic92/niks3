@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Mic92/niks3/client"
@@ -20,11 +21,33 @@ func main() {
 	}
 }
 
+// getAuthToken reads the auth token from NIKS3_AUTH_TOKEN_FILE.
+// The file should contain the token as a single line (trailing whitespace is trimmed).
+func getAuthToken() (string, error) {
+	tokenFile := os.Getenv("NIKS3_AUTH_TOKEN_FILE")
+	if tokenFile == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("reading auth token from file %q: %w", tokenFile, err)
+	}
+
+	return strings.TrimSpace(string(data)), nil
+}
+
 func run() error {
+	// Get default auth token from environment (file or var)
+	defaultAuthToken, err := getAuthToken()
+	if err != nil {
+		return err
+	}
+
 	// Define flags
 	pushCmd := flag.NewFlagSet("push", flag.ExitOnError)
 	serverURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
-	authToken := pushCmd.String("auth-token", os.Getenv("NIKS3_AUTH_TOKEN"), "Auth token (can also use NIKS3_AUTH_TOKEN env var)")
+	authToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 
 	// Parse command
@@ -47,7 +70,7 @@ func run() error {
 		}
 
 		if *authToken == "" {
-			return errors.New("auth token is required (use --auth-token or NIKS3_AUTH_TOKEN env var)")
+			return errors.New("auth token is required (use --auth-token or NIKS3_AUTH_TOKEN_FILE env var)")
 		}
 
 		paths := pushCmd.Args()
