@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -93,11 +92,8 @@ type commitPendingClosureRequest struct {
 }
 
 // CompletePendingClosure marks a closure as complete, sending narinfo metadata for server-side signing.
+// The narinfos map can be empty when all objects already exist (deduplication).
 func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, narinfos map[string]NarinfoMetadata) error {
-	if len(narinfos) == 0 {
-		return errors.New("narinfos map cannot be empty")
-	}
-
 	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
 
 	reqBody := commitPendingClosureRequest{
