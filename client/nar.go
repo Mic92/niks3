@@ -366,12 +366,12 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 }
 
 // brotliWriterPool pools brotli writers to reduce memory allocations.
-// Each writer at BestCompression maintains large compression buffers (~4GB) that can be reused.
+// Using level 6 balances compression ratio with speed - JSON compresses well even at moderate levels.
 var brotliWriterPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() interface{} {
-		// Create writer with BestCompression level
+		// Create writer with level 6 (good compression, much faster than level 11)
 		// Note: we pass nil as the writer and will use Reset() to set the actual writer
-		return brotli.NewWriterLevel(nil, brotli.BestCompression)
+		return brotli.NewWriterLevel(nil, 6)
 	},
 }
 
@@ -384,7 +384,7 @@ func CompressListingWithBrotli(listing *NarListing) ([]byte, error) {
 		return nil, fmt.Errorf("marshaling listing to JSON: %w", err)
 	}
 
-	// Compress with brotli (quality 11 for maximum compression on small JSON files)
+	// Compress with brotli (level 6 for balanced compression/speed on JSON files)
 	var compressed bytes.Buffer
 
 	// Get writer from pool and reset it
