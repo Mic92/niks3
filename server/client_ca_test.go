@@ -68,6 +68,7 @@ func verifyRealisationFiles(ctx context.Context, t *testing.T, testService *serv
 		if closeErr := realisationObj.Close(); closeErr != nil {
 			t.Logf("Failed to close realisation object: %v", closeErr)
 		}
+
 		ok(t, err)
 
 		// Decompress with zstd
