@@ -67,12 +67,29 @@ func GetPathInfoRecursive(ctx context.Context, storePaths []string) (map[string]
 func GetStorePathHash(storePath string) (string, error) {
 	base := filepath.Base(storePath)
 
+	// Require at least hash and name separated by hyphen
 	parts := strings.SplitN(base, "-", 2)
-	if len(parts) < 1 {
-		return "", fmt.Errorf("invalid store path format: %s", storePath)
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid store path format (missing hyphen): %s", storePath)
 	}
 
-	return parts[0], nil
+	hash := parts[0]
+
+	// Validate hash length (Nix uses 32-character base32-encoded hashes)
+	// This is the length of base32-encoded 160-bit (20-byte) hashes
+	const expectedHashLen = 32
+	if len(hash) != expectedHashLen {
+		return "", fmt.Errorf("invalid hash length %d (expected %d): %s", len(hash), expectedHashLen, storePath)
+	}
+
+	// Validate hash charset (Nix base32: 0-9 and a-z except e,o,t,u)
+	for i, ch := range hash {
+		if !strings.ContainsRune(nixBase32Alphabet, ch) {
+			return "", fmt.Errorf("invalid character %q at position %d in hash: %s", ch, i, storePath)
+		}
+	}
+
+	return hash, nil
 }
 
 // QueryRealisations queries realisations from Nix's local database using `nix realisation info`.
