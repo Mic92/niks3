@@ -4,9 +4,32 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// resolveSymlinks resolves any symlinks in the given paths to their actual store paths.
+func resolveSymlinks(paths []string) ([]string, error) {
+	resolved := make([]string, 0, len(paths))
+	for _, path := range paths {
+		// Evaluate symlinks to get the actual target
+		realPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			// If it's not a symlink or doesn't exist, try to use it as-is
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("path does not exist: %s: %w", path, err)
+			}
+			// For other errors, still try the original path
+			resolved = append(resolved, path)
+		} else {
+			resolved = append(resolved, realPath)
+		}
+	}
+
+	return resolved, nil
+}
 
 // ClosureInfo represents a closure with its associated objects.
 type ClosureInfo struct {
@@ -187,10 +210,16 @@ func (c *Client) CompletePendingClosures(ctx context.Context, narinfosByClosureI
 
 // PushPaths uploads store paths and their closures to the server.
 func (c *Client) PushPaths(ctx context.Context, paths []string) error {
-	// Get path info for all paths and their closures
-	slog.Info("Getting path info", "count", len(paths))
+	// Resolve symlinks to actual store paths
+	resolvedPaths, err := resolveSymlinks(paths)
+	if err != nil {
+		return fmt.Errorf("resolving symlinks: %w", err)
+	}
 
-	pathInfos, err := GetPathInfoRecursive(ctx, paths)
+	// Get path info for all paths and their closures
+	slog.Info("Getting path info", "count", len(resolvedPaths))
+
+	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths)
 	if err != nil {
 		return fmt.Errorf("getting path info: %w", err)
 	}
