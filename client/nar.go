@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -12,9 +11,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
-
-	"github.com/andybalholm/brotli"
 )
 
 const (
@@ -365,41 +361,16 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 	}, nil
 }
 
-// brotliWriterPool pools brotli writers to reduce memory allocations.
-// Using level 6 balances compression ratio with speed - JSON compresses well even at moderate levels.
-var brotliWriterPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
-	New: func() interface{} {
-		// Create writer with level 6 (good compression, much faster than level 11)
-		// Note: we pass nil as the writer and will use Reset() to set the actual writer
-		return brotli.NewWriterLevel(nil, 6)
-	},
-}
-
-// CompressListingWithBrotli compresses a NAR listing as JSON with brotli compression.
-// This matches Nix's .ls file format but with brotli compression instead of uncompressed JSON.
-func CompressListingWithBrotli(listing *NarListing) ([]byte, error) {
+// CompressListingWithZstd compresses a NAR listing as JSON with zstd compression.
+// This matches Nix's compression approach and provides better performance than brotli.
+// It reuses the existing zstdEncoderPool from nar_upload.go.
+func CompressListingWithZstd(listing *NarListing) ([]byte, error) {
 	// Marshal to JSON
 	jsonData, err := json.Marshal(listing)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling listing to JSON: %w", err)
 	}
 
-	// Compress with brotli (level 6 for balanced compression/speed on JSON files)
-	var compressed bytes.Buffer
-
-	// Get writer from pool and reset it
-	writer := brotliWriterPool.Get().(*brotli.Writer)
-	defer brotliWriterPool.Put(writer)
-
-	writer.Reset(&compressed)
-
-	if _, err := writer.Write(jsonData); err != nil {
-		return nil, fmt.Errorf("compressing with brotli: %w", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("closing brotli writer: %w", err)
-	}
-
-	return compressed.Bytes(), nil
+	// Use the existing zstd pool (defined in metadata_tasks.go)
+	return compressWithZstd(jsonData)
 }

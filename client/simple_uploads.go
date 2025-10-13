@@ -41,18 +41,18 @@ func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presi
 	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
 }
 
-// UploadListingToPresignedURL compresses a NAR listing with brotli and uploads it with Content-Encoding header.
+// UploadListingToPresignedURL compresses a NAR listing with zstd and uploads it with Content-Encoding header.
 // The listing is stored as a .ls file, compatible with Nix's lazy NAR accessor format.
 func (c *Client) UploadListingToPresignedURL(ctx context.Context, presignedURL string, listing *NarListing) error {
-	// Compress listing with brotli
-	compressed, err := CompressListingWithBrotli(listing)
+	// Compress listing with zstd
+	compressed, err := CompressListingWithZstd(listing)
 	if err != nil {
 		return fmt.Errorf("compressing listing: %w", err)
 	}
 
 	// Upload with Content-Encoding header
 	headers := map[string]string{
-		"Content-Encoding": "br",
+		"Content-Encoding": "zstd",
 	}
 
 	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed, headers)
