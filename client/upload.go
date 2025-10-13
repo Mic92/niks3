@@ -216,6 +216,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		return fmt.Errorf("resolving symlinks: %w", err)
 	}
 
+	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
+
 	// Get path info for all paths and their closures
 	slog.Info("Getting path info", "count", len(resolvedPaths))
 
