@@ -172,11 +172,14 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 	for _, topLevelPath := range topLevelPaths {
 		reachable := make(map[string]bool)
+
 		var visit func(string)
+
 		visit = func(path string) {
 			if reachable[path] {
 				return
 			}
+
 			reachable[path] = true
 
 			pathInfo, ok := pathInfos[path]
@@ -206,6 +209,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 		// Collect objects only for paths reachable from this top-level path
 		var closureObjects []ObjectWithRefs
+
 		reachable := closureMembership[topLevelPath]
 
 		for storePath, objects := range allObjects {

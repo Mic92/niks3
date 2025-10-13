@@ -315,7 +315,31 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 			return NarListingEntry{}, err
 		}
 
-		childEntry, err := dumpPathWithListing(nw, filepath.Join(path, name))
+		childPath := filepath.Join(path, name)
+
+		var childEntry NarListingEntry
+
+		info, err := entry.Info()
+		if err != nil {
+			return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, err)
+		}
+
+		if err := nw.writeStatic(typeEncoded); err != nil {
+			return NarListingEntry{}, err
+		}
+
+		mode := info.Mode()
+		switch {
+		case mode.IsRegular():
+			childEntry, err = dumpRegularFile(nw, childPath, info)
+		case mode.IsDir():
+			childEntry, err = dumpDirectory(nw, childPath)
+		case mode&os.ModeSymlink != 0:
+			childEntry, err = dumpSymlink(nw, childPath)
+		default:
+			err = fmt.Errorf("unsupported file type for %s: %v", childPath, mode)
+		}
+
 		if err != nil {
 			return NarListingEntry{}, err
 		}

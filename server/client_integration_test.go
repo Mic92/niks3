@@ -96,6 +96,7 @@ func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Ser
 
 	zstdReader, err := zstd.NewReader(bytes.NewReader(compressedLsContent))
 	ok(t, err)
+
 	defer zstdReader.Close()
 
 	lsContent, err := io.ReadAll(zstdReader)
