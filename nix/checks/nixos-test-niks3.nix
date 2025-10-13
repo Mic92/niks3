@@ -72,19 +72,26 @@ nixosTest {
             set -e
 
             # Wait for MinIO to be ready
+            ready=0
             for i in {1..60}; do
               if mc alias set local http://localhost:9000 minioadmin minioadmin; then
-                echo "MinIO is ready!"
+                ready=1
                 break
               fi
               echo "Waiting for MinIO to start... ($i/60)"
               sleep 2
             done
 
-            # Create the bucket if it doesn't exist
-            mc mb local/niks3-test || true
+            if [ "$ready" -eq 0 ]; then
+              echo "ERROR: MinIO did not become ready after 60 attempts" >&2
+              exit 1
+            fi
 
-            echo "MinIO bucket setup complete"
+            # Create the bucket if it doesn't exist
+            if ! mc mb --ignore-existing local/niks3-test; then
+              echo "ERROR: Failed to create bucket 'niks3-test'" >&2
+              exit 1
+            fi
           '';
 
           serviceConfig = {
