@@ -8,6 +8,133 @@ Since writes to a binary cache are often not as critical as reads,
 we can vastly simplify the operational complexity of the GC server, i.e. only
 running one instance next to the CI infrastructure.
 
+## Features
+
+### Binary Cache Protocol Support
+
+niks3 implements the [Nix binary cache specification](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-help-stores.html#s3-binary-cache-store) with the following features:
+
+- **NAR files** (`nar/`): Compressed with zstd, stored in S3
+- **Narinfo files** (`.narinfo`): Metadata with cryptographic signatures
+  - StorePath, URL, Compression, NarHash, NarSize
+  - FileHash, FileSize (for compressed NAR)
+  - References, Deriver
+  - Signatures (Sig fields)
+  - CA field for content-addressed derivations
+- **Build logs** (`log/`): Compressed build output storage
+- **Realisation files** (`realisations/*.doi`): For content-addressed derivations
+- **Cache info** (`nix-cache-info`): Automatic generation with WantMassQuery, Priority
+
+### Advanced Features
+
+- **Cryptographic signing**: NAR signatures using Ed25519 keys (compatible with `nix key generate-secret`)
+- **Content-addressed derivations**: Full CA support with realisation info
+- **Multipart uploads**: Efficient handling of large NARs (>100MB)
+- **Transactional uploads**: Atomic closure uploads with rollback on failure
+- **Garbage collection**: Reference-tracking GC with configurable retention
+- **Parallel uploads**: Client parallelizes NAR and metadata uploads
+
+### Operational Features
+
+- Authentication via API tokens (Bearer auth)
+
+## Setup
+
+### Prerequisites
+
+- NixOS system (or Nix with flakes enabled)
+- S3-compatible storage (MinIO, AWS S3, etc.)
+- PostgreSQL database (automatically configured on NixOS)
+- Nix signing keys
+
+### NixOS Module Configuration
+
+```nix
+{
+  services.niks3 = {
+    enable = true;
+    httpAddr = "0.0.0.0:5751";
+
+    # S3 configuration
+    s3 = {
+      endpoint = "s3.amazonaws.com";  # or your S3-compatible endpoint
+      bucket = "my-nix-cache";
+      useSSL = true;
+      accessKeyFile = "/run/secrets/s3-access-key";
+      secretKeyFile = "/run/secrets/s3-secret-key";
+    };
+
+    # API authentication token (minimum 36 characters)
+    apiTokenFile = "/run/secrets/niks3-api-token";
+
+    # Signing keys for NAR signing
+    signKeyFiles = [ "/run/secrets/niks3-signing-key" ];
+  };
+}
+```
+
+### Generating Signing Keys
+
+Generate a signing key pair:
+
+```bash
+# Generate secret key
+nix key generate-secret --key-name my-cache-1 > /run/secrets/niks3-signing-key
+
+# Extract public key
+nix key convert-secret-to-public < /run/secrets/niks3-signing-key
+# Output: my-cache-1:base64encodedpublickey...
+```
+
+Configure Nix clients to trust the public key:
+
+```nix
+{
+  nix.settings.trusted-public-keys = [
+    "my-cache-1:base64encodedpublickey..."
+  ];
+}
+```
+
+### Client Usage
+
+#### Pushing Store Paths
+
+```bash
+export NIKS3_SERVER_URL=http://server:5751
+export NIKS3_AUTH_TOKEN_FILE=/path/to/token-file
+
+niks3 push /nix/store/...-package-name
+```
+
+The push operation uploads:
+
+- NAR (compressed with zstd)
+- Signed narinfo
+- Build logs (if available)
+- Realisation info for content-addressed derivations
+
+#### Pulling from Cache
+
+Use Nix's native S3 support:
+
+```bash
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
+nix copy --from 's3://my-nix-cache?endpoint=http://localhost:9000&region=us-east-1' \
+         /nix/store/...-package-name
+```
+
+Signatures are verified automatically using configured trusted public keys.
+
+#### Viewing Build Logs
+
+```bash
+nix log --store 's3://my-nix-cache?endpoint=http://localhost:9000&region=us-east-1' \
+        /nix/store/...-package-name
+```
+
 ## DB Migrations
 
 We use [Goose].
