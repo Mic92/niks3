@@ -40,12 +40,13 @@ func GetPathInfoRecursive(ctx context.Context, storePaths []string) (map[string]
 
 	output, err := cmd.Output()
 	if err != nil {
+		cmdStr := "nix " + strings.Join(args, " ")
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("nix path-info failed: %s: %w", exitErr.Stderr, err)
+			return nil, fmt.Errorf("command failed: %s\nstderr: %s\nerror: %w", cmdStr, exitErr.Stderr, err)
 		}
 
-		return nil, fmt.Errorf("nix path-info failed: %w", err)
+		return nil, fmt.Errorf("command failed: %s\nerror: %w", cmdStr, err)
 	}
 
 	// Parse JSON output
