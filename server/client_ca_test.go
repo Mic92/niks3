@@ -65,15 +65,17 @@ func verifyRealisationFiles(ctx context.Context, t *testing.T, testService *serv
 		ok(t, err)
 
 		compressedRealisation, err := io.ReadAll(realisationObj)
+		if closeErr := realisationObj.Close(); closeErr != nil {
+			t.Logf("Failed to close realisation object: %v", closeErr)
+		}
 		ok(t, err)
 
 		// Decompress with zstd
 		realisationDecoder, err := zstd.NewReader(bytes.NewReader(compressedRealisation))
 		ok(t, err)
 
-		defer realisationDecoder.Close()
-
 		realisationContent, err := io.ReadAll(realisationDecoder)
+		realisationDecoder.Close()
 		ok(t, err)
 
 		var realisation map[string]interface{}
