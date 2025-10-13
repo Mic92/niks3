@@ -388,15 +388,6 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 		validKeys[key] = true
 	}
 
-	// Validate that narinfos map is non-empty only if the closure has valid objects
-	// If validObjectKeys is empty, the closure was likely cleaned up, so we should
-	// proceed to commitPendingClosure which will return the proper 404
-	if len(validObjectKeys) > 0 && len(req.Narinfos) == 0 {
-		http.Error(w, "no narinfo metadata provided", http.StatusBadRequest)
-
-		return
-	}
-
 	// Validate and process each narinfo
 	for objectKey, meta := range req.Narinfos {
 		// Validate objectKey belongs to this pending closure
