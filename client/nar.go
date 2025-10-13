@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/andybalholm/brotli"
 )
@@ -364,6 +365,16 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 	}, nil
 }
 
+// brotliWriterPool pools brotli writers to reduce memory allocations.
+// Each writer at BestCompression maintains large compression buffers (~4GB) that can be reused.
+var brotliWriterPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
+	New: func() interface{} {
+		// Create writer with BestCompression level
+		// Note: we pass nil as the writer and will use Reset() to set the actual writer
+		return brotli.NewWriterLevel(nil, brotli.BestCompression)
+	},
+}
+
 // CompressListingWithBrotli compresses a NAR listing as JSON with brotli compression.
 // This matches Nix's .ls file format but with brotli compression instead of uncompressed JSON.
 func CompressListingWithBrotli(listing *NarListing) ([]byte, error) {
@@ -376,7 +387,11 @@ func CompressListingWithBrotli(listing *NarListing) ([]byte, error) {
 	// Compress with brotli (quality 11 for maximum compression on small JSON files)
 	var compressed bytes.Buffer
 
-	writer := brotli.NewWriterLevel(&compressed, brotli.BestCompression)
+	// Get writer from pool and reset it
+	writer := brotliWriterPool.Get().(*brotli.Writer)
+	defer brotliWriterPool.Put(writer)
+
+	writer.Reset(&compressed)
 
 	if _, err := writer.Write(jsonData); err != nil {
 		return nil, fmt.Errorf("compressing with brotli: %w", err)
