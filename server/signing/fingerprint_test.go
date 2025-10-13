@@ -96,7 +96,14 @@ func TestGenerateFingerprint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fingerprint, err := signing.GenerateFingerprint(tt.storePath, tt.narHash, tt.narSize, tt.references)
+			narInfo := &signing.NarInfo{
+				StorePath:  tt.storePath,
+				NarHash:    tt.narHash,
+				NarSize:    tt.narSize,
+				References: tt.references,
+			}
+
+			fingerprint, err := signing.GenerateFingerprint(narInfo)
 
 			if tt.shouldError {
 				if err == nil {

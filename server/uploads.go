@@ -284,13 +284,16 @@ func (s *Service) processNarinfo(ctx context.Context, objectKey string, meta *Na
 	var signatures []string
 
 	if len(s.SigningKeys) > 0 {
-		signatures, err := signing.SignNarinfo(
-			s.SigningKeys,
-			meta.StorePath,
-			meta.NarHash,
-			meta.NarSize,
-			meta.References,
-		)
+		narInfo := &signing.NarInfo{
+			StorePath:  meta.StorePath,
+			NarHash:    meta.NarHash,
+			NarSize:    meta.NarSize,
+			References: meta.References,
+		}
+
+		var err error
+
+		signatures, err = signing.SignNarinfo(s.SigningKeys, narInfo)
 		if err != nil {
 			return fmt.Errorf("failed to sign narinfo: %w", err)
 		}
@@ -449,7 +452,7 @@ func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := cleanupPendingClosures(r.Context(), s.Pool, s.MinioClient, s.Bucket, olderThan); err != nil {
+	if err := s.cleanupPendingClosures(r.Context(), olderThan); err != nil {
 		http.Error(w, fmt.Sprintf("cleanup failed: %v", err), http.StatusInternalServerError)
 
 		return
