@@ -196,6 +196,79 @@ func TestClientIntegration(t *testing.T) {
 	if _, ok := listing["root"]; !ok {
 		t.Errorf(".ls file missing 'root' field")
 	}
+
+	// Test garbage collection with force flag
+	t.Log("Testing garbage collection...")
+
+	// Register GC endpoint
+	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
+
+	// Run GC with force to immediately delete everything
+	c, err := client.NewClient(ts.URL, testAuthToken)
+	ok(t, err)
+
+	err = c.RunGarbageCollection(ctx, "0s", true)
+	ok(t, err)
+
+	// Check what objects are in the database and their deletion status
+	rows3, err := service.Pool.Query(ctx, "SELECT key, deleted_at IS NOT NULL as is_deleted, first_deleted_at FROM objects ORDER BY key")
+	ok(t, err)
+
+	defer rows3.Close()
+
+	t.Log("Objects in database after GC:")
+
+	for rows3.Next() {
+		var (
+			key            string
+			isDeleted      bool
+			firstDeletedAt interface{}
+		)
+
+		err = rows3.Scan(&key, &isDeleted, &firstDeletedAt)
+		ok(t, err)
+		t.Logf("  - %s: deleted=%v, first_deleted_at=%v", key, isDeleted, firstDeletedAt)
+	}
+
+	ok(t, rows3.Err())
+
+	// Verify closures were deleted
+	closureCount := 0
+	rows, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM closures")
+	ok(t, err)
+
+	defer rows.Close()
+
+	if rows.Next() {
+		err = rows.Scan(&closureCount)
+		ok(t, err)
+	}
+
+	ok(t, rows.Err())
+
+	if closureCount != 0 {
+		t.Errorf("Expected 0 closures after GC, got %d", closureCount)
+	}
+
+	// Verify objects were deleted (with force mode, they're removed entirely, not just marked)
+	objectCount := 0
+	rows2, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM objects")
+	ok(t, err)
+
+	defer rows2.Close()
+
+	if rows2.Next() {
+		err = rows2.Scan(&objectCount)
+		ok(t, err)
+	}
+
+	ok(t, rows2.Err())
+
+	if objectCount != 0 {
+		t.Errorf("Expected all objects to be deleted after GC with --force, but %d remain", objectCount)
+	}
+
+	t.Log("Successfully deleted all objects with GC --force")
 }
 
 func TestClientMultipleUploads(t *testing.T) {
