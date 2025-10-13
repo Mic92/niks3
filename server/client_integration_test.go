@@ -17,7 +17,6 @@ import (
 
 	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/server"
-	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
@@ -95,8 +94,11 @@ func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Ser
 	ok(t, err)
 	t.Logf("Retrieved .ls file from S3 (compressed size: %d bytes)", len(compressedLsContent))
 
-	brReader := brotli.NewReader(bytes.NewReader(compressedLsContent))
-	lsContent, err := io.ReadAll(brReader)
+	zstdReader, err := zstd.NewReader(bytes.NewReader(compressedLsContent))
+	ok(t, err)
+	defer zstdReader.Close()
+
+	lsContent, err := io.ReadAll(zstdReader)
 	ok(t, err)
 	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
 

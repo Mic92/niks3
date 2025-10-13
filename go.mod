@@ -7,10 +7,10 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/pressly/goose/v3 v3.26.0
+	golang.org/x/sys v0.37.0
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
@@ -30,6 +30,5 @@ require (
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 )
