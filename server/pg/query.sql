@@ -6,6 +6,10 @@ RETURNING *;
 -- name: InsertPendingObjects :copyfrom
 INSERT INTO pending_objects (pending_closure_id, key, refs) VALUES ($1, $2, $3);
 
+-- name: GetPendingObjectKeys :many
+SELECT key FROM pending_objects
+WHERE pending_closure_id = $1;
+
 -- name: GetExistingObjects :many
 WITH ct AS (
     SELECT timezone('UTC', now()) AS now

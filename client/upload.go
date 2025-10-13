@@ -151,10 +151,10 @@ func PrepareClosures(ctx context.Context, pathInfos map[string]*PathInfo) (*Prep
 	}, nil
 }
 
-// CreatePendingClosures creates pending closures and returns all pending objects and closure IDs.
-func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (map[string]PendingObject, []string, error) {
+// CreatePendingClosures creates pending closures and returns all pending objects and closure ID to narinfo key mapping.
+func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (map[string]PendingObject, map[string]string, error) {
 	pendingObjects := make(map[string]PendingObject)
-	pendingIDs := make([]string, 0, len(closures))
+	closureIDToNarinfoKey := make(map[string]string) // Maps closure ID -> narinfo key
 
 	for _, closure := range closures {
 		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects)
@@ -162,7 +162,7 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
 		}
 
-		pendingIDs = append(pendingIDs, resp.ID)
+		closureIDToNarinfoKey[resp.ID] = closure.NarinfoKey
 
 		// Collect pending objects
 		for key, obj := range resp.PendingObjects {
@@ -170,13 +170,14 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 		}
 	}
 
-	return pendingObjects, pendingIDs, nil
+	return pendingObjects, closureIDToNarinfoKey, nil
 }
 
-// CompletePendingClosures completes all pending closures.
-func (c *Client) CompletePendingClosures(ctx context.Context, pendingIDs []string) error {
-	for _, id := range pendingIDs {
-		if err := c.CompletePendingClosure(ctx, id); err != nil {
+// CompletePendingClosures completes all pending closures with their respective narinfo metadata.
+// The narinfosByClosureID map should contain per-closure narinfo metadata (closure ID -> narinfo map).
+func (c *Client) CompletePendingClosures(ctx context.Context, narinfosByClosureID map[string]map[string]NarinfoMetadata) error {
+	for id, narinfos := range narinfosByClosureID {
+		if err := c.CompletePendingClosure(ctx, id, narinfos); err != nil {
 			return fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
 	}
@@ -211,26 +212,38 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	}
 
 	// Create pending closures and collect what needs uploading
-	pendingObjects, pendingIDs, err := c.CreatePendingClosures(ctx, result.Closures)
+	pendingObjects, closureIDToNarinfoKey, err := c.CreatePendingClosures(ctx, result.Closures)
 	if err != nil {
 		return fmt.Errorf("creating pending closures: %w", err)
 	}
 
-	slog.Info("Need to upload objects", "pending", len(pendingObjects), "total", len(pathInfos)*3)
+	slog.Info("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
 
-	// Upload all pending objects
+	// Upload all pending objects and collect narinfo metadata
 	startTime := time.Now()
 
-	if err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey, result.RealisationsByKey); err != nil {
+	narinfoMetadata, err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey, result.RealisationsByKey)
+	if err != nil {
 		return fmt.Errorf("uploading objects: %w", err)
 	}
 
 	duration := time.Since(startTime)
 
-	slog.Info("Uploaded all objects", "duration", duration)
+	slog.Info("Uploaded all objects", "duration", duration, "narinfos", len(narinfoMetadata))
 
-	// Complete all pending closures
-	if err := c.CompletePendingClosures(ctx, pendingIDs); err != nil {
+	// Build per-closure narinfo maps for completion
+	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
+	for id, narinfoKey := range closureIDToNarinfoKey {
+		closureNarinfos := make(map[string]NarinfoMetadata)
+		if meta, ok := narinfoMetadata[narinfoKey]; ok {
+			closureNarinfos[narinfoKey] = meta
+		}
+
+		narinfosByClosureID[id] = closureNarinfos
+	}
+
+	// Complete all pending closures with their respective narinfo metadata for server-side signing
+	if err := c.CompletePendingClosures(ctx, narinfosByClosureID); err != nil {
 		return fmt.Errorf("completing closures: %w", err)
 	}
 

@@ -250,6 +250,31 @@ func (q *Queries) GetOldMultipartUploads(ctx context.Context, dollar_1 interface
 	return items, nil
 }
 
+const getPendingObjectKeys = `-- name: GetPendingObjectKeys :many
+SELECT key FROM pending_objects
+WHERE pending_closure_id = $1
+`
+
+func (q *Queries) GetPendingObjectKeys(ctx context.Context, pendingClosureID int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, getPendingObjectKeys, pendingClosureID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3)

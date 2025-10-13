@@ -34,6 +34,19 @@ const (
 	minAPITokenLength = 36
 )
 
+// stringSliceFlag implements flag.Value for repeatable string flags.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+
+	return nil
+}
+
 func parseArgs() (*options, error) {
 	var opts options
 
@@ -55,6 +68,19 @@ func parseArgs() (*options, error) {
 		"Path to file containing S3 secret key")
 	flag.StringVar(&opts.APIToken, "api-token", getEnvOrDefault("NIKS3_API_TOKEN", ""), "API token for authentication")
 	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
+
+	// Parse signing key paths from environment variable (space-separated for backward compatibility)
+	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
+
+	if envPaths := getEnvOrDefault("NIKS3_SIGN_KEY_PATHS", ""); envPaths != "" {
+		for _, path := range strings.Fields(envPaths) {
+			if err := signKeyPaths.Set(path); err != nil {
+				return nil, fmt.Errorf("failed to parse NIKS3_SIGN_KEY_PATHS: %w", err)
+			}
+		}
+	}
+
+	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
 	flag.Parse()
 
 	if opts.DBConnectionString == "" {

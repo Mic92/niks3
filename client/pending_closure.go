@@ -72,16 +72,49 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 	return &result, nil
 }
 
-// CompletePendingClosure marks a closure as complete.
-func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
+// NarinfoMetadata contains metadata for a narinfo file to be signed by the server.
+type NarinfoMetadata struct {
+	StorePath   string   `json:"store_path"`
+	URL         string   `json:"url"`         // e.g., "nar/xxxxx.nar.zst"
+	Compression string   `json:"compression"` // e.g., "zstd"
+	NarHash     string   `json:"nar_hash"`    // e.g., "sha256:xxxxx"
+	NarSize     uint64   `json:"nar_size"`    // Uncompressed NAR size
+	FileHash    string   `json:"file_hash"`   // Hash of compressed file
+	FileSize    uint64   `json:"file_size"`   // Size of compressed file
+	References  []string `json:"references"`  // Store paths (with /nix/store prefix)
+	Deriver     *string  `json:"deriver,omitempty"`
+	Signatures  []string `json:"signatures,omitempty"`
+	CA          *string  `json:"ca,omitempty"`
+}
+
+type commitPendingClosureRequest struct {
+	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
+}
+
+// CompletePendingClosure marks a closure as complete, sending narinfo metadata for server-side signing.
+func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, narinfos map[string]NarinfoMetadata) error {
+	if len(narinfos) == 0 {
+		return errors.New("narinfos map cannot be empty")
+	}
+
 	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), nil)
+	reqBody := commitPendingClosureRequest{
+		Narinfos: narinfos,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -94,7 +127,7 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) e
 		return err
 	}
 
-	slog.Info("Completed pending closure", "id", closureID)
+	slog.Info("Completed pending closure", "id", closureID, "narinfos", len(narinfos))
 
 	return nil
 }

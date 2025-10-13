@@ -3,13 +3,11 @@ package client
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 
-	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sys/unix"
 )
 
@@ -41,36 +39,6 @@ func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presi
 	defer deferCloseBody(resp)
 
 	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
-}
-
-// UploadNarinfoToPresignedURL compresses a narinfo file with zstd and uploads it with Content-Encoding header.
-// This follows Nix's convention for compressed narinfo files.
-func (c *Client) UploadNarinfoToPresignedURL(ctx context.Context, presignedURL string, narinfoContent []byte) error {
-	// Compress narinfo content with zstd using pooled encoder
-	var compressed bytes.Buffer
-
-	encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
-	if !ok {
-		return errors.New("failed to get zstd encoder from pool")
-	}
-	defer zstdEncoderPool.Put(encoder)
-
-	encoder.Reset(&compressed)
-
-	if _, err := encoder.Write(narinfoContent); err != nil {
-		return fmt.Errorf("compressing narinfo: %w", err)
-	}
-
-	if err := encoder.Close(); err != nil {
-		return fmt.Errorf("closing zstd encoder: %w", err)
-	}
-
-	// Upload with Content-Encoding header
-	headers := map[string]string{
-		"Content-Encoding": "zstd",
-	}
-
-	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed.Bytes(), headers)
 }
 
 // UploadListingToPresignedURL compresses a NAR listing with brotli and uploads it with Content-Encoding header.
