@@ -44,8 +44,8 @@ func TestClientErrorHandling(t *testing.T) {
 			t.Fatal("Expected error for invalid store path")
 		}
 
-		if !strings.Contains(err.Error(), "nix path-info failed") {
-			t.Errorf("Expected 'nix path-info failed' error, got: %s", err)
+		if !strings.Contains(err.Error(), "path does not exist") {
+			t.Errorf("Expected 'path does not exist' error, got: %s", err)
 		}
 	})
 

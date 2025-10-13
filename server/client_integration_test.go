@@ -24,6 +24,166 @@ import (
 
 const testAuthToken = "test-auth-token" //nolint:gosec // Test token for integration tests
 
+// verifyNarinfoInS3 checks that a narinfo file exists and has expected fields.
+func verifyNarinfoInS3(ctx context.Context, t *testing.T, testService *server.Service, hash, storePath string) {
+	t.Helper()
+
+	narinfoKey := hash + ".narinfo"
+	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
+	ok(t, err)
+
+	defer func() {
+		if err := narinfoObj.Close(); err != nil {
+			t.Logf("Failed to close narinfo object: %v", err)
+		}
+	}()
+
+	compressedContent, err := io.ReadAll(narinfoObj)
+	ok(t, err)
+
+	decoder, err := zstd.NewReader(bytes.NewReader(compressedContent))
+	ok(t, err)
+
+	defer decoder.Close()
+
+	narinfoContent, err := io.ReadAll(decoder)
+	ok(t, err)
+
+	t.Logf("Retrieved narinfo from S3:\n%s", narinfoContent)
+
+	narinfoStr := string(narinfoContent)
+	if !strings.Contains(narinfoStr, "StorePath: "+storePath) {
+		t.Errorf("Narinfo doesn't contain correct StorePath")
+	}
+
+	if !strings.Contains(narinfoStr, "URL: nar/") {
+		t.Errorf("Narinfo doesn't contain NAR URL")
+	}
+
+	if !strings.Contains(narinfoStr, "NarHash:") {
+		t.Errorf("Narinfo doesn't contain NarHash")
+	}
+
+	if !strings.Contains(narinfoStr, "NarSize:") {
+		t.Errorf("Narinfo doesn't contain NarSize")
+	}
+
+	// Verify NAR file exists
+	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
+
+	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
+	if err != nil {
+		t.Errorf("NAR file not found in S3: %v", err)
+	}
+}
+
+// verifyLsFileInS3 checks that a .ls file exists and has valid JSON structure.
+func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Service, hash string) {
+	t.Helper()
+
+	lsKey := hash + ".ls"
+	lsObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, lsKey, minio.GetObjectOptions{})
+	ok(t, err)
+
+	defer func() {
+		if err := lsObj.Close(); err != nil {
+			t.Logf("Failed to close ls object: %v", err)
+		}
+	}()
+
+	compressedLsContent, err := io.ReadAll(lsObj)
+	ok(t, err)
+	t.Logf("Retrieved .ls file from S3 (compressed size: %d bytes)", len(compressedLsContent))
+
+	brReader := brotli.NewReader(bytes.NewReader(compressedLsContent))
+	lsContent, err := io.ReadAll(brReader)
+	ok(t, err)
+	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
+
+	var listing map[string]interface{}
+	if err := json.Unmarshal(lsContent, &listing); err != nil {
+		t.Errorf("Failed to parse .ls content as JSON: %v", err)
+	}
+
+	if version, ok := listing["version"].(float64); !ok || version != 1 {
+		t.Errorf("Expected version 1, got %v", listing["version"])
+	}
+
+	if _, ok := listing["root"]; !ok {
+		t.Errorf(".ls file missing 'root' field")
+	}
+}
+
+// verifyGarbageCollection runs GC and verifies objects and closures were deleted.
+func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.Service, c *client.Client) {
+	t.Helper()
+
+	err := c.RunGarbageCollection(ctx, "0s", true)
+	ok(t, err)
+
+	// Log database state after GC
+	rows3, err := service.Pool.Query(ctx, "SELECT key, deleted_at IS NOT NULL as is_deleted, first_deleted_at FROM objects ORDER BY key")
+	ok(t, err)
+
+	defer rows3.Close()
+
+	t.Log("Objects in database after GC:")
+
+	for rows3.Next() {
+		var (
+			key            string
+			isDeleted      bool
+			firstDeletedAt interface{}
+		)
+
+		err = rows3.Scan(&key, &isDeleted, &firstDeletedAt)
+		ok(t, err)
+		t.Logf("  - %s: deleted=%v, first_deleted_at=%v", key, isDeleted, firstDeletedAt)
+	}
+
+	ok(t, rows3.Err())
+
+	// Verify closures were deleted
+	var closureCount int
+
+	rows, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM closures")
+	ok(t, err)
+
+	defer rows.Close()
+
+	if rows.Next() {
+		err = rows.Scan(&closureCount)
+		ok(t, err)
+	}
+
+	ok(t, rows.Err())
+
+	if closureCount != 0 {
+		t.Errorf("Expected 0 closures after GC, got %d", closureCount)
+	}
+
+	// Verify objects were deleted
+	var objectCount int
+
+	rows2, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM objects")
+	ok(t, err)
+
+	defer rows2.Close()
+
+	if rows2.Next() {
+		err = rows2.Scan(&objectCount)
+		ok(t, err)
+	}
+
+	ok(t, rows2.Err())
+
+	if objectCount != 0 {
+		t.Errorf("Expected all objects to be deleted after GC with --force, but %d remain", objectCount)
+	}
+
+	t.Log("Successfully deleted all objects with GC --force")
+}
+
 // pushToServer uses the client package to push store paths.
 func pushToServer(ctx context.Context, serverURL, authToken string, paths []string) error {
 	// Create client
@@ -96,7 +256,6 @@ func TestClientIntegration(t *testing.T) {
 		t.Fatalf("Client failed: %v", err)
 	}
 
-	// Verify the upload by checking if the objects exist in S3
 	// Extract hash from store path
 	pathParts := strings.Split(filepath.Base(storePath), "-")
 	if len(pathParts) < 1 {
@@ -105,170 +264,18 @@ func TestClientIntegration(t *testing.T) {
 
 	hash := pathParts[0]
 
-	// Check if narinfo exists in S3
-	narinfoKey := hash + ".narinfo"
-	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
-	ok(t, err)
+	// Verify the upload
+	verifyNarinfoInS3(ctx, t, testService, hash, storePath)
+	verifyLsFileInS3(ctx, t, testService, hash)
 
-	defer func() {
-		if err := narinfoObj.Close(); err != nil {
-			t.Logf("Failed to close narinfo object: %v", err)
-		}
-	}()
-
-	// Read and decompress narinfo content (it's compressed with zstd)
-	compressedContent, err := io.ReadAll(narinfoObj)
-	ok(t, err)
-
-	// Decompress with zstd
-	decoder, err := zstd.NewReader(bytes.NewReader(compressedContent))
-	ok(t, err)
-
-	defer decoder.Close()
-
-	narinfoContent, err := io.ReadAll(decoder)
-	ok(t, err)
-
-	t.Logf("Retrieved narinfo from S3:\n%s", narinfoContent)
-
-	// Verify narinfo contains expected fields
-	narinfoStr := string(narinfoContent)
-	if !strings.Contains(narinfoStr, "StorePath: "+storePath) {
-		t.Errorf("Narinfo doesn't contain correct StorePath")
-	}
-
-	if !strings.Contains(narinfoStr, "URL: nar/") {
-		t.Errorf("Narinfo doesn't contain NAR URL")
-	}
-
-	if !strings.Contains(narinfoStr, "NarHash:") {
-		t.Errorf("Narinfo doesn't contain NarHash")
-	}
-
-	if !strings.Contains(narinfoStr, "NarSize:") {
-		t.Errorf("Narinfo doesn't contain NarSize")
-	}
-
-	// Also check if NAR file exists in S3 (compressed with zstd)
-	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
-
-	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
-	if err != nil {
-		t.Errorf("NAR file not found in S3: %v", err)
-	}
-
-	// Check if .ls file exists in S3 (compressed with brotli)
-	lsKey := hash + ".ls"
-
-	lsObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, lsKey, minio.GetObjectOptions{})
-	ok(t, err)
-
-	defer func() {
-		if err := lsObj.Close(); err != nil {
-			t.Logf("Failed to close ls object: %v", err)
-		}
-	}()
-
-	// Read and decompress .ls content (it's compressed with brotli)
-	compressedLsContent, err := io.ReadAll(lsObj)
-	ok(t, err)
-
-	t.Logf("Retrieved .ls file from S3 (compressed size: %d bytes)", len(compressedLsContent))
-
-	// Decompress with brotli
-	brReader := brotli.NewReader(bytes.NewReader(compressedLsContent))
-	lsContent, err := io.ReadAll(brReader)
-	ok(t, err)
-
-	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
-
-	// Verify it's valid JSON
-	var listing map[string]interface{}
-	if err := json.Unmarshal(lsContent, &listing); err != nil {
-		t.Errorf("Failed to parse .ls content as JSON: %v", err)
-	}
-
-	// Verify it has the expected structure
-	if version, ok := listing["version"].(float64); !ok || version != 1 {
-		t.Errorf("Expected version 1, got %v", listing["version"])
-	}
-
-	if _, ok := listing["root"]; !ok {
-		t.Errorf(".ls file missing 'root' field")
-	}
-
-	// Test garbage collection with force flag
+	// Test garbage collection
 	t.Log("Testing garbage collection...")
-
-	// Register GC endpoint
 	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
 
-	// Run GC with force to immediately delete everything
 	c, err := client.NewClient(ts.URL, testAuthToken)
 	ok(t, err)
 
-	err = c.RunGarbageCollection(ctx, "0s", true)
-	ok(t, err)
-
-	// Check what objects are in the database and their deletion status
-	rows3, err := service.Pool.Query(ctx, "SELECT key, deleted_at IS NOT NULL as is_deleted, first_deleted_at FROM objects ORDER BY key")
-	ok(t, err)
-
-	defer rows3.Close()
-
-	t.Log("Objects in database after GC:")
-
-	for rows3.Next() {
-		var (
-			key            string
-			isDeleted      bool
-			firstDeletedAt interface{}
-		)
-
-		err = rows3.Scan(&key, &isDeleted, &firstDeletedAt)
-		ok(t, err)
-		t.Logf("  - %s: deleted=%v, first_deleted_at=%v", key, isDeleted, firstDeletedAt)
-	}
-
-	ok(t, rows3.Err())
-
-	// Verify closures were deleted
-	closureCount := 0
-	rows, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM closures")
-	ok(t, err)
-
-	defer rows.Close()
-
-	if rows.Next() {
-		err = rows.Scan(&closureCount)
-		ok(t, err)
-	}
-
-	ok(t, rows.Err())
-
-	if closureCount != 0 {
-		t.Errorf("Expected 0 closures after GC, got %d", closureCount)
-	}
-
-	// Verify objects were deleted (with force mode, they're removed entirely, not just marked)
-	objectCount := 0
-	rows2, err := service.Pool.Query(ctx, "SELECT COUNT(*) FROM objects")
-	ok(t, err)
-
-	defer rows2.Close()
-
-	if rows2.Next() {
-		err = rows2.Scan(&objectCount)
-		ok(t, err)
-	}
-
-	ok(t, rows2.Err())
-
-	if objectCount != 0 {
-		t.Errorf("Expected all objects to be deleted after GC with --force, but %d remain", objectCount)
-	}
-
-	t.Log("Successfully deleted all objects with GC --force")
+	verifyGarbageCollection(ctx, t, service, c)
 }
 
 func TestClientMultipleUploads(t *testing.T) {
