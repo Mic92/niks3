@@ -126,14 +126,16 @@ func TestSignNarinfo(t *testing.T) {
 
 	keys := []*signing.Key{key1, key2}
 
-	storePath := "/nix/store/26xbg1ndr7hbcncrlf9nhx5is2b25d13-hello-2.12.1"
-	narHash := "sha256:1mkvday29m2qxg1fnbv8xh9s6151bh8a2xzhh0k86j7lqhyfwibh"
-	narSize := uint64(226560)
-	references := []string{
-		"/nix/store/sl141d1g77wvhr050ah87lcyz2czdxa3-glibc-2.40-36",
+	narInfo := &signing.NarInfo{
+		StorePath: "/nix/store/26xbg1ndr7hbcncrlf9nhx5is2b25d13-hello-2.12.1",
+		NarHash:   "sha256:1mkvday29m2qxg1fnbv8xh9s6151bh8a2xzhh0k86j7lqhyfwibh",
+		NarSize:   uint64(226560),
+		References: []string{
+			"/nix/store/sl141d1g77wvhr050ah87lcyz2czdxa3-glibc-2.40-36",
+		},
 	}
 
-	signatures, err := signing.SignNarinfo(keys, storePath, narHash, narSize, references)
+	signatures, err := signing.SignNarinfo(keys, narInfo)
 	if err != nil {
 		t.Fatalf("signing.SignNarinfo failed: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestSignNarinfo(t *testing.T) {
 	}
 
 	// Signatures should be deterministic
-	signatures2, err := signing.SignNarinfo(keys, storePath, narHash, narSize, references)
+	signatures2, err := signing.SignNarinfo(keys, narInfo)
 	if err != nil {
 		t.Fatalf("signing.SignNarinfo (second call) failed: %v", err)
 	}

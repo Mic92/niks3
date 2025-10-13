@@ -7,14 +7,13 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 )
 
-func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, minioClient *minio.Client, bucket string, duration time.Duration) error {
-	queries := pg.New(pool)
+func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Duration) error {
+	queries := pg.New(s.Pool)
 	seconds := int32(duration.Seconds())
-	coreClient := minio.Core{Client: minioClient}
+	coreClient := minio.Core{Client: s.MinioClient}
 
 	// 1. Get old multipart uploads to abort
 	uploads, err := queries.GetOldMultipartUploads(ctx, seconds)
@@ -24,7 +23,7 @@ func cleanupPendingClosures(ctx context.Context, pool *pgxpool.Pool, minioClient
 
 	// 2. Abort them in S3
 	for _, upload := range uploads {
-		if err := coreClient.AbortMultipartUpload(ctx, bucket, upload.ObjectKey, upload.UploadID); err != nil {
+		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
 			slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
 		}
 	}

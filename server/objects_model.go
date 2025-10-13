@@ -30,15 +30,14 @@ func flushBatch(ctx context.Context, keys []string, operation func(context.Conte
 	return keys[:0], nil
 }
 
-func getObjectsForDeletion(ctx context.Context,
-	pool *pgxpool.Pool,
+func (s *Service) getObjectsForDeletion(ctx context.Context,
 	objectCh chan<- minio.ObjectInfo,
 	queryErr *error,
 	gracePeriod int32,
 ) {
 	defer close(objectCh)
 
-	queries := pg.New(pool)
+	queries := pg.New(s.Pool)
 
 	// First, mark stale objects (no return value)
 	if err := queries.MarkStaleObjects(ctx, DeletionBatchSize); err != nil {
@@ -171,7 +170,7 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, 
 
 	var queryErr error
 
-	go getObjectsForDeletion(ctx, pool, objectCh, &queryErr, gracePeriod)
+	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, gracePeriod)
 
 	s3Errs, batchErrs := s.removeS3Objects(ctx, pool, objectCh)
 
