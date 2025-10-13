@@ -44,17 +44,26 @@ func run() error {
 		return err
 	}
 
-	// Define flags
+	// Define flags for push command
 	pushCmd := flag.NewFlagSet("push", flag.ExitOnError)
-	serverURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
-	authToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	pushServerURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
+	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
+
+	// Define flags for gc command
+	gcCmd := flag.NewFlagSet("gc", flag.ExitOnError)
+	gcServerURL := gcCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
+	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
+	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
+	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
 
 	// Parse command
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: niks3 push [flags] <store-paths...>")
+		fmt.Fprintln(os.Stderr, "Usage: niks3 <command> [flags]")
 		fmt.Fprintln(os.Stderr, "\nCommands:")
 		fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
+		fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
 
 		return errors.New("no command provided")
 	}
@@ -65,11 +74,11 @@ func run() error {
 			return fmt.Errorf("parsing flags: %w", err)
 		}
 
-		if *serverURL == "" {
+		if *pushServerURL == "" {
 			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
 		}
 
-		if *authToken == "" {
+		if *pushAuthToken == "" {
 			return errors.New("auth token is required (use --auth-token or NIKS3_AUTH_TOKEN_FILE env var)")
 		}
 
@@ -78,7 +87,34 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*serverURL, *authToken, paths, *maxConcurrent)
+		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent)
+
+	case "gc":
+		if err := gcCmd.Parse(os.Args[2:]); err != nil {
+			return fmt.Errorf("parsing flags: %w", err)
+		}
+
+		if *gcServerURL == "" {
+			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+		}
+
+		// Handle auth token from file if specified
+		token := *gcAuthToken
+
+		if *gcAuthTokenPath != "" {
+			tokenData, err := os.ReadFile(*gcAuthTokenPath)
+			if err != nil {
+				return fmt.Errorf("reading auth token file: %w", err)
+			}
+
+			token = strings.TrimSpace(string(tokenData))
+		}
+
+		if token == "" {
+			return errors.New("auth token is required (use --auth-token, --auth-token-path, or NIKS3_AUTH_TOKEN_FILE env var)")
+		}
+
+		return gcCommand(*gcServerURL, token, *olderThan, *force)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
@@ -106,6 +142,33 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int)
 	if err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
 	}
+
+	return nil
+}
+
+func gcCommand(serverURL, authToken, olderThan string, force bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Create client
+	c, err := client.NewClient(serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if force {
+		slog.Warn("WARNING: Force mode enabled - objects will be deleted immediately without grace period")
+		slog.Warn("This may delete objects that are currently being uploaded or referenced")
+	}
+
+	slog.Info("Starting garbage collection", "older-than", olderThan, "force", force)
+
+	// Run garbage collection
+	if err := c.RunGarbageCollection(ctx, olderThan, force); err != nil {
+		return fmt.Errorf("running garbage collection: %w", err)
+	}
+
+	slog.Info("Garbage collection completed successfully")
 
 	return nil
 }

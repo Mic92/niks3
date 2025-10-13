@@ -157,9 +157,9 @@ FROM stale_objects, ct
 WHERE objects.key = stale_objects.key;
 
 -- name: GetObjectsReadyForDeletion :many
--- Returns objects marked for > grace_period, safe to delete from S3
+-- Returns objects marked for >= grace_period, safe to delete from S3
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND first_deleted_at < timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)
+  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)
 LIMIT sqlc.arg(limit_count);
