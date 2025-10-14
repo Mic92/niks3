@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -170,7 +171,7 @@ func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error)
 	// Use a pooled buffer to reduce syscalls and allocations
 	bufPtr, ok := copyBufferPool.Get().(*[]byte)
 	if !ok {
-		return 0, fmt.Errorf("invalid buffer type from pool")
+		return 0, errors.New("invalid buffer type from pool")
 	}
 	defer copyBufferPool.Put(bufPtr)
 
@@ -340,28 +341,49 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 			return NarListingEntry{}, err
 		}
 
-		// Use entry.Type() to avoid an extra stat syscall
-		// Only call entry.Info() if we need the full FileInfo (for regular files)
+		// Use entry.Type() to avoid an extra stat syscall when possible
+		// Fallback to entry.Info() if Type() returns DT_UNKNOWN (can happen on some filesystems)
 		var err error
 
 		entryType := entry.Type()
-		switch {
-		case entryType.IsRegular():
-			// Regular files need FileInfo for size and permissions
+
+		// Check if we can classify the entry from Type() alone
+		if entryType.IsRegular() || entryType.IsDir() || (entryType&os.ModeSymlink != 0) {
+			// Type is known, handle normally
+			switch {
+			case entryType.IsRegular():
+				// Regular files need FileInfo for size and permissions
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
+				}
+
+				childEntry, err = dumpRegularFile(nw, childPath, info)
+			case entryType.IsDir():
+				// Directories don't need FileInfo, recurse directly
+				childEntry, err = dumpDirectory(nw, childPath)
+			case entryType&os.ModeSymlink != 0:
+				// Symlinks don't need FileInfo
+				childEntry, err = dumpSymlink(nw, childPath)
+			}
+		} else {
+			// Type is DT_UNKNOWN or unclassifiable, fall back to Info() to get mode
 			info, infoErr := entry.Info()
 			if infoErr != nil {
 				return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
 			}
 
-			childEntry, err = dumpRegularFile(nw, childPath, info)
-		case entryType.IsDir():
-			// Directories don't need FileInfo, recurse directly
-			childEntry, err = dumpDirectory(nw, childPath)
-		case entryType&os.ModeSymlink != 0:
-			// Symlinks don't need FileInfo
-			childEntry, err = dumpSymlink(nw, childPath)
-		default:
-			err = fmt.Errorf("unsupported file type for %s: %v", childPath, entryType)
+			mode := info.Mode()
+			switch {
+			case mode.IsRegular():
+				childEntry, err = dumpRegularFile(nw, childPath, info)
+			case mode.IsDir():
+				childEntry, err = dumpDirectory(nw, childPath)
+			case mode&os.ModeSymlink != 0:
+				childEntry, err = dumpSymlink(nw, childPath)
+			default:
+				err = fmt.Errorf("unsupported file type for %s: %v", childPath, mode)
+			}
 		}
 
 		if err != nil {
