@@ -46,8 +46,13 @@
           settings = {
             processes = {
               postgres = {
-                command = "postgres";
-                working_dir = "$PGDATA";
+                command = "cd \"$PGDATA\" && postgres";
+                readiness_probe = {
+                  exec.command = "pg_isready -h $PGHOST -p $PGPORT -U $PGUSER";
+                  initial_delay_seconds = 2;
+                  period_seconds = 1;
+                  timeout_seconds = 2;
+                };
               };
             };
           };

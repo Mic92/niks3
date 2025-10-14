@@ -8,11 +8,16 @@ import (
 
 // RunGarbageCollection triggers garbage collection on the server for closures older than the specified duration.
 // If force is true, objects will be deleted immediately without a grace period (may be dangerous).
-func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, force bool) error {
+// pendingOlderThan specifies how old pending closures must be before cleanup (server defaults to "6h" if empty).
+func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, pendingOlderThan string, force bool) error {
 	// Build the URL with query parameters
 	gcURL := c.baseURL.JoinPath("/api/closures")
 	query := gcURL.Query()
 	query.Set("older-than", olderThan)
+
+	if pendingOlderThan != "" {
+		query.Set("pending-older-than", pendingOlderThan)
+	}
 
 	if force {
 		query.Set("force", "true")
