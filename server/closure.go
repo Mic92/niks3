@@ -69,6 +69,34 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean up pending closures first (failed/stale uploads)
+	// Use separate timeout if provided, otherwise default to 6 hours
+	// This is longer than presigned URL validity (5h) to avoid aborting active uploads
+	pendingOlderThan := r.URL.Query().Get("pending-older-than")
+	if pendingOlderThan == "" {
+		pendingOlderThan = "6h"
+	}
+
+	pendingAge, err := time.ParseDuration(pendingOlderThan)
+	if err != nil {
+		http.Error(w, "failed to parse pending-older-than: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	if pendingAge < 0 {
+		http.Error(w, "pending-older-than must not be negative", http.StatusBadRequest)
+
+		return
+	}
+
+	if err = s.cleanupPendingClosures(r.Context(), pendingAge); err != nil {
+		http.Error(w, "failed to cleanup pending closures: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// Then clean up old completed closures
 	if err = cleanupClosureOlderThan(r.Context(), s.Pool, age); err != nil {
 		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
 
@@ -87,7 +115,7 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Use same grace period for object cleanup as pending closure cleanup
 		// This ensures no pending closure can resurrect an object being deleted
-		gracePeriod = int32(age.Seconds())
+		gracePeriod = int32(pendingAge.Seconds())
 	}
 
 	if err = s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod); err != nil {

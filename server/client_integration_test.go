@@ -121,7 +121,7 @@ func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Ser
 func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.Service, c *client.Client) {
 	t.Helper()
 
-	err := c.RunGarbageCollection(ctx, "0s", true)
+	err := c.RunGarbageCollection(ctx, "0s", "0s", true)
 	ok(t, err)
 
 	// Log database state after GC
