@@ -320,14 +320,26 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 
 	slog.Info("Uploaded all objects", "duration", duration, "narinfos", len(narinfoMetadata))
 
+	// Build a quick lookup map: narinfo key -> closure
+	closureByNarinfoKey := make(map[string]ClosureInfo)
+	for _, closure := range result.Closures {
+		closureByNarinfoKey[closure.NarinfoKey] = closure
+	}
+
 	// Build per-closure narinfo maps for completion
-	// Each closure needs ALL narinfos for paths in its closure, not just the top-level one
+	// Only include narinfos for objects that belong to each specific closure
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
-	for id := range closureIDToNarinfoKey {
+	for id, topLevelNarinfoKey := range closureIDToNarinfoKey {
+		closure := closureByNarinfoKey[topLevelNarinfoKey]
 		closureNarinfos := make(map[string]NarinfoMetadata)
-		// Add all narinfos that were uploaded
-		for narinfoKey, meta := range narinfoMetadata {
-			closureNarinfos[narinfoKey] = meta
+
+		// Add only narinfos for objects in this closure
+		for _, obj := range closure.Objects {
+			if obj.Type == ObjectTypeNarinfo {
+				if meta, ok := narinfoMetadata[obj.Key]; ok {
+					closureNarinfos[obj.Key] = meta
+				}
+			}
 		}
 
 		narinfosByClosureID[id] = closureNarinfos
