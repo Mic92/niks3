@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -68,6 +69,34 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean up pending closures first (failed/stale uploads)
+	// Use separate timeout if provided, otherwise default to 6 hours
+	// This is longer than presigned URL validity (5h) to avoid aborting active uploads
+	pendingOlderThan := r.URL.Query().Get("pending-older-than")
+	if pendingOlderThan == "" {
+		pendingOlderThan = "6h"
+	}
+
+	pendingAge, err := time.ParseDuration(pendingOlderThan)
+	if err != nil {
+		http.Error(w, "failed to parse pending-older-than: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	if pendingAge < 0 {
+		http.Error(w, "pending-older-than must not be negative", http.StatusBadRequest)
+
+		return
+	}
+
+	if err = s.cleanupPendingClosures(r.Context(), pendingAge); err != nil {
+		http.Error(w, "failed to cleanup pending closures: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// Then clean up old completed closures
 	if err = cleanupClosureOlderThan(r.Context(), s.Pool, age); err != nil {
 		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
 
@@ -86,7 +115,7 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Use same grace period for object cleanup as pending closure cleanup
 		// This ensures no pending closure can resurrect an object being deleted
-		gracePeriod = int32(age.Seconds())
+		gracePeriod = int32(pendingAge.Seconds())
 	}
 
 	if err = s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod); err != nil {
@@ -95,5 +124,23 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// VACUUM all tables modified during GC to reclaim space and update statistics
+	s.vacuumGCTables(r.Context())
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.
+// This reclaims space from deleted rows and updates query planner statistics.
+// Failures are logged but don't cause the GC to fail.
+func (s *Service) vacuumGCTables(ctx context.Context) {
+	tables := []string{"pending_closures", "pending_objects", "multipart_uploads", "closures", "objects"}
+	for _, table := range tables {
+		if _, err := s.Pool.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
+			// Log but don't fail - vacuum is nice to have but not critical
+			slog.Warn("Failed to vacuum table", "table", table, "error", err)
+		} else {
+			slog.Info("Vacuumed table", "table", table)
+		}
+	}
 }

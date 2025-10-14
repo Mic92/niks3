@@ -147,13 +147,35 @@ We use [sqlc] with [pgx].
 
 Config is located at `sqlc.yml`. Re-generate using `sqlc generate`.
 
-## Local dev services
+## Local Development Environment
 
-A `postgres` and `minio` service is available for local dev by running `nix run .#dev`.
+Start the complete development environment with `nix run .#dev`.
 
-It uses `process-compose`. Look in `.envrc` for some env variables that are related.
+This launches a process-compose setup with:
 
-State is stored in `.data`. For a fresh local dev environment, delete `.data`.
+- **PostgreSQL**: Database server with automatic initialization and health checks
+- **MinIO**: S3-compatible storage server with health checks
+- **niks3-server**: API server with automatic recompilation on code changes (via watchexec)
+
+### Features
+
+- **Auto-reload**: The niks3-server automatically recompiles and restarts when Go source files change
+- **Health checks**: Services wait for dependencies to be healthy before starting
+- **Signing keys**: Nix signing key pair is automatically generated on first run
+- **Environment variables**: All configuration is in `.envrc` (see NIKS3\_\*, PGDATA, MINIO_DATA)
+
+### Data Management
+
+- State is stored in `.data/` directory
+- For a fresh environment, delete `.data/` and restart
+
+### Environment Variables
+
+Key variables configured in `.envrc`:
+
+- `DATABASE_URL`: PostgreSQL connection string
+- `NIKS3_*`: Server configuration (endpoint, credentials, bucket, etc.)
+- `NIKS3_SIGN_KEY_PATHS`: Path to signing key (auto-generated)
 
 ## Benchmarks
 

@@ -56,6 +56,7 @@ func run() error {
 	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
 	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
+	pendingOlderThan := gcCmd.String("pending-older-than", "6h", "Delete pending closures (failed uploads) older than this duration (e.g., '6h' for 6 hours)")
 	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
 
 	// Parse command
@@ -114,7 +115,7 @@ func run() error {
 			return errors.New("auth token is required (use --auth-token, --auth-token-path, or NIKS3_AUTH_TOKEN_FILE env var)")
 		}
 
-		return gcCommand(*gcServerURL, token, *olderThan, *force)
+		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
@@ -146,7 +147,7 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int)
 	return nil
 }
 
-func gcCommand(serverURL, authToken, olderThan string, force bool) error {
+func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -161,10 +162,10 @@ func gcCommand(serverURL, authToken, olderThan string, force bool) error {
 		slog.Warn("This may delete objects that are currently being uploaded or referenced")
 	}
 
-	slog.Info("Starting garbage collection", "older-than", olderThan, "force", force)
+	slog.Info("Starting garbage collection", "older-than", olderThan, "pending-older-than", pendingOlderThan, "force", force)
 
 	// Run garbage collection
-	if err := c.RunGarbageCollection(ctx, olderThan, force); err != nil {
+	if err := c.RunGarbageCollection(ctx, olderThan, pendingOlderThan, force); err != nil {
 		return fmt.Errorf("running garbage collection: %w", err)
 	}
 
