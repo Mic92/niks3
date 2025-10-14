@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
@@ -20,6 +21,15 @@ const (
 
 //nolint:gochecknoglobals // useCaseHack is platform-specific runtime constant
 var useCaseHack = runtime.GOOS == "darwin"
+
+var copyBufferPool = sync.Pool{ //nolint:gochecknoglobals
+	New: func() interface{} {
+		// 128KB buffer for efficient large file reads
+		buf := make([]byte, 128*1024)
+
+		return &buf
+	},
+}
 
 //nolint:gochecknoglobals // pre-encoded constants avoid recomputing framing bytes
 var (
@@ -157,12 +167,19 @@ func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error)
 		}
 	}()
 
-	n, err := io.Copy(nw.w, f)
+	// Use a pooled buffer to reduce syscalls and allocations
+	bufPtr, ok := copyBufferPool.Get().(*[]byte)
+	if !ok {
+		return 0, fmt.Errorf("invalid buffer type from pool")
+	}
+	defer copyBufferPool.Put(bufPtr)
+
+	n, err := io.CopyBuffer(nw.w, f, *bufPtr)
 	if err != nil {
 		return 0, fmt.Errorf("copying file %s: %w", path, err)
 	}
 
-	// n is from io.Copy which returns int64; size comes from os.FileInfo.Size() which is also int64
+	// n is from io.CopyBuffer which returns int64; size comes from os.FileInfo.Size() which is also int64
 	// The conversion is safe as we're comparing values from the same source
 	if uint64(n) != size { //nolint:gosec // n and size are both from filesystem operations, safe to compare
 		return 0, fmt.Errorf("file size mismatch for %s: expected %d, copied %d", path, size, n)
