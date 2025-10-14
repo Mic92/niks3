@@ -1,9 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,8 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-
-	"github.com/andybalholm/brotli"
+	"sync"
 )
 
 const (
@@ -23,6 +22,15 @@ const (
 
 //nolint:gochecknoglobals // useCaseHack is platform-specific runtime constant
 var useCaseHack = runtime.GOOS == "darwin"
+
+var copyBufferPool = sync.Pool{ //nolint:gochecknoglobals
+	New: func() interface{} {
+		// 128KB buffer for efficient large file reads
+		buf := make([]byte, 128*1024)
+
+		return &buf
+	},
+}
 
 //nolint:gochecknoglobals // pre-encoded constants avoid recomputing framing bytes
 var (
@@ -160,12 +168,19 @@ func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error)
 		}
 	}()
 
-	n, err := io.Copy(nw.w, f)
+	// Use a pooled buffer to reduce syscalls and allocations
+	bufPtr, ok := copyBufferPool.Get().(*[]byte)
+	if !ok {
+		return 0, errors.New("invalid buffer type from pool")
+	}
+	defer copyBufferPool.Put(bufPtr)
+
+	n, err := io.CopyBuffer(nw.w, f, *bufPtr)
 	if err != nil {
 		return 0, fmt.Errorf("copying file %s: %w", path, err)
 	}
 
-	// n is from io.Copy which returns int64; size comes from os.FileInfo.Size() which is also int64
+	// n is from io.CopyBuffer which returns int64; size comes from os.FileInfo.Size() which is also int64
 	// The conversion is safe as we're comparing values from the same source
 	if uint64(n) != size { //nolint:gosec // n and size are both from filesystem operations, safe to compare
 		return 0, fmt.Errorf("file size mismatch for %s: expected %d, copied %d", path, size, n)
@@ -318,7 +333,59 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 			return NarListingEntry{}, err
 		}
 
-		childEntry, err := dumpPathWithListing(nw, filepath.Join(path, name))
+		childPath := filepath.Join(path, name)
+
+		var childEntry NarListingEntry
+
+		if err := nw.writeStatic(typeEncoded); err != nil {
+			return NarListingEntry{}, err
+		}
+
+		// Use entry.Type() to avoid an extra stat syscall when possible
+		// Fallback to entry.Info() if Type() returns DT_UNKNOWN (can happen on some filesystems)
+		var err error
+
+		entryType := entry.Type()
+
+		// Check if we can classify the entry from Type() alone
+		if entryType.IsRegular() || entryType.IsDir() || (entryType&os.ModeSymlink != 0) {
+			// Type is known, handle normally
+			switch {
+			case entryType.IsRegular():
+				// Regular files need FileInfo for size and permissions
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
+				}
+
+				childEntry, err = dumpRegularFile(nw, childPath, info)
+			case entryType.IsDir():
+				// Directories don't need FileInfo, recurse directly
+				childEntry, err = dumpDirectory(nw, childPath)
+			case entryType&os.ModeSymlink != 0:
+				// Symlinks don't need FileInfo
+				childEntry, err = dumpSymlink(nw, childPath)
+			}
+		} else {
+			// Type is DT_UNKNOWN or unclassifiable, fall back to Info() to get mode
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
+			}
+
+			mode := info.Mode()
+			switch {
+			case mode.IsRegular():
+				childEntry, err = dumpRegularFile(nw, childPath, info)
+			case mode.IsDir():
+				childEntry, err = dumpDirectory(nw, childPath)
+			case mode&os.ModeSymlink != 0:
+				childEntry, err = dumpSymlink(nw, childPath)
+			default:
+				err = fmt.Errorf("unsupported file type for %s: %v", childPath, mode)
+			}
+		}
+
 		if err != nil {
 			return NarListingEntry{}, err
 		}
@@ -364,27 +431,16 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 	}, nil
 }
 
-// CompressListingWithBrotli compresses a NAR listing as JSON with brotli compression.
-// This matches Nix's .ls file format but with brotli compression instead of uncompressed JSON.
-func CompressListingWithBrotli(listing *NarListing) ([]byte, error) {
+// CompressListingWithZstd compresses a NAR listing as JSON with zstd compression.
+// This matches Nix's compression approach and provides better performance than brotli.
+// It reuses the existing zstdEncoderPool from nar_upload.go.
+func CompressListingWithZstd(listing *NarListing) ([]byte, error) {
 	// Marshal to JSON
 	jsonData, err := json.Marshal(listing)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling listing to JSON: %w", err)
 	}
 
-	// Compress with brotli (quality 11 for maximum compression on small JSON files)
-	var compressed bytes.Buffer
-
-	writer := brotli.NewWriterLevel(&compressed, brotli.BestCompression)
-
-	if _, err := writer.Write(jsonData); err != nil {
-		return nil, fmt.Errorf("compressing with brotli: %w", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("closing brotli writer: %w", err)
-	}
-
-	return compressed.Bytes(), nil
+	// Use the existing zstd pool (defined in metadata_tasks.go)
+	return compressWithZstd(jsonData)
 }

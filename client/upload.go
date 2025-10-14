@@ -48,8 +48,8 @@ type PrepareClosuresResult struct {
 // PrepareClosures prepares closures from path info, including NAR, .ls, narinfo, build log, and realisation objects.
 // Build logs are automatically discovered for output paths and included by default.
 // Realisations are queried for CA derivations and included automatically.
-func PrepareClosures(ctx context.Context, pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
-	closures := make([]ClosureInfo, 0, len(pathInfos))
+// topLevelPaths specifies which paths are closure roots - one ClosureInfo is created per top-level path.
+func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
 	pathInfoByHash := make(map[string]*PathInfo)
 	logPathsByKey := make(map[string]string)
 
@@ -61,6 +61,9 @@ func PrepareClosures(ctx context.Context, pathInfos map[string]*PathInfo) (*Prep
 
 		realisations = make(map[string]*RealisationInfo)
 	}
+
+	// First pass: collect all objects for all paths
+	allObjects := make(map[string][]ObjectWithRefs) // storePath -> objects for that path
 
 	for storePath, pathInfo := range pathInfos {
 		hash, err := GetStorePathHash(storePath)
@@ -160,9 +163,64 @@ func PrepareClosures(ctx context.Context, pathInfos map[string]*PathInfo) (*Prep
 			})
 		}
 
+		allObjects[storePath] = objects
+	}
+
+	// Second pass: compute closure membership for each top-level path
+	// Build a map of which paths are reachable from each top-level path
+	closureMembership := make(map[string]map[string]bool) // topLevelPath -> set of reachable paths
+
+	for _, topLevelPath := range topLevelPaths {
+		reachable := make(map[string]bool)
+
+		var visit func(string)
+
+		visit = func(path string) {
+			if reachable[path] {
+				return
+			}
+
+			reachable[path] = true
+
+			pathInfo, ok := pathInfos[path]
+			if !ok {
+				return
+			}
+
+			for _, ref := range pathInfo.References {
+				visit(ref)
+			}
+		}
+		visit(topLevelPath)
+		closureMembership[topLevelPath] = reachable
+	}
+
+	// Third pass: create one ClosureInfo per top-level path with only its reachable objects
+	closures := make([]ClosureInfo, 0, len(topLevelPaths))
+
+	for _, topLevelPath := range topLevelPaths {
+		// Get the narinfo key for this top-level path
+		topLevelHash, err := GetStorePathHash(topLevelPath)
+		if err != nil {
+			return nil, fmt.Errorf("getting top-level path hash: %w", err)
+		}
+
+		narinfoKey := topLevelHash + ".narinfo"
+
+		// Collect objects only for paths reachable from this top-level path
+		var closureObjects []ObjectWithRefs
+
+		reachable := closureMembership[topLevelPath]
+
+		for storePath, objects := range allObjects {
+			if reachable[storePath] {
+				closureObjects = append(closureObjects, objects...)
+			}
+		}
+
 		closures = append(closures, ClosureInfo{
 			NarinfoKey: narinfoKey,
-			Objects:    objects,
+			Objects:    closureObjects,
 		})
 	}
 
@@ -228,8 +286,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 
 	slog.Info("Found paths in closure", "count", len(pathInfos))
 
-	// Prepare closures
-	result, err := PrepareClosures(ctx, pathInfos)
+	// Prepare closures - one per top-level path
+	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos)
 	if err != nil {
 		return fmt.Errorf("preparing closures: %w", err)
 	}
@@ -262,12 +320,26 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 
 	slog.Info("Uploaded all objects", "duration", duration, "narinfos", len(narinfoMetadata))
 
+	// Build a quick lookup map: narinfo key -> closure
+	closureByNarinfoKey := make(map[string]ClosureInfo)
+	for _, closure := range result.Closures {
+		closureByNarinfoKey[closure.NarinfoKey] = closure
+	}
+
 	// Build per-closure narinfo maps for completion
+	// Only include narinfos for objects that belong to each specific closure
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
-	for id, narinfoKey := range closureIDToNarinfoKey {
+	for id, topLevelNarinfoKey := range closureIDToNarinfoKey {
+		closure := closureByNarinfoKey[topLevelNarinfoKey]
 		closureNarinfos := make(map[string]NarinfoMetadata)
-		if meta, ok := narinfoMetadata[narinfoKey]; ok {
-			closureNarinfos[narinfoKey] = meta
+
+		// Add only narinfos for objects in this closure
+		for _, obj := range closure.Objects {
+			if obj.Type == ObjectTypeNarinfo {
+				if meta, ok := narinfoMetadata[obj.Key]; ok {
+					closureNarinfos[obj.Key] = meta
+				}
+			}
 		}
 
 		narinfosByClosureID[id] = closureNarinfos
