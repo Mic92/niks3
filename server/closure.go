@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -95,5 +96,23 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// VACUUM all tables modified during GC to reclaim space and update statistics
+	s.vacuumGCTables(r.Context())
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.
+// This reclaims space from deleted rows and updates query planner statistics.
+// Failures are logged but don't cause the GC to fail.
+func (s *Service) vacuumGCTables(ctx context.Context) {
+	tables := []string{"pending_closures", "pending_objects", "multipart_uploads", "closures", "objects"}
+	for _, table := range tables {
+		if _, err := s.Pool.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
+			// Log but don't fail - vacuum is nice to have but not critical
+			slog.Warn("Failed to vacuum table", "table", table, "error", err)
+		} else {
+			slog.Info("Vacuumed table", "table", table)
+		}
+	}
 }
