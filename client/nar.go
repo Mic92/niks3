@@ -336,25 +336,32 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 
 		var childEntry NarListingEntry
 
-		info, err := entry.Info()
-		if err != nil {
-			return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, err)
-		}
-
 		if err := nw.writeStatic(typeEncoded); err != nil {
 			return NarListingEntry{}, err
 		}
 
-		mode := info.Mode()
+		// Use entry.Type() to avoid an extra stat syscall
+		// Only call entry.Info() if we need the full FileInfo (for regular files)
+		var err error
+
+		entryType := entry.Type()
 		switch {
-		case mode.IsRegular():
+		case entryType.IsRegular():
+			// Regular files need FileInfo for size and permissions
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
+			}
+
 			childEntry, err = dumpRegularFile(nw, childPath, info)
-		case mode.IsDir():
+		case entryType.IsDir():
+			// Directories don't need FileInfo, recurse directly
 			childEntry, err = dumpDirectory(nw, childPath)
-		case mode&os.ModeSymlink != 0:
+		case entryType&os.ModeSymlink != 0:
+			// Symlinks don't need FileInfo
 			childEntry, err = dumpSymlink(nw, childPath)
 		default:
-			err = fmt.Errorf("unsupported file type for %s: %v", childPath, mode)
+			err = fmt.Errorf("unsupported file type for %s: %v", childPath, entryType)
 		}
 
 		if err != nil {
