@@ -35,7 +35,7 @@ func BenchmarkPythonClosure(b *testing.B) {
 	// Build the Python closure once before benchmarking
 	b.Log("Building Python closure (this may take a while on first run)...")
 
-	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "build", ".#python-closure", "--print-out-paths", "--no-link")
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "build", ".#benchmark-closure", "--print-out-paths", "--no-link")
 	cmd.Dir = projectRoot
 
 	output, err := cmd.Output()
