@@ -4,6 +4,7 @@
     inputs.process-compose.flakeModule
     ./minio.nix
     ./postgres
+    ./niks3.nix
   ];
 
   perSystem =
