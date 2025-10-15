@@ -66,7 +66,7 @@ func (c *Client) uploadLog(ctx context.Context, task uploadTask, logPathsByKey m
 		return fmt.Errorf("uploading build log %s: %w", task.key, err)
 	}
 
-	slog.Info("Uploaded build log", "key", task.key)
+	slog.Debug("Uploaded build log", "key", task.key)
 
 	return nil
 }
@@ -104,7 +104,7 @@ func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisa
 		return fmt.Errorf("uploading realisation %s: %w", task.key, err)
 	}
 
-	slog.Info("Uploaded realisation", "key", task.key)
+	slog.Debug("Uploaded realisation", "key", task.key)
 
 	return nil
 }

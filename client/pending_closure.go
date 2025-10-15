@@ -67,7 +67,7 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
-	slog.Info("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
+	slog.Debug("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
 
 	return &result, nil
 }
@@ -124,7 +124,7 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, n
 		return err
 	}
 
-	slog.Info("Completed pending closure", "id", closureID, "narinfos", len(narinfos))
+	slog.Debug("Completed pending closure", "id", closureID, "narinfos", len(narinfos))
 
 	return nil
 }
