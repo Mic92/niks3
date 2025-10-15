@@ -22,7 +22,9 @@ func (c *Client) uploadNARWithListing(
 	compressedInfoMu *sync.Mutex,
 ) error {
 	// Upload NAR
-	info, err := c.CompressAndUploadNAR(ctx, pathInfoByHash[task.hash].Path, task.task.obj, task.task.key)
+	pathInfo := pathInfoByHash[task.hash]
+
+	info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.task.obj, task.task.key)
 	if err != nil {
 		return fmt.Errorf("uploading NAR %s: %w", task.task.key, err)
 	}
@@ -56,7 +58,7 @@ func (c *Client) uploadListing(ctx context.Context, task uploadTask, info *Compr
 		return fmt.Errorf("uploading listing %s: %w", task.key, err)
 	}
 
-	slog.Info("Uploaded listing", "key", task.key)
+	slog.Debug("Uploaded listing", "key", task.key)
 
 	return nil
 }
