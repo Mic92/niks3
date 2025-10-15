@@ -188,6 +188,11 @@ cd server
 go test -bench=BenchmarkPythonClosure -benchtime=3x -v
 ```
 
+## Need commercial support or customization?
+
+For commercial support, please contact [Mic92](https://github.com/Mic92/) at
+joerg@thalheim.io or reach out to [Numtide](https://numtide.com/contact/).
+
 [goose]: https://github.com/pressly/goose
 [pgx]: https://github.com/jackc/pgx
 [sqlc]: https://sqlc.dev/
