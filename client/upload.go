@@ -150,7 +150,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 				// Track the log path for later upload
 				logPathsByKey[logKey] = logPath
 
-				slog.Info("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
+				slog.Debug("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
 			}
 		}
 
@@ -268,6 +268,8 @@ func (c *Client) CompletePendingClosures(ctx context.Context, narinfosByClosureI
 
 // PushPaths uploads store paths and their closures to the server.
 func (c *Client) PushPaths(ctx context.Context, paths []string) error {
+	startTime := time.Now()
+
 	// Resolve symlinks to actual store paths
 	resolvedPaths, err := resolveSymlinks(paths)
 	if err != nil {
@@ -277,14 +279,14 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
 
 	// Get path info for all paths and their closures
-	slog.Info("Getting path info", "count", len(resolvedPaths))
+	slog.Debug("Getting path info", "count", len(resolvedPaths))
 
 	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths)
 	if err != nil {
 		return fmt.Errorf("getting path info: %w", err)
 	}
 
-	slog.Info("Found paths in closure", "count", len(pathInfos))
+	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
 	// Prepare closures - one per top-level path
 	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos)
@@ -293,11 +295,11 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	}
 
 	if len(result.LogPathsByKey) > 0 {
-		slog.Info("Found build logs", "count", len(result.LogPathsByKey))
+		slog.Debug("Found build logs", "count", len(result.LogPathsByKey))
 	}
 
 	if len(result.RealisationsByKey) > 0 {
-		slog.Info("Found realisations for CA derivations", "count", len(result.RealisationsByKey))
+		slog.Debug("Found realisations for CA derivations", "count", len(result.RealisationsByKey))
 	}
 
 	// Create pending closures and collect what needs uploading
@@ -306,19 +308,28 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		return fmt.Errorf("creating pending closures: %w", err)
 	}
 
-	slog.Info("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
+	// Calculate how many paths are already cached vs need uploading
+	// Count NAR objects in pendingObjects (each NAR corresponds to one store path)
+	newPaths := 0
+
+	for key := range pendingObjects {
+		if strings.HasPrefix(key, "nar/") {
+			newPaths++
+		}
+	}
+
+	cachedPaths := len(pathInfos) - newPaths
+
+	slog.Info(fmt.Sprintf("Uploading %d paths to %s (%d already cached)", newPaths, c.baseURL.Hostname(), cachedPaths))
+	slog.Debug("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
 
 	// Upload all pending objects and collect narinfo metadata
-	startTime := time.Now()
-
 	narinfoMetadata, err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey, result.RealisationsByKey)
 	if err != nil {
 		return fmt.Errorf("uploading objects: %w", err)
 	}
 
-	duration := time.Since(startTime)
-
-	slog.Info("Uploaded all objects", "duration", duration, "narinfos", len(narinfoMetadata))
+	slog.Debug("Uploaded all objects", "narinfos", len(narinfoMetadata))
 
 	// Build a quick lookup map: narinfo key -> closure
 	closureByNarinfoKey := make(map[string]ClosureInfo)
@@ -351,7 +362,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		return fmt.Errorf("completing closures: %w", err)
 	}
 
-	slog.Info("Upload completed successfully")
+	duration := time.Since(startTime)
+	slog.Info(fmt.Sprintf("Upload complete. (%s)", duration.Round(time.Millisecond)))
 
 	return nil
 }
