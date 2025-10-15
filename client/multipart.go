@@ -19,6 +19,22 @@ const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts for balance between overhead and throughput
 )
 
+// formatBytes formats bytes in human-readable form (KB/MB/GB).
+func formatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%dB", bytes)
+	}
+
+	div, exp := uint64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // uploadBufferPool pools 10MB buffers for multipart uploads to reduce memory allocations.
 var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() interface{} {
@@ -81,13 +97,13 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 		return err
 	}
 
-	slog.Info("Completed multipart upload", "object_key", objectKey)
-
 	return nil
 }
 
 // uploadMultipart uploads a stream in parts using presigned URLs (sequential).
 func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) (*CompressedFileInfo, error) {
+	slog.Debug("Uploading", "object_key", objectKey)
+
 	var completedParts []CompletedPart
 
 	hasher := sha256.New()
@@ -141,8 +157,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			ETag:       etag,
 		})
 
-		slog.Info("Uploaded part", "part_number", partNumber, "total_parts", len(multipartInfo.PartURLs), "bytes", n, "object_key", objectKey)
-
 		partNumber++
 
 		if errors.Is(readErr, io.ErrUnexpectedEOF) {
@@ -175,7 +189,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 		return nil, fmt.Errorf("completing multipart upload: %w", err)
 	}
 
-	slog.Info("Completed multipart upload", "object_key", objectKey)
+	// Log completion with final size
+	slog.Debug("Completed upload", "size", formatBytes(totalSize.Load()), "parts", len(completedParts))
 
 	// Compute final hash
 	hashBytes := hasher.Sum(nil)

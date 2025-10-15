@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -35,8 +36,9 @@ type CompressedFileInfo struct {
 
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
 // It also generates a directory listing during serialization.
-func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pendingObj PendingObject, objectKey string) (*CompressedFileInfo, error) {
-	slog.Info("Compressing and uploading NAR", "store_path", storePath)
+func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, pendingObj PendingObject, objectKey string) (*CompressedFileInfo, error) {
+	name := filepath.Base(storePath)
+	slog.Info(fmt.Sprintf("Uploading %s (%s)", name, formatBytes(narSize)))
 
 	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
 	pr, pw := io.Pipe()
@@ -128,7 +130,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, pen
 		info.Listing = listing
 	}
 
-	slog.Info("Uploaded NAR", "object_key", objectKey, "size", info.Size, "hash", info.Hash)
+	slog.Debug("Uploaded NAR", "object_key", objectKey, "size", info.Size, "hash", info.Hash)
 
 	return info, nil
 }
