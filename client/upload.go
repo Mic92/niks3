@@ -329,6 +329,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	// Build per-closure narinfo maps for completion
 	// Only include narinfos for objects that belong to each specific closure
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
+
 	for id, topLevelNarinfoKey := range closureIDToNarinfoKey {
 		closure := closureByNarinfoKey[topLevelNarinfoKey]
 		closureNarinfos := make(map[string]NarinfoMetadata)
