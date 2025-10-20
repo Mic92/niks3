@@ -227,12 +227,7 @@ func TestClientIntegration(t *testing.T) {
 	ok(t, err)
 
 	mux := http.NewServeMux()
-
-	// Register handlers with auth
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
-	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
+	registerTestHandlers(mux, testService)
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -301,11 +296,7 @@ func TestClientMultipleUploads(t *testing.T) {
 	ok(t, err)
 
 	mux := http.NewServeMux()
-
-	// Register handlers
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+	registerTestHandlers(mux, testService)
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -558,12 +549,7 @@ func TestClientWithDependencies(t *testing.T) {
 	ok(t, err)
 
 	mux := http.NewServeMux()
-
-	// Register handlers
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
-	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
+	registerTestHandlers(mux, testService)
 
 	ts := httptest.NewServer(mux)
 

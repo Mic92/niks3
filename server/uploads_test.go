@@ -340,18 +340,15 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
 	ok(t, err)
 
-	// Should only return the one new narinfo object
-	v, ok := pendingClosureResponse2.PendingObjects[thirdObject]
-	if len(pendingClosureResponse2.PendingObjects) != 1 || !ok {
-		t.Errorf("expected 1 object (thirdObject), got %v", pendingClosureResponse2)
-	}
-	// Narinfo should have Type set but no PresignedURL (handled server-side)
-	if v.Type != "narinfo" {
-		t.Errorf("expected narinfo type, got %s", v.Type)
+	// Should only return the one new narinfo object with presigned URL
+	if len(pendingClosureResponse2.PendingObjects) != 1 {
+		t.Errorf("expected 1 object, got %d", len(pendingClosureResponse2.PendingObjects))
 	}
 
-	if v.PresignedURL != "" {
-		t.Errorf("narinfo should not have presigned URL (server-side upload), got %s", v.PresignedURL)
+	if v, ok := pendingClosureResponse2.PendingObjects[thirdObject]; !ok {
+		t.Errorf("expected thirdObject in response")
+	} else if v.Type != "narinfo" || v.PresignedURL == "" {
+		t.Errorf("expected narinfo with presigned URL, got type=%s url=%s", v.Type, v.PresignedURL)
 	}
 
 	testRequest(t, &TestRequest{

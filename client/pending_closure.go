@@ -87,25 +87,13 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
-type commitPendingClosureRequest struct {
-	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
-}
-
-// CompletePendingClosure marks a closure as complete, sending narinfo metadata for server-side signing.
-// The narinfos map can be empty when all objects already exist (deduplication).
-func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, narinfos map[string]NarinfoMetadata) error {
+// CompletePendingClosure marks a closure as complete after all objects have been uploaded.
+// This should be called after narinfos have been signed and uploaded.
+func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
 	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
 
-	reqBody := commitPendingClosureRequest{
-		Narinfos: narinfos,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+	// Empty request body
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), http.NoBody)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
@@ -124,7 +112,57 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, n
 		return err
 	}
 
-	slog.Debug("Completed pending closure", "id", closureID, "narinfos", len(narinfos))
+	slog.Debug("Completed pending closure", "id", closureID)
 
 	return nil
+}
+
+type signNarinfosRequest struct {
+	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
+}
+
+type signNarinfosResponse struct {
+	Signatures map[string][]string `json:"signatures"`
+}
+
+// SignPendingClosure sends narinfo metadata to the server for signing and returns signatures.
+func (c *Client) SignPendingClosure(ctx context.Context, closureID string, narinfos map[string]NarinfoMetadata) (map[string][]string, error) {
+	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "sign")
+
+	reqBody := signNarinfosRequest{
+		Narinfos: narinfos,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	defer deferCloseBody(resp)
+
+	if err := checkResponse(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+
+	var result signNarinfosResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	slog.Debug("Signed narinfos", "id", closureID, "count", len(result.Signatures))
+
+	return result.Signatures, nil
 }
