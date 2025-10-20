@@ -363,15 +363,15 @@ func TestClientMultipleUploads(t *testing.T) {
 
 func buildNixDerivation(ctx context.Context, t *testing.T) string {
 	t.Helper()
-	// Create a simple Nix expression that has dependencies
-	// We'll use a shell script that depends on bash
+	// Create a simple derivation using bare derivation (no nixpkgs dependency)
 	nixExpr := filepath.Join(t.TempDir(), "test.nix")
 	nixContent := `
-	{ pkgs ? import <nixpkgs> {} }:
-	pkgs.writeScriptBin "test-script" ''
-		#!${pkgs.bash}/bin/bash
-		echo "Hello from niks3 test"
-	''
+	derivation {
+		name = "test-script";
+		system = builtins.currentSystem;
+		builder = "/bin/sh";
+		args = [ "-c" "echo 'Hello from niks3 test' > $out" ];
+	}
 	`
 
 	err := os.WriteFile(nixExpr, []byte(nixContent), 0o600)
@@ -466,7 +466,12 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 
 	// Configure the binary cache URL using the same format as Nix's own tests
 	endpoint := testService.MinioClient.EndpointURL().Host
-	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1", testService.Bucket, endpoint)
+	storeDir := os.Getenv("NIX_STORE_DIR")
+	if storeDir == "" {
+		storeDir = "/nix/store"
+	}
+
+	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
 
 	// Set up environment for AWS credentials
 	// Use the same env vars as Nix's tests
@@ -477,15 +482,15 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 
 	// First test that we can fetch nix-cache-info (like Nix's own tests do)
 	// #nosec G204 -- test code with controlled inputs
-	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "eval", "--impure", "--expr",
-		fmt.Sprintf(`builtins.fetchurl { name = "foo"; url = "s3://%s/nix-cache-info?endpoint=http://%s&region=eu-west-1"; }`, testService.Bucket, endpoint))
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "eval", "--impure", "--expr",
+		fmt.Sprintf(`builtins.fetchurl { name = "foo"; url = "s3://%s/nix-cache-info?endpoint=http://%s&region=eu-west-1&store=%s"; }`, testService.Bucket, endpoint, storeDir))
 	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
 	ok(t, err)
 
 	// Get info about the store (like Nix's tests)
-	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "store", "info", "--store", binaryCacheURL)
+	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "store", "info", "--store", binaryCacheURL)
 	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
@@ -507,10 +512,14 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	ok(t, err)
 
 	// Use --no-check-sigs like in Nix's tests
-	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "copy",
+	// Pass the full absolute path - NIX_STORE_DIR env var handles the rest
+	copyArgs := []string{
+		"--extra-experimental-features", "nix-command flakes", "copy",
 		"--no-check-sigs",
 		"--from", binaryCacheURL,
-		storePath)
+		storePath,
+	}
+	cmd = exec.CommandContext(ctx, "nix", copyArgs...)
 	cmd.Env = testEnv
 
 	output, err := cmd.CombinedOutput()
@@ -520,7 +529,9 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	}
 
 	// Verify the path exists locally now
-	cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "path-info", storePath)
+	pathInfoArgs := []string{"--extra-experimental-features", "nix-command flakes", "path-info", storePath}
+	cmd = exec.CommandContext(ctx, "nix", pathInfoArgs...)
+	cmd.Env = testEnv
 
 	_, err = cmd.CombinedOutput()
 	ok(t, err)
