@@ -12,7 +12,6 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -73,9 +72,9 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 		inflightPaths = inflightPaths[:0]
 
 		for _, existingObject := range existingObjects {
-			deletedAt, ok := existingObject.DeletedAt.(pgtype.Interval)
-			if !ok {
-				return nil, fmt.Errorf("deleted_at is not set for object: %s", existingObject.Key)
+			deletedAt := existingObject.DeletedAt
+			if !deletedAt.Valid {
+				return nil, fmt.Errorf("deleted_at is not valid for object: %s", existingObject.Key)
 			}
 
 			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*1000*30 {
@@ -129,7 +128,7 @@ func createPendingClosureInner(
 	deletedObjects := make([]string, 0, len(existingObjects))
 
 	for _, existingObject := range existingObjects {
-		if existingObject.DeletedAt != nil {
+		if existingObject.DeletedAt.Valid {
 			deletedObjects = append(deletedObjects, existingObject.Key)
 		} else {
 			delete(objectsMap, existingObject.Key)
