@@ -79,7 +79,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	ok(t, err)
 
 	// Run GC (mark stale objects)
-	_, err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx)
 	ok(t, err)
 
 	// Check what objects were marked for deletion

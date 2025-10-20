@@ -48,7 +48,7 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 	queries := pg.New(s.Pool)
 
 	// First, mark stale objects and get count
-	marked, err := queries.MarkStaleObjects(ctx, DeletionBatchSize)
+	marked, err := queries.MarkStaleObjects(ctx)
 	if err != nil {
 		*queryErr = fmt.Errorf("failed to mark stale objects: %w", err)
 		slog.Error("failed to mark stale objects", "error", err)

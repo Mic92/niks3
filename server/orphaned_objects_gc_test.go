@@ -159,7 +159,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	ok(t, err)
 
 	// ===== Run GC (mark stale objects) =====
-	_, err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx)
 	ok(t, err)
 
 	// Verify marking results
@@ -429,7 +429,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	ok(t, err)
 
 	// ===== Run GC =====
-	_, err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx)
 	ok(t, err)
 
 	// Get objects ready for deletion

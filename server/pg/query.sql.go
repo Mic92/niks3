@@ -360,7 +360,6 @@ stale_objects AS (
         )
         AND o.deleted_at IS NULL  -- Only mark fresh objects
     FOR UPDATE
-    LIMIT $1
 )
 UPDATE objects
 SET
@@ -371,8 +370,8 @@ WHERE objects.key = stale_objects.key
 `
 
 // Find all objects reachable from any closure
-func (q *Queries) MarkStaleObjects(ctx context.Context, limit int32) (int64, error) {
-	result, err := q.db.Exec(ctx, markStaleObjects, limit)
+func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, markStaleObjects)
 	if err != nil {
 		return 0, err
 	}
