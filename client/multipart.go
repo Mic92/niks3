@@ -86,7 +86,7 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.DoWithRetry(ctx, req)
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
