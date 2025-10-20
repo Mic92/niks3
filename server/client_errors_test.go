@@ -37,7 +37,7 @@ func TestClientErrorHandling(t *testing.T) {
 		// Try to upload a non-store path
 		ctx := t.Context()
 
-		err := pushToServer(ctx, ts.URL, testAuthToken, []string{"/tmp/nonexistent"})
+		err := pushToServer(ctx, ts.URL, testAuthToken, []string{"/tmp/nonexistent"}, nil)
 		if err == nil {
 			t.Fatal("Expected error for invalid store path")
 		}
@@ -75,31 +75,16 @@ func TestClientErrorHandling(t *testing.T) {
 
 		// Try with invalid auth token
 		ctx := t.Context()
+		nixEnv := setupIsolatedNixStore(t)
 
-		// Retry nix-store --add to handle transient SQLite errors
-		var (
-			output []byte
-			err    error
-		)
-
-		for attempt := 1; attempt <= 3; attempt++ {
-			output, err = exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
-			if err == nil {
-				break
-			}
-
-			if attempt < 3 && strings.Contains(string(output), "database is busy") {
-				t.Logf("nix-store --add attempt %d/3 failed (database busy), retrying...", attempt)
-
-				continue
-			}
-
-			ok(t, err)
-		}
+		cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
+		cmd.Env = nixEnv
+		output, err := cmd.CombinedOutput()
+		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
 
-		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath})
+		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath}, nixEnv)
 		if err == nil {
 			t.Fatal("Expected error for invalid auth token")
 		}
@@ -110,18 +95,21 @@ func TestClientErrorHandling(t *testing.T) {
 
 		// Try with unavailable server
 		ctx := t.Context()
+		nixEnv := setupIsolatedNixStore(t)
 
 		// Create a valid store path
 		tempFile := filepath.Join(t.TempDir(), "test.txt")
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
+		cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
+		cmd.Env = nixEnv
+		output, err := cmd.CombinedOutput()
 		ok(t, err)
 
 		storePath := strings.TrimSpace(string(output))
 
-		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath})
+		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath}, nixEnv)
 		if err == nil {
 			t.Fatal("Expected error for unavailable server")
 		}

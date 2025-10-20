@@ -89,8 +89,8 @@ func BenchmarkPythonClosure(b *testing.B) {
 
 		b.StartTimer()
 
-		// Upload the closure to S3
-		err = pushToServer(ctx, ts.URL, testAuthToken, []string{closurePath})
+		// Upload the closure to S3 (use nil for nixEnv since we're using system Nix store)
+		err = pushToServer(ctx, ts.URL, testAuthToken, []string{closurePath}, nil)
 		if err != nil {
 			b.Fatalf("Failed to push closure: %v", err)
 		}

@@ -67,13 +67,13 @@ type PrepareClosuresResult struct {
 // Build logs are automatically discovered for output paths and included by default.
 // Realisations are queried for CA derivations and included automatically.
 // topLevelPaths specifies which paths are closure roots - one ClosureInfo is created per top-level path.
-func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
+func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo, nixEnv []string) (*PrepareClosuresResult, error) {
 	pathInfoByHash := make(map[string]*PathInfo)
 	narKeyToHash := make(map[string]string)
 	logPathsByKey := make(map[string]string)
 
 	// Query realisations for CA paths
-	realisations, err := QueryRealisations(ctx, pathInfos)
+	realisations, err := QueryRealisations(ctx, pathInfos, nixEnv)
 	if err != nil {
 		// Log warning but don't fail - realisations are optional
 		slog.Warn("Failed to query realisations (CA derivations may not upload correctly)", "error", err)
@@ -452,7 +452,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	// Get path info for all paths and their closures
 	slog.Debug("Getting path info", "count", len(resolvedPaths))
 
-	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths)
+	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths, c.NixEnv)
 	if err != nil {
 		return fmt.Errorf("getting path info: %w", err)
 	}
@@ -460,7 +460,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
 	// Prepare closures - one per top-level path
-	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos)
+	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv)
 	if err != nil {
 		return fmt.Errorf("preparing closures: %w", err)
 	}
