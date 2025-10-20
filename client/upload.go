@@ -13,6 +13,20 @@ import (
 	"time"
 )
 
+// getNARKey generates the NAR object key based on content hash (NarHash) for deduplication.
+func getNARKey(narHash string) (string, error) {
+	// Convert NarHash to Nix32 format and strip "sha256:" prefix for filename
+	narHashNix32, err := ConvertHashToNix32(narHash)
+	if err != nil {
+		return "", fmt.Errorf("converting nar hash: %w", err)
+	}
+
+	narHashPart := strings.TrimPrefix(narHashNix32, "sha256:")
+	narFilename := narHashPart + ".nar.zst"
+
+	return "nar/" + narFilename, nil
+}
+
 // resolveSymlinks resolves any symlinks in the given paths to their actual store paths.
 func resolveSymlinks(paths []string) ([]string, error) {
 	resolved := make([]string, 0, len(paths))
@@ -44,6 +58,7 @@ type ClosureInfo struct {
 type PrepareClosuresResult struct {
 	Closures          []ClosureInfo
 	PathInfoByHash    map[string]*PathInfo
+	NARKeyToHash      map[string]string           // Maps NAR object key -> store path hash
 	LogPathsByKey     map[string]string           // Maps log object key -> local log file path
 	RealisationsByKey map[string]*RealisationInfo // Maps realisation key -> realisation info
 }
@@ -54,6 +69,7 @@ type PrepareClosuresResult struct {
 // topLevelPaths specifies which paths are closure roots - one ClosureInfo is created per top-level path.
 func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo) (*PrepareClosuresResult, error) {
 	pathInfoByHash := make(map[string]*PathInfo)
+	narKeyToHash := make(map[string]string)
 	logPathsByKey := make(map[string]string)
 
 	// Query realisations for CA paths
@@ -89,9 +105,14 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 			references = append(references, refHash+".narinfo")
 		}
 
-		// NAR file object
-		narFilename := hash + ".nar.zst"
-		narKey := "nar/" + narFilename
+		// NAR file object - use NarHash for content-based deduplication
+		narKey, err := getNARKey(pathInfo.NarHash)
+		if err != nil {
+			return nil, fmt.Errorf("getting NAR key: %w", err)
+		}
+
+		// Map NAR key back to store path hash for later lookup
+		narKeyToHash[narKey] = hash
 
 		// .ls file (directory listing with brotli compression)
 		lsKey := hash + ".ls"
@@ -231,6 +252,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 	return &PrepareClosuresResult{
 		Closures:          closures,
 		PathInfoByHash:    pathInfoByHash,
+		NARKeyToHash:      narKeyToHash,
 		LogPathsByKey:     logPathsByKey,
 		RealisationsByKey: realisations,
 	}, nil
@@ -473,7 +495,13 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	slog.Debug("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
 
 	// Upload all pending objects and collect narinfo metadata
-	narinfoMetadata, err := c.UploadPendingObjects(ctx, pendingObjects, result.PathInfoByHash, result.LogPathsByKey, result.RealisationsByKey)
+	narinfoMetadata, err := c.UploadPendingObjects(ctx, &UploadContext{
+		PendingObjects:    pendingObjects,
+		PathInfoByHash:    result.PathInfoByHash,
+		NARKeyToHash:      result.NARKeyToHash,
+		LogPathsByKey:     result.LogPathsByKey,
+		RealisationsByKey: result.RealisationsByKey,
+	})
 	if err != nil {
 		return fmt.Errorf("uploading objects: %w", err)
 	}
