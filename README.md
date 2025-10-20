@@ -135,6 +135,101 @@ nix log --store 's3://my-nix-cache?endpoint=http://localhost:9000&region=us-east
         /nix/store/...-package-name
 ```
 
+### Garbage Collection
+
+niks3 implements reference-tracking garbage collection to clean up old closures and unreachable objects from the cache.
+
+#### Running Garbage Collection
+
+```bash
+export NIKS3_SERVER_URL=http://server:5751
+export NIKS3_AUTH_TOKEN_FILE=/path/to/token-file
+
+# Delete closures older than 30 days
+niks3 gc --older-than=720h
+```
+
+The GC process runs in three phases:
+
+1. **Clean up failed uploads**: Removes incomplete uploads older than `--pending-older-than` (default: 6h)
+1. **Delete old closures**: Removes closures older than `--older-than`
+1. **Mark and delete orphaned objects**: Marks unreachable objects, then deletes them after a grace period
+
+#### Statistics Output
+
+The GC command logs detailed statistics:
+
+```
+INFO Starting garbage collection older-than=720h pending-older-than=6h force=false
+INFO Garbage collection completed successfully failed-uploads-deleted=5 old-closures-deleted=142 objects-marked-for-deletion=1523 objects-deleted-after-grace-period=1520 objects-failed-to-delete=3
+```
+
+Statistics explained:
+
+- **failed-uploads-deleted**: Number of incomplete/failed uploads cleaned up
+- **old-closures-deleted**: Number of closures older than the threshold that were removed
+- **objects-marked-for-deletion**: Number of unreachable objects marked as deleted (first phase)
+- **objects-deleted-after-grace-period**: Number of objects actually removed from S3 and database after the grace period
+- **objects-failed-to-delete**: Number of objects that couldn't be deleted from S3 and were marked active again
+
+#### Grace Period
+
+The grace period (default: same as `--pending-older-than`) prevents race conditions during concurrent uploads. Objects are marked for deletion first, then deleted only after the grace period has elapsed. This ensures that objects from in-flight uploads are not prematurely deleted.
+
+#### Force Mode (Dangerous)
+
+```bash
+# WARNING: Immediate deletion without grace period
+niks3 gc --older-than=720h --force
+```
+
+Force mode bypasses the grace period and deletes objects immediately. **Only use this when no uploads are in progress**, as it may delete objects that are currently being uploaded or referenced.
+
+#### Automatic Garbage Collection (NixOS Module)
+
+The NixOS module includes automatic garbage collection via a systemd timer:
+
+```nix
+{
+  services.niks3 = {
+    enable = true;
+    # ... other configuration ...
+
+    gc = {
+      enable = true;           # Default: true
+      olderThan = "720h";      # 30 days (default)
+      schedule = "daily";      # Run at midnight daily (default)
+      randomizedDelaySec = 1800; # Add 0-30 min random delay (default)
+    };
+  };
+}
+```
+
+**Options:**
+
+- `gc.enable`: Enable/disable automatic garbage collection (default: `true`)
+- `gc.olderThan`: How old closures must be before deletion (default: `"720h"` = 30 days)
+  - Examples: `"168h"` (7 days), `"2160h"` (90 days)
+- `gc.failedUploadsOlderThan`: How old failed uploads must be before cleanup (default: `"6h"` = 6 hours)
+  - Examples: `"12h"` (12 hours), `"24h"` (1 day)
+- `gc.schedule`: When to run GC in systemd calendar format (default: `"daily"`)
+  - Examples: `"weekly"`, `"*-*-* 02:00:00"` (daily at 2 AM), `"Sun *-*-* 03:00:00"` (Sundays at 3 AM)
+- `gc.randomizedDelaySec`: Random delay in seconds before starting (default: `1800` = 30 minutes)
+  - Helps distribute load across multiple instances
+
+The automatic GC runs as a systemd service (`niks3-gc.service`) triggered by a timer (`niks3-gc.timer`). View logs with:
+
+```bash
+# View GC service logs
+journalctl -u niks3-gc.service
+
+# Check next scheduled run
+systemctl list-timers niks3-gc.timer
+
+# Run GC manually
+systemctl start niks3-gc.service
+```
+
 ## DB Migrations
 
 We use [Goose].
