@@ -42,36 +42,11 @@
             # Run all tests in checkPhase
             checkPhase = ''
               runHook preCheck
-              # Set up test environment with absolute paths
               export HOME=$TMPDIR
-              export TEST_ROOT=$(mktemp -d)
-              # Resolve symlinks (important on macOS where /tmp -> /private/tmp)
-              export TEST_ROOT=$(cd "$TEST_ROOT" && pwd -P)
-              export NIX_STORE_DIR=$TEST_ROOT/store
-              export NIX_DATA_DIR=$TEST_ROOT/share
-              export NIX_LOG_DIR=$TEST_ROOT/var/log/nix
-              export NIX_STATE_DIR=$TEST_ROOT/state
-              export NIX_CONF_DIR=$TEST_ROOT/etc
-              export XDG_CACHE_HOME=$TEST_ROOT/cache
-              export NIX_CONFIG="substituters =
-              connect-timeout = 0
-              sandbox = false"
-              export _NIX_TEST_NO_SANDBOX=1
-              export NIX_REMOTE=""
-
-              # Create required directories
-              mkdir -p $NIX_STORE_DIR \
-                       $NIX_DATA_DIR \
-                       $NIX_LOG_DIR/drvs \
-                       $NIX_STATE_DIR/nix/profiles \
-                       $NIX_CONF_DIR \
-                       $XDG_CACHE_HOME
 
               # Run all tests with verbose output
               go test -v ./client/... ./server/...
 
-              # Cleanup
-              rm -rf "$TEST_ROOT"
               runHook postCheck
             '';
             installPhase = ''

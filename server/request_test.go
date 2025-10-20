@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +60,71 @@ func createTestService(tb testing.TB) *server.Service {
 		Bucket:      bucketName,
 		MinioClient: minioClient,
 	}
+}
+
+// setupIsolatedNixStore creates an isolated Nix store environment for a test.
+// This prevents tests from interfering with each other when running in parallel.
+// Returns environment variables that should be used with exec.Command.
+func setupIsolatedNixStore(tb testing.TB) []string {
+	tb.Helper()
+
+	// Create a unique temporary directory for this test's Nix store
+	testRoot := tb.TempDir()
+
+	// Resolve symlinks to get canonical path (important on macOS where /tmp -> /private/tmp)
+	var err error
+
+	testRoot, err = filepath.EvalSymlinks(testRoot)
+	ok(tb, err)
+
+	// Set up Nix environment variables pointing to isolated directories
+	nixStoreDir := testRoot + "/store"
+	nixStateDir := testRoot + "/state"
+	nixDataDir := testRoot + "/share"
+	nixLogDir := testRoot + "/var/log/nix"
+	nixConfDir := testRoot + "/etc"
+	xdgCacheHome := testRoot + "/cache"
+
+	// Create required directories
+	dirs := []string{
+		nixStoreDir,
+		nixStateDir + "/nix/profiles",
+		nixDataDir,
+		nixLogDir + "/drvs",
+		nixConfDir,
+		xdgCacheHome,
+	}
+
+	for _, dir := range dirs {
+		err := os.MkdirAll(dir, 0o755)
+		ok(tb, err)
+	}
+
+	// Build environment with isolated Nix store configuration
+	// Start with current environment but override Nix-specific variables
+	env := os.Environ()
+	nixEnv := []string{
+		"NIX_STORE_DIR=" + nixStoreDir,
+		"NIX_STATE_DIR=" + nixStateDir,
+		"NIX_DATA_DIR=" + nixDataDir,
+		"NIX_LOG_DIR=" + nixLogDir,
+		"NIX_CONF_DIR=" + nixConfDir,
+		"XDG_CACHE_HOME=" + xdgCacheHome,
+		"NIX_REMOTE=",
+		"_NIX_TEST_NO_SANDBOX=1",
+		"NIX_CONFIG=substituters =\nconnect-timeout = 0\nsandbox = false",
+	}
+
+	// Filter out any existing NIX_* environment variables to avoid conflicts
+	var filteredEnv []string
+
+	for _, e := range env {
+		if !strings.HasPrefix(e, "NIX_") && !strings.HasPrefix(e, "_NIX_") && !strings.HasPrefix(e, "XDG_CACHE_HOME=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+
+	return append(filteredEnv, nixEnv...)
 }
 
 type TestRequest struct {

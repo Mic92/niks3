@@ -32,11 +32,14 @@ type RealisationInfo struct {
 }
 
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
-func GetPathInfoRecursive(ctx context.Context, storePaths []string) (map[string]*PathInfo, error) {
+func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []string) (map[string]*PathInfo, error) {
 	args := []string{"--extra-experimental-features", "nix-command", "path-info", "--recursive", "--json", "--"}
 	args = append(args, storePaths...)
 
 	cmd := exec.CommandContext(ctx, "nix", args...)
+	if len(nixEnv) > 0 {
+		cmd.Env = nixEnv
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -97,7 +100,7 @@ func GetStorePathHash(storePath string) (string, error) {
 // QueryRealisations queries realisations from Nix's local database using `nix realisation info`.
 // It only queries paths that have the CA field set, as non-CA paths don't have realisations.
 // Returns a map from realisation key ("realisations/<id>.doi") to RealisationInfo.
-func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo) (map[string]*RealisationInfo, error) {
+func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string]*RealisationInfo, error) {
 	// OPTIMIZATION: Only query paths that have CA field set
 	// Non-CA paths don't have realisations, so skip them
 	caPaths := make([]string, 0, len(pathInfos))
@@ -126,7 +129,11 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo) (map
 
 		// Batch query chunk of CA paths
 		args := append([]string{"--extra-experimental-features", "nix-command ca-derivations", "realisation", "info", "--json"}, chunk...)
+
 		cmd := exec.CommandContext(ctx, "nix", args...)
+		if len(nixEnv) > 0 {
+			cmd.Env = nixEnv
+		}
 
 		output, err := cmd.Output()
 		if err != nil {

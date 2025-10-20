@@ -19,7 +19,7 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-func buildCADerivation(ctx context.Context, t *testing.T) string {
+func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) string {
 	t.Helper()
 
 	// Create a CA (content-addressed) derivation using bare derivation
@@ -43,20 +43,18 @@ func buildCADerivation(ctx context.Context, t *testing.T) string {
 	// Build the CA derivation without using binary caches (build locally only)
 	// Use --option substitute false to prevent fetching from binary caches
 	// Enable ca-derivations experimental feature
-	// Retry up to 3 times to handle transient SQLite "database is busy" errors
-	var output []byte
-	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
-		output, err = exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
-			"--extra-experimental-features", "ca-derivations",
-			"--option", "substitute", "false").CombinedOutput()
-		if err == nil {
-			break
-		}
-		if attempt < 3 && strings.Contains(string(output), "database is busy") {
-			t.Logf("nix-build attempt %d/3 failed (database busy), retrying...", attempt)
-			continue
-		}
+	var (
+		output []byte
+		err    error
+	)
+
+	cmd := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
+		"--extra-experimental-features", "ca-derivations",
+		"--option", "substitute", "false")
+	cmd.Env = nixEnv
+
+	output, err = cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("Failed to build CA derivation: %v\nOutput: %s", err, output)
 	}
 
@@ -133,24 +131,20 @@ func TestClientCADerivations(t *testing.T) {
 	ok(t, err)
 
 	mux := http.NewServeMux()
-
-	// Register handlers
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
-	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
+	registerTestHandlers(mux, testService)
 
 	ts := httptest.NewServer(mux)
 
 	t.Cleanup(func() { ts.Close() })
 
 	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
 
 	// Build CA derivation
-	caPath := buildCADerivation(ctx, t)
+	caPath := buildCADerivation(ctx, t, nixEnv)
 
 	// Upload to server
-	uploadedCount := runClientAndVerifyUpload(ctx, t, testService, caPath, ts.URL, testAuthToken)
+	uploadedCount := runClientAndVerifyUpload(ctx, t, testService, caPath, ts.URL, testAuthToken, nixEnv)
 	if uploadedCount < 1 {
 		t.Error("Expected at least one CA derivation upload")
 	}
@@ -229,55 +223,59 @@ func TestClientCADerivations(t *testing.T) {
 		verifyRealisationFiles(ctx, t, testService, realisationKeys)
 	}
 
-	// Test 4: Verify Nix can retrieve the CA derivation
-	t.Run("RetrieveCADerivation", func(t *testing.T) {
-		t.Parallel()
+	// Test 4: Verify Nix can retrieve the CA derivation (inlined to avoid subtest parallel issues)
+	// Configure the binary cache URL with the correct store prefix
+	endpoint := testService.MinioClient.EndpointURL().Host
 
-		ctx := t.Context()
+	// Extract NIX_STORE_DIR from nixEnv
+	var storeDir string
 
-		// Configure the binary cache URL with the correct store prefix
-		endpoint := testService.MinioClient.EndpointURL().Host
+	for _, envVar := range nixEnv {
+		if strings.HasPrefix(envVar, "NIX_STORE_DIR=") {
+			storeDir = strings.TrimPrefix(envVar, "NIX_STORE_DIR=")
 
-		storeDir := os.Getenv("NIX_STORE_DIR")
-		if storeDir == "" {
-			storeDir = "/nix/store"
+			break
 		}
+	}
 
-		binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
+	if storeDir == "" {
+		storeDir = defaultNixStoreDir
+	}
 
-		testEnv := append(os.Environ(),
-			"AWS_ACCESS_KEY_ID=minioadmin",
-			"AWS_SECRET_ACCESS_KEY="+testMinioServer.secret,
-		)
+	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
 
-		// Try to copy from our cache
-		// Pass the full absolute path - NIX_STORE_DIR env var handles the rest
-		copyArgs := []string{
-			"--extra-experimental-features", "nix-command flakes ca-derivations", "copy",
-			"--no-check-sigs",
-			"--from", binaryCacheURL,
-			caPath,
-		}
-		cmd := exec.CommandContext(ctx, "nix", copyArgs...)
+	nixEnv = append(nixEnv,
+		"AWS_ACCESS_KEY_ID=minioadmin",
+		"AWS_SECRET_ACCESS_KEY="+testMinioServer.secret,
+	)
+	testEnv := nixEnv
+
+	// Try to copy from our cache
+	copyArgs := []string{
+		"--extra-experimental-features", "nix-command flakes ca-derivations", "copy",
+		"--no-check-sigs",
+		"--from", binaryCacheURL,
+		caPath,
+	}
+	cmd := exec.CommandContext(ctx, "nix", copyArgs...)
+	cmd.Env = testEnv
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("nix copy output: %s", output)
+		t.Logf("nix copy failed (might be expected with isolated stores): %v", err)
+	} else {
+		// Verify realisation is registered locally
+		realisationArgs := []string{"--extra-experimental-features", "nix-command flakes ca-derivations", "realisation", "info", caPath}
+		cmd = exec.CommandContext(ctx, "nix", realisationArgs...)
 		cmd.Env = testEnv
 
-		output, err := cmd.CombinedOutput()
+		output, err = cmd.CombinedOutput()
 		if err != nil {
-			t.Logf("nix copy output: %s", output)
-			t.Logf("nix copy failed (might be expected in some environments): %v", err)
+			t.Logf("nix realisation info output: %s", output)
+			t.Logf("Failed to query realisation after copy: %v", err)
 		} else {
-			// Verify realisation is registered locally
-			realisationArgs := []string{"--extra-experimental-features", "nix-command flakes ca-derivations", "realisation", "info", caPath}
-			cmd = exec.CommandContext(ctx, "nix", realisationArgs...)
-			cmd.Env = testEnv
-
-			output, err = cmd.CombinedOutput()
-			if err != nil {
-				t.Logf("nix realisation info output: %s", output)
-				t.Logf("Failed to query realisation after copy: %v", err)
-			} else {
-				t.Logf("Realisation info after copy:\n%s", output)
-			}
+			t.Logf("Realisation info after copy:\n%s", output)
 		}
-	})
+	}
 }
