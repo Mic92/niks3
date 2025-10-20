@@ -73,20 +73,25 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	// Clean up pending closures first (failed/stale uploads)
 	// Use separate timeout if provided, otherwise default to 6 hours
 	// This is longer than presigned URL validity (5h) to avoid aborting active uploads
-	pendingOlderThan := r.URL.Query().Get("pending-older-than")
-	if pendingOlderThan == "" {
-		pendingOlderThan = "6h"
+	failedUploadsOlderThan := r.URL.Query().Get("failed-uploads-older-than")
+	if failedUploadsOlderThan == "" {
+		// Fallback to old parameter name for backwards compatibility
+		failedUploadsOlderThan = r.URL.Query().Get("pending-older-than")
 	}
 
-	pendingAge, err := time.ParseDuration(pendingOlderThan)
+	if failedUploadsOlderThan == "" {
+		failedUploadsOlderThan = "6h"
+	}
+
+	pendingAge, err := time.ParseDuration(failedUploadsOlderThan)
 	if err != nil {
-		http.Error(w, "failed to parse pending-older-than: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "failed to parse failed-uploads-older-than: "+err.Error(), http.StatusBadRequest)
 
 		return
 	}
 
 	if pendingAge < 0 {
-		http.Error(w, "pending-older-than must not be negative", http.StatusBadRequest)
+		http.Error(w, "failed-uploads-older-than must not be negative", http.StatusBadRequest)
 
 		return
 	}

@@ -56,7 +56,7 @@ func run() error {
 	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
 	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
-	pendingOlderThan := gcCmd.String("pending-older-than", "6h", "Delete pending closures (failed uploads) older than this duration (e.g., '6h' for 6 hours)")
+	pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration (e.g., '6h' for 6 hours)")
 	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
 
 	// Parse command
@@ -162,7 +162,7 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 		slog.Warn("This may delete objects that are currently being uploaded or referenced")
 	}
 
-	slog.Info("Starting garbage collection", "older-than", olderThan, "pending-older-than", pendingOlderThan, "force", force)
+	slog.Info("Starting garbage collection", "older-than", olderThan, "failed-uploads-older-than", pendingOlderThan, "force", force)
 
 	// Run garbage collection
 	stats, err := c.RunGarbageCollection(ctx, olderThan, pendingOlderThan, force)
