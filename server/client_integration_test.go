@@ -280,15 +280,7 @@ func TestClientIntegration(t *testing.T) {
 	nixEnv := setupIsolatedNixStore(t)
 
 	// Add the file to nix store
-	cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
-	cmd.Env = nixEnv
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to add file to nix store: %v\nOutput: %s", err, output)
-	}
-
-	storePath := strings.TrimSpace(string(output))
+	storePath := nixStoreAdd(t, nixEnv, tempFile)
 	t.Logf("Created store path: %s", storePath)
 
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)
@@ -350,20 +342,13 @@ func TestClientMultipleUploads(t *testing.T) {
 	// Create multiple test files and add them to nix store
 	storePaths := make([]string, 0, 3)
 
-	var output []byte
-
 	for i := range 3 {
 		tempFile := filepath.Join(t.TempDir(), fmt.Sprintf("test-file-%d.txt", i))
 		content := fmt.Sprintf("test content %d for niks3 integration test", i)
 		err = os.WriteFile(tempFile, []byte(content), 0o600)
 		ok(t, err)
 
-		cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
-		cmd.Env = nixEnv
-		output, err = cmd.CombinedOutput()
-		ok(t, err)
-
-		storePath := strings.TrimSpace(string(output))
+		storePath := nixStoreAdd(t, nixEnv, tempFile)
 		storePaths = append(storePaths, storePath)
 		t.Logf("Created store path %d: %s", i, storePath)
 	}
