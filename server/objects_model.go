@@ -15,6 +15,13 @@ const (
 	DeletionBatchSize = 1000
 )
 
+// ObjectCleanupStats contains statistics about object cleanup operations.
+type ObjectCleanupStats struct {
+	MarkedCount  int
+	DeletedCount int
+	FailedCount  int
+}
+
 func flushBatch(ctx context.Context, keys []string, operation func(context.Context, []string) error) ([]string, error) {
 	if len(keys) == 0 {
 		return keys, nil
@@ -33,19 +40,23 @@ func flushBatch(ctx context.Context, keys []string, operation func(context.Conte
 func (s *Service) getObjectsForDeletion(ctx context.Context,
 	objectCh chan<- minio.ObjectInfo,
 	queryErr *error,
+	markedCount *int,
 	gracePeriod int32,
 ) {
 	defer close(objectCh)
 
 	queries := pg.New(s.Pool)
 
-	// First, mark stale objects (no return value)
-	if err := queries.MarkStaleObjects(ctx, DeletionBatchSize); err != nil {
+	// First, mark stale objects and get count
+	marked, err := queries.MarkStaleObjects(ctx, DeletionBatchSize)
+	if err != nil {
 		*queryErr = fmt.Errorf("failed to mark stale objects: %w", err)
 		slog.Error("failed to mark stale objects", "error", err)
 
 		return
 	}
+
+	*markedCount = int(marked)
 
 	// Then, get objects ready for deletion (marked > gracePeriod ago)
 	for {
@@ -105,6 +116,7 @@ func handleFailedObject(ctx context.Context, objectName string, resultErr error,
 func (s *Service) removeS3Objects(ctx context.Context,
 	pool *pgxpool.Pool,
 	objectCh <-chan minio.ObjectInfo,
+	stats *ObjectCleanupStats,
 ) ([]error, []error) {
 	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
 	failedKeys := make([]string, 0, DeletionBatchSize)
@@ -126,6 +138,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 					batchErrors = append(batchErrors, err)
 				}
 
+				stats.DeletedCount++
+
 				continue
 			}
 
@@ -141,6 +155,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 				batchErrors = append(batchErrors, err)
 			}
 
+			stats.FailedCount++
+
 			continue
 		}
 
@@ -150,6 +166,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 		if err != nil {
 			batchErrors = append(batchErrors, err)
 		}
+
+		stats.DeletedCount++
 	}
 
 	// Flush remaining batches
@@ -164,18 +182,20 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	return s3Errors, batchErrors
 }
 
-func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, gracePeriod int32) error {
+func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, gracePeriod int32) (*ObjectCleanupStats, error) {
 	// limit channel size to 1000, as minio limits to 1000 in one request
 	objectCh := make(chan minio.ObjectInfo, DeletionBatchSize)
 
+	stats := &ObjectCleanupStats{}
+
 	var queryErr error
 
-	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, gracePeriod)
+	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, &stats.MarkedCount, gracePeriod)
 
-	s3Errs, batchErrs := s.removeS3Objects(ctx, pool, objectCh)
+	s3Errs, batchErrs := s.removeS3Objects(ctx, pool, objectCh, stats)
 
 	if queryErr != nil {
-		return queryErr
+		return stats, queryErr
 	}
 
 	// Prioritize batch errors (database operations) over S3 errors
@@ -185,16 +205,16 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, 
 		if len(s3Errs) > 0 {
 			s3Err := errors.Join(s3Errs...)
 
-			return fmt.Errorf("%d batch operation failures: %w (also %d S3 failures: %w)",
+			return stats, fmt.Errorf("%d batch operation failures: %w (also %d S3 failures: %w)",
 				len(batchErrs), batchErr, len(s3Errs), s3Err)
 		}
 
-		return fmt.Errorf("%d batch operation failures: %w", len(batchErrs), batchErr)
+		return stats, fmt.Errorf("%d batch operation failures: %w", len(batchErrs), batchErr)
 	}
 
 	if len(s3Errs) > 0 {
-		return fmt.Errorf("%d S3 failures: %w", len(s3Errs), errors.Join(s3Errs...))
+		return stats, fmt.Errorf("%d S3 failures: %w", len(s3Errs), errors.Join(s3Errs...))
 	}
 
-	return nil
+	return stats, nil
 }

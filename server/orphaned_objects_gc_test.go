@@ -143,7 +143,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	})
 
 	// Delete Closure B
-	err := queries.DeleteClosures(ctx, pgtype.Timestamp{
+	_, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
 		Time:  cutoffTime,
 		Valid: true,
 	})
@@ -159,7 +159,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	ok(t, err)
 
 	// ===== Run GC (mark stale objects) =====
-	err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx, 1000)
 	ok(t, err)
 
 	// Verify marking results
@@ -422,14 +422,14 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 		numActiveClosure, numDeletedClosures, numOrphanedChains)
 
 	// ===== Delete the marked closures =====
-	err := queries.DeleteClosures(ctx, pgtype.Timestamp{
+	_, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
 		Time:  cutoffTime,
 		Valid: true,
 	})
 	ok(t, err)
 
 	// ===== Run GC =====
-	err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx, 1000)
 	ok(t, err)
 
 	// Get objects ready for deletion

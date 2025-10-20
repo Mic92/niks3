@@ -226,6 +226,7 @@ func TestClientCADerivations(t *testing.T) {
 
 		// Configure the binary cache URL with the correct store prefix
 		endpoint := testService.MinioClient.EndpointURL().Host
+
 		storeDir := os.Getenv("NIX_STORE_DIR")
 		if storeDir == "" {
 			storeDir = "/nix/store"

@@ -43,10 +43,10 @@ func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*Cl
 	}, nil
 }
 
-func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.Duration) error {
+func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.Duration) (int, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get database connection: %w", err)
+		return 0, fmt.Errorf("failed to get database connection: %w", err)
 	}
 
 	defer conn.Release()
@@ -58,10 +58,10 @@ func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.D
 		Valid: true,
 	}
 
-	err = queries.DeleteClosures(ctx, timeOlder)
+	count, err := queries.DeleteClosures(ctx, timeOlder)
 	if err != nil {
-		return fmt.Errorf("failed to delete older closures: %w", err)
+		return 0, fmt.Errorf("failed to delete older closures: %w", err)
 	}
 
-	return nil
+	return int(count), nil
 }
