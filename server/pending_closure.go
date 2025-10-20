@@ -40,14 +40,14 @@ type PendingClosure struct {
 
 func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *bool) {
 	if p := recover(); p != nil && !*committed {
-		if err := (*tx).Rollback(ctx); err != nil {
-			slog.Error("failed to rollback transaction", "error", err)
+		if rbErr := (*tx).Rollback(ctx); rbErr != nil {
+			slog.Error("failed to rollback transaction", "error", rbErr)
 		}
 
 		panic(p) // re-throw after Rollback
-	} else if err != nil && !*committed {
-		if err := (*tx).Rollback(ctx); err != nil {
-			slog.Error("failed to rollback transaction", "error", err)
+	} else if *err != nil && !*committed {
+		if rbErr := (*tx).Rollback(ctx); rbErr != nil {
+			slog.Error("failed to rollback transaction", "error", rbErr)
 		}
 	}
 }
