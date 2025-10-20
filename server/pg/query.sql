@@ -160,5 +160,6 @@ WHERE objects.key = stale_objects.key;
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
+  AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
 LIMIT sqlc.arg(limit_count);

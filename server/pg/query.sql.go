@@ -194,6 +194,7 @@ const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
+  AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
 LIMIT $2
 `
