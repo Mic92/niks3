@@ -78,6 +78,7 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 				// do not block the flow.
 				slog.Debug("object became active during wait", "key", existingObject.Key)
 				delete(missingObjects, existingObject.Key)
+
 				continue
 			}
 
