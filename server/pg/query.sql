@@ -27,7 +27,7 @@ WHERE key = any($1::varchar []);
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
 
--- name: CleanupPendingClosures :exec
+-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
 ),
@@ -86,7 +86,7 @@ WITH RECURSIVE closure_reach AS (
 )
 SELECT DISTINCT key FROM closure_reach;
 
--- name: DeleteClosures :exec
+-- name: DeleteClosures :execrows
 DELETE FROM closures
 WHERE updated_at < $1;
 
@@ -112,7 +112,7 @@ WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int;
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
 
--- name: MarkStaleObjects :exec
+-- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
@@ -147,7 +147,6 @@ stale_objects AS (
         )
         AND o.deleted_at IS NULL  -- Only mark fresh objects
     FOR UPDATE
-    LIMIT $1
 )
 UPDATE objects
 SET
@@ -161,5 +160,6 @@ WHERE objects.key = stale_objects.key;
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
+  AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
 LIMIT sqlc.arg(limit_count);

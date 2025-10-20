@@ -73,14 +73,27 @@ func TestClientErrorHandling(t *testing.T) {
 
 		// Create a valid store path
 		tempFile := filepath.Join(t.TempDir(), "test.txt")
-		err := os.WriteFile(tempFile, []byte("test"), 0o600)
-		ok(t, err)
+		if err := os.WriteFile(tempFile, []byte("test"), 0o600); err != nil {
+			ok(t, err)
+		}
 
 		// Try with invalid auth token
 		ctx := t.Context()
 
-		output, err := exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
-		ok(t, err)
+		// Retry nix-store --add to handle transient SQLite errors
+		var output []byte
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			output, err = exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
+			if err == nil {
+				break
+			}
+			if attempt < 3 && strings.Contains(string(output), "database is busy") {
+				t.Logf("nix-store --add attempt %d/3 failed (database busy), retrying...", attempt)
+				continue
+			}
+			ok(t, err)
+		}
 
 		storePath := strings.TrimSpace(string(output))
 

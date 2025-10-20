@@ -121,7 +121,7 @@ func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Ser
 func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.Service, c *client.Client) {
 	t.Helper()
 
-	err := c.RunGarbageCollection(ctx, "0s", "0s", true)
+	_, err := c.RunGarbageCollection(ctx, "0s", "0s", true)
 	ok(t, err)
 
 	// Log database state after GC
@@ -466,6 +466,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 
 	// Configure the binary cache URL using the same format as Nix's own tests
 	endpoint := testService.MinioClient.EndpointURL().Host
+
 	storeDir := os.Getenv("NIX_STORE_DIR")
 	if storeDir == "" {
 		storeDir = "/nix/store"

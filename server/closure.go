@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Mic92/niks3/api"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -72,36 +73,50 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	// Clean up pending closures first (failed/stale uploads)
 	// Use separate timeout if provided, otherwise default to 6 hours
 	// This is longer than presigned URL validity (5h) to avoid aborting active uploads
-	pendingOlderThan := r.URL.Query().Get("pending-older-than")
-	if pendingOlderThan == "" {
-		pendingOlderThan = "6h"
+	failedUploadsOlderThan := r.URL.Query().Get("failed-uploads-older-than")
+	if failedUploadsOlderThan == "" {
+		// Fallback to old parameter name for backwards compatibility
+		failedUploadsOlderThan = r.URL.Query().Get("pending-older-than")
 	}
 
-	pendingAge, err := time.ParseDuration(pendingOlderThan)
+	if failedUploadsOlderThan == "" {
+		failedUploadsOlderThan = "6h"
+	}
+
+	pendingAge, err := time.ParseDuration(failedUploadsOlderThan)
 	if err != nil {
-		http.Error(w, "failed to parse pending-older-than: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "failed to parse failed-uploads-older-than: "+err.Error(), http.StatusBadRequest)
 
 		return
 	}
 
 	if pendingAge < 0 {
-		http.Error(w, "pending-older-than must not be negative", http.StatusBadRequest)
+		http.Error(w, "failed-uploads-older-than must not be negative", http.StatusBadRequest)
 
 		return
 	}
 
-	if err = s.cleanupPendingClosures(r.Context(), pendingAge); err != nil {
+	stats := &api.GCStats{}
+
+	// Clean up pending closures first (failed/stale uploads)
+	failedUploadsCount, err := s.cleanupPendingClosures(r.Context(), pendingAge)
+	if err != nil {
 		http.Error(w, "failed to cleanup pending closures: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
 
+	stats.FailedUploadsDeleted = failedUploadsCount
+
 	// Then clean up old completed closures
-	if err = cleanupClosureOlderThan(r.Context(), s.Pool, age); err != nil {
+	oldClosuresCount, err := cleanupClosureOlderThan(r.Context(), s.Pool, age)
+	if err != nil {
 		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
+
+	stats.OldClosuresDeleted = oldClosuresCount
 
 	// Check if force mode is enabled
 	force := r.URL.Query().Get("force") == "true"
@@ -118,16 +133,38 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		gracePeriod = int32(pendingAge.Seconds())
 	}
 
-	if err = s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod); err != nil {
+	objectStats, err := s.cleanupOrphanObjects(r.Context(), gracePeriod)
+	if err != nil {
 		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
 
+	stats.ObjectsMarkedForDeletion = objectStats.MarkedCount
+	stats.ObjectsDeletedAfterGracePeriod = objectStats.DeletedCount
+	stats.ObjectsFailedToDelete = objectStats.FailedCount
+
+	// Log statistics on server side
+	slog.Info("Garbage collection completed",
+		"failed-uploads-deleted", stats.FailedUploadsDeleted,
+		"old-closures-deleted", stats.OldClosuresDeleted,
+		"objects-marked-for-deletion", stats.ObjectsMarkedForDeletion,
+		"objects-deleted-after-grace-period", stats.ObjectsDeletedAfterGracePeriod,
+		"objects-failed-to-delete", stats.ObjectsFailedToDelete,
+	)
+
 	// VACUUM all tables modified during GC to reclaim space and update statistics
 	s.vacuumGCTables(r.Context())
 
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	err = json.NewEncoder(w).Encode(stats)
+	if err != nil {
+		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
 }
 
 // vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.

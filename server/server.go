@@ -172,6 +172,7 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 	if storeDir == "" {
 		storeDir = "/nix/store"
 	}
+
 	cacheInfo := fmt.Sprintf(`StoreDir: %s
 WantMassQuery: 1
 Priority: 30

@@ -445,7 +445,7 @@ func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := s.cleanupPendingClosures(r.Context(), olderThan); err != nil {
+	if _, err := s.cleanupPendingClosures(r.Context(), olderThan); err != nil {
 		http.Error(w, fmt.Sprintf("cleanup failed: %v", err), http.StatusInternalServerError)
 
 		return

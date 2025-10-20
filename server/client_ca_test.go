@@ -36,16 +36,27 @@ func buildCADerivation(ctx context.Context, t *testing.T) string {
 	}
 	`
 
-	err := os.WriteFile(nixExpr, []byte(nixContent), 0o600)
-	ok(t, err)
+	if err := os.WriteFile(nixExpr, []byte(nixContent), 0o600); err != nil {
+		ok(t, err)
+	}
 
 	// Build the CA derivation without using binary caches (build locally only)
 	// Use --option substitute false to prevent fetching from binary caches
 	// Enable ca-derivations experimental feature
-	output, err := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
-		"--extra-experimental-features", "ca-derivations",
-		"--option", "substitute", "false").CombinedOutput()
-	if err != nil {
+	// Retry up to 3 times to handle transient SQLite "database is busy" errors
+	var output []byte
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		output, err = exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
+			"--extra-experimental-features", "ca-derivations",
+			"--option", "substitute", "false").CombinedOutput()
+		if err == nil {
+			break
+		}
+		if attempt < 3 && strings.Contains(string(output), "database is busy") {
+			t.Logf("nix-build attempt %d/3 failed (database busy), retrying...", attempt)
+			continue
+		}
 		t.Fatalf("Failed to build CA derivation: %v\nOutput: %s", err, output)
 	}
 
@@ -226,6 +237,7 @@ func TestClientCADerivations(t *testing.T) {
 
 		// Configure the binary cache URL with the correct store prefix
 		endpoint := testService.MinioClient.EndpointURL().Host
+
 		storeDir := os.Getenv("NIX_STORE_DIR")
 		if storeDir == "" {
 			storeDir = "/nix/store"
