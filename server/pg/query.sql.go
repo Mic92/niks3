@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const cleanupPendingClosures = `-- name: CleanupPendingClosures :exec
+const cleanupPendingClosures = `-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
 ),
@@ -52,9 +52,12 @@ WHERE pending_closures.id = old_closures.id
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
-func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 int32) error {
-	_, err := q.db.Exec(ctx, cleanupPendingClosures, dollar_1)
-	return err
+func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 int32) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupPendingClosures, dollar_1)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const commitPendingClosure = `-- name: CommitPendingClosure :exec
@@ -66,14 +69,17 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 	return err
 }
 
-const deleteClosures = `-- name: DeleteClosures :exec
+const deleteClosures = `-- name: DeleteClosures :execrows
 DELETE FROM closures
 WHERE updated_at < $1
 `
 
-func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) error {
-	_, err := q.db.Exec(ctx, deleteClosures, updatedAt)
-	return err
+func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteClosures, updatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec
@@ -320,7 +326,7 @@ func (q *Queries) MarkObjectsAsActive(ctx context.Context, dollar_1 []string) er
 	return err
 }
 
-const markStaleObjects = `-- name: MarkStaleObjects :exec
+const markStaleObjects = `-- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
@@ -365,7 +371,10 @@ WHERE objects.key = stale_objects.key
 `
 
 // Find all objects reachable from any closure
-func (q *Queries) MarkStaleObjects(ctx context.Context, limit int32) error {
-	_, err := q.db.Exec(ctx, markStaleObjects, limit)
-	return err
+func (q *Queries) MarkStaleObjects(ctx context.Context, limit int32) (int64, error) {
+	result, err := q.db.Exec(ctx, markStaleObjects, limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

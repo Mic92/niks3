@@ -165,11 +165,18 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 	slog.Info("Starting garbage collection", "older-than", olderThan, "pending-older-than", pendingOlderThan, "force", force)
 
 	// Run garbage collection
-	if err := c.RunGarbageCollection(ctx, olderThan, pendingOlderThan, force); err != nil {
+	stats, err := c.RunGarbageCollection(ctx, olderThan, pendingOlderThan, force)
+	if err != nil {
 		return fmt.Errorf("running garbage collection: %w", err)
 	}
 
-	slog.Info("Garbage collection completed successfully")
+	slog.Info("Garbage collection completed successfully",
+		"failed-uploads-deleted", stats.FailedUploadsDeleted,
+		"old-closures-deleted", stats.OldClosuresDeleted,
+		"objects-marked-for-deletion", stats.ObjectsMarkedForDeletion,
+		"objects-deleted-after-grace-period", stats.ObjectsDeletedAfterGracePeriod,
+		"objects-failed-to-delete", stats.ObjectsFailedToDelete,
+	)
 
 	return nil
 }

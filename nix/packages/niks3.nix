@@ -10,6 +10,7 @@ pkgs.buildGoModule {
   name = "niks3";
   src = lib.fileset.toSource {
     fileset = lib.fileset.unions [
+      ../../api
       ../../cmd
       ../../client
       ../../server

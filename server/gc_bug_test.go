@@ -63,7 +63,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Delete old closures (should delete B but keep A)
-	err = queries.DeleteClosures(ctx, pgtype.Timestamp{
+	_, err = queries.DeleteClosures(ctx, pgtype.Timestamp{
 		Time:  timeAfterB.Add(50 * time.Millisecond),
 		Valid: true,
 	})
@@ -79,7 +79,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	ok(t, err)
 
 	// Run GC (mark stale objects)
-	err = queries.MarkStaleObjects(ctx, 1000)
+	_, err = queries.MarkStaleObjects(ctx, 1000)
 	ok(t, err)
 
 	// Check what objects were marked for deletion

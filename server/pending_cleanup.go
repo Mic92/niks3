@@ -10,7 +10,7 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Duration) error {
+func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Duration) (int, error) {
 	queries := pg.New(s.Pool)
 	seconds := int32(duration.Seconds())
 	coreClient := minio.Core{Client: s.MinioClient}
@@ -18,7 +18,7 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	// 1. Get old multipart uploads to abort
 	uploads, err := queries.GetOldMultipartUploads(ctx, seconds)
 	if err != nil {
-		return fmt.Errorf("get old uploads: %w", err)
+		return 0, fmt.Errorf("get old uploads: %w", err)
 	}
 
 	// 2. Abort them in S3
@@ -31,9 +31,10 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	slog.Info("Aborted multipart uploads", "count", len(uploads))
 
 	// 3. Clean database (cascade deletes multipart_uploads rows)
-	if err := queries.CleanupPendingClosures(ctx, seconds); err != nil {
-		return fmt.Errorf("cleanup pending closures: %w", err)
+	count, err := queries.CleanupPendingClosures(ctx, seconds)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup pending closures: %w", err)
 	}
 
-	return nil
+	return int(count), nil
 }
