@@ -113,6 +113,7 @@ func setupIsolatedNixStore(tb testing.TB) []string {
 		"XDG_CACHE_HOME=" + xdgCacheHome,
 		"NIX_REMOTE=",
 		"_NIX_TEST_NO_SANDBOX=1",
+		//nolint:misspell // "substituters" is the correct Nix config option name
 		"NIX_CONFIG=substituters =\nconnect-timeout = 0\nsandbox = false",
 	}
 
