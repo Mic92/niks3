@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,7 @@ func setupIsolatedNixStore(tb testing.TB) []string {
 		"XDG_CACHE_HOME=" + xdgCacheHome,
 		"NIX_REMOTE=",
 		"_NIX_TEST_NO_SANDBOX=1",
+		//nolint:misspell // "substituters" is the correct Nix config option name
 		"NIX_CONFIG=substituters =\nconnect-timeout = 0\nsandbox = false",
 	}
 
@@ -125,6 +127,28 @@ func setupIsolatedNixStore(tb testing.TB) []string {
 	}
 
 	return append(filteredEnv, nixEnv...)
+}
+
+// nixStoreAdd adds a file to the Nix store and returns its store path.
+// This helper properly separates stdout (the path) from stderr (warnings/logs).
+func nixStoreAdd(tb testing.TB, nixEnv []string, filePath string) string {
+	tb.Helper()
+
+	cmd := exec.CommandContext(tb.Context(), "nix-store", "--add", filePath)
+	cmd.Env = nixEnv
+
+	output, err := cmd.Output()
+	if err != nil {
+		// If Output() fails, get stderr for diagnostics
+		exitErr := &exec.ExitError{}
+		if errors.As(err, &exitErr) {
+			tb.Fatalf("Failed to add file to nix store: %v\nStderr: %s", err, exitErr.Stderr)
+		}
+
+		tb.Fatalf("Failed to add file to nix store: %v", err)
+	}
+
+	return strings.TrimSpace(string(output))
 }
 
 type TestRequest struct {

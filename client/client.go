@@ -15,8 +15,9 @@ type Client struct {
 	baseURL                 *url.URL
 	authToken               string
 	httpClient              *http.Client
-	MaxConcurrentNARUploads int      // Maximum number of concurrent uploads (0 = unlimited)
-	NixEnv                  []string // Optional environment variables for nix commands (for testing)
+	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
+	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
+	Retry                   RetryConfig // Retry configuration for HTTP requests
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
@@ -57,6 +58,7 @@ func NewClient(serverURL, authToken string) (*Client, error) {
 			Timeout: 0, // No timeout for streaming uploads
 		},
 		MaxConcurrentNARUploads: 16,
+		Retry:                   DefaultRetryConfig(),
 	}, nil
 }
 
@@ -87,7 +89,7 @@ func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.R
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.DoWithRetry(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("uploading: %w", err)
 	}
