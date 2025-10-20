@@ -507,3 +507,105 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	t.Logf("  - Objects deleted: %d", len(deletedKeys))
 	t.Logf("  - Total GC'd: %d", len(objsToDelete))
 }
+
+// TestResurrectedObjectNotDeleted tests the critical bug where objects marked
+// as active after S3 deletion failure would still be selected for deletion
+// on the next GC run because GetObjectsReadyForDeletion only checked
+// first_deleted_at, not deleted_at.
+//
+// Bug scenario:
+// 1. Create closure A with objects
+// 2. Delete closure A (objects become orphaned and marked for deletion)
+// 3. Delete objects from S3 manually (simulating S3 deletion)
+// 4. Resurrect closure A (objects should become active again)
+// 5. Mark objects as active (simulating S3 deletion failure recovery)
+// 6. Run GC again - objects should NOT be selected for deletion
+//
+// Without the fix, step 6 would incorrectly return the resurrected objects,
+// causing active objects to be deleted.
+func TestResurrectedObjectNotDeleted(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	queries := pg.New(service.Pool)
+
+	// Step 1: Create a closure with objects
+	hash := "testobject111111111111111111111"
+	createTestClosure(t, service, queries, hash)
+
+	objectKey := hash + ".narinfo"
+	narKey := "nar/" + hash + ".nar.zst"
+
+	// Step 2: Delete the closure (objects become orphaned)
+	// Use a cutoff time slightly in the future to ensure deletion
+	time.Sleep(10 * time.Millisecond)
+	cutoffTime := time.Now().UTC().Add(1 * time.Second)
+
+	deletedCount, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
+		Time:  cutoffTime,
+		Valid: true,
+	})
+	ok(t, err)
+
+	if deletedCount < 1 {
+		t.Fatalf("Expected at least 1 closure to be deleted, got %d", deletedCount)
+	}
+
+	// Step 3: Run GC marking phase - objects should be marked for deletion
+	markedCount, err := queries.MarkStaleObjects(ctx)
+	ok(t, err)
+
+	if markedCount < 2 {
+		t.Fatalf("Expected at least 2 objects to be marked, got %d", markedCount)
+	}
+
+	// Verify objects are marked for deletion
+	var deletedAt, firstDeletedAt pgtype.Timestamp
+
+	err = service.Pool.QueryRow(ctx,
+		"SELECT deleted_at, first_deleted_at FROM objects WHERE key = $1",
+		objectKey).Scan(&deletedAt, &firstDeletedAt)
+	ok(t, err)
+
+	if !deletedAt.Valid || !firstDeletedAt.Valid {
+		t.Fatal("Objects should be marked for deletion after MarkStaleObjects")
+	}
+
+	// Step 4 & 5: Simulate S3 deletion failure scenario
+	// In real code, this happens when S3 deletion fails in removeS3Objects
+	// and MarkObjectsAsActive is called in handleFailedObject
+	err = queries.MarkObjectsAsActive(ctx, []string{objectKey, narKey})
+	ok(t, err)
+
+	// Verify objects are resurrected (deleted_at = NULL, first_deleted_at still set)
+	err = service.Pool.QueryRow(ctx,
+		"SELECT deleted_at, first_deleted_at FROM objects WHERE key = $1",
+		objectKey).Scan(&deletedAt, &firstDeletedAt)
+	ok(t, err)
+
+	if deletedAt.Valid {
+		t.Fatal("Object should be resurrected (deleted_at should be NULL)")
+	}
+
+	if !firstDeletedAt.Valid {
+		t.Fatal("Object should still have first_deleted_at set (this is the bug trigger)")
+	}
+
+	// Step 6: Next GC run - GetObjectsReadyForDeletion should NOT return resurrected objects
+	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
+		GracePeriodSeconds: 0,
+		LimitCount:         1000,
+	})
+	ok(t, err)
+
+	// Check if the resurrected objects were incorrectly selected for deletion
+	for _, key := range objsToDelete {
+		if key == objectKey || key == narKey {
+			t.Fatalf("BUG: Resurrected object %q was incorrectly selected for deletion! "+
+				"This would cause active objects to be deleted from S3.", key)
+		}
+	}
+}
