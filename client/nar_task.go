@@ -12,11 +12,7 @@ import (
 func (c *Client) uploadNARWithListing(
 	ctx context.Context,
 	task genericUploadTask,
-	pendingByHash map[string]struct {
-		narTask     *uploadTask
-		lsTask      *uploadTask
-		narinfoTask *uploadTask
-	},
+	pendingByHash pendingObjectsByHash,
 	pathInfoByHash map[string]*PathInfo,
 	compressedInfo map[string]*CompressedFileInfo,
 	compressedInfoMu *sync.Mutex,

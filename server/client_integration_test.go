@@ -23,6 +23,40 @@ import (
 
 const testAuthToken = "test-auth-token" //nolint:gosec // Test token for integration tests
 
+// getNARURLFromNarinfo fetches a narinfo from S3, decompresses it, and extracts the URL field.
+func getNARURLFromNarinfo(ctx context.Context, t *testing.T, testService *server.Service, narinfoKey string) string {
+	t.Helper()
+
+	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
+	ok(t, err)
+
+	narinfoContent, err := io.ReadAll(narinfoObj)
+	ok(t, err)
+
+	if err := narinfoObj.Close(); err != nil {
+		t.Logf("Failed to close narinfo object: %v", err)
+	}
+
+	decoder, err := zstd.NewReader(bytes.NewReader(narinfoContent))
+	ok(t, err)
+
+	defer decoder.Close()
+
+	narinfoText, err := io.ReadAll(decoder)
+	ok(t, err)
+
+	// Extract URL from narinfo
+	for _, line := range strings.Split(string(narinfoText), "\n") {
+		if strings.HasPrefix(line, "URL: ") {
+			return strings.TrimPrefix(line, "URL: ")
+		}
+	}
+
+	t.Fatal("No URL found in narinfo")
+
+	return ""
+}
+
 // verifyNarinfoInS3 checks that a narinfo file exists and has expected fields.
 func verifyNarinfoInS3(ctx context.Context, t *testing.T, testService *server.Service, hash, storePath string) {
 	t.Helper()
@@ -67,12 +101,12 @@ func verifyNarinfoInS3(ctx context.Context, t *testing.T, testService *server.Se
 		t.Errorf("Narinfo doesn't contain NarSize")
 	}
 
-	// Verify NAR file exists
-	narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
+	// Extract URL from narinfo and verify NAR file exists
+	narURL := getNARURLFromNarinfo(ctx, t, testService, narinfoKey)
 
-	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
+	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narURL, minio.StatObjectOptions{})
 	if err != nil {
-		t.Errorf("NAR file not found in S3: %v", err)
+		t.Errorf("NAR file not found in S3 at %s: %v", narURL, err)
 	}
 }
 
@@ -338,16 +372,12 @@ func TestClientMultipleUploads(t *testing.T) {
 		pathParts := strings.Split(filepath.Base(storePath), "-")
 		hash := pathParts[0]
 
-		// Check if narinfo exists in S3
+		// Check if narinfo exists and get NAR URL from it
 		narinfoKey := hash + ".narinfo"
+		narURL := getNARURLFromNarinfo(ctx, t, testService, narinfoKey)
 
-		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narinfoKey, minio.StatObjectOptions{})
-		ok(t, err)
-
-		// Check if NAR exists in S3 (compressed with zstd)
-		narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
-
-		_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
+		// Check if NAR exists in S3 at the URL specified in narinfo
+		_, err := testService.MinioClient.StatObject(ctx, testService.Bucket, narURL, minio.StatObjectOptions{})
 		ok(t, err)
 	}
 }
@@ -429,12 +459,12 @@ func runClientAndVerifyUpload(ctx context.Context, t *testing.T, testService *se
 		} else {
 			uploadedCount++
 
-			// Also verify NAR exists (compressed with zstd)
-			narKey := fmt.Sprintf("nar/%s.nar.zst", hash)
+			// Also verify NAR exists (get URL from narinfo)
+			narURL := getNARURLFromNarinfo(ctx, t, testService, narinfoKey)
 
-			_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narKey, minio.StatObjectOptions{})
+			_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, narURL, minio.StatObjectOptions{})
 			if err != nil {
-				t.Errorf("NAR not found for %s: %v", dep, err)
+				t.Errorf("NAR not found for %s at %s: %v", dep, narURL, err)
 			}
 		}
 	}
