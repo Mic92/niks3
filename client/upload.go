@@ -138,7 +138,8 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 				slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
 			} else if logPath != "" {
 				// Build log exists - add log object
-				drvName := strings.TrimPrefix(drvPath, "/nix/store/")
+				// Use filepath.Base to get just the derivation filename (works with any store directory)
+				drvName := filepath.Base(drvPath)
 				logKey := "log/" + drvName
 
 				objects = append(objects, ObjectWithRefs{

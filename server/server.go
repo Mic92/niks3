@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -166,14 +167,19 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 
 	// Object doesn't exist, create it
 	// Priority 30 is higher than the default nixos.org cache (priority 40)
-	cacheInfo := []byte(`StoreDir: /nix/store
+	// Use NIX_STORE_DIR from environment if set, otherwise default to /nix/store
+	storeDir := os.Getenv("NIX_STORE_DIR")
+	if storeDir == "" {
+		storeDir = "/nix/store"
+	}
+	cacheInfo := fmt.Sprintf(`StoreDir: %s
 WantMassQuery: 1
 Priority: 30
-`)
+`, storeDir)
 
 	// Upload nix-cache-info to the bucket
 	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
-		bytes.NewReader(cacheInfo), int64(len(cacheInfo)),
+		bytes.NewReader([]byte(cacheInfo)), int64(len(cacheInfo)),
 		minio.PutObjectOptions{ContentType: "text/plain"})
 	if err != nil {
 		return fmt.Errorf("failed to create nix-cache-info: %w", err)
