@@ -147,7 +147,6 @@ stale_objects AS (
         )
         AND o.deleted_at IS NULL  -- Only mark fresh objects
     FOR UPDATE
-    LIMIT $1
 )
 UPDATE objects
 SET
