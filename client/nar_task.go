@@ -18,7 +18,10 @@ func (c *Client) uploadNARWithListing(
 	compressedInfoMu *sync.Mutex,
 ) error {
 	// Upload NAR
-	pathInfo := pathInfoByHash[task.hash]
+	pathInfo, ok := pathInfoByHash[task.hash]
+	if !ok || pathInfo == nil {
+		return fmt.Errorf("missing PathInfo for hash %s", task.hash)
+	}
 
 	info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.task.obj, task.task.key)
 	if err != nil {
