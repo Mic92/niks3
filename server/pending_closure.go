@@ -74,7 +74,11 @@ func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []st
 		for _, existingObject := range existingObjects {
 			deletedAt := existingObject.DeletedAt
 			if !deletedAt.Valid {
-				return nil, fmt.Errorf("deleted_at is not valid for object: %s", existingObject.Key)
+				// Object became active again (resurrected by another pending closure);
+				// do not block the flow.
+				slog.Debug("object became active during wait", "key", existingObject.Key)
+				delete(missingObjects, existingObject.Key)
+				continue
 			}
 
 			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*1000*30 {
