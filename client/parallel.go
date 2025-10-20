@@ -20,26 +20,38 @@ type genericUploadTask struct {
 	hash     string // For looking up related tasks
 }
 
+// pendingObjectsByHash groups related objects by their store path hash.
+type pendingObjectsByHash map[string]struct {
+	narTask     *uploadTask
+	lsTask      *uploadTask
+	narinfoTask *uploadTask
+}
+
+// UploadContext contains all the context needed for uploading objects.
+type UploadContext struct {
+	PendingObjects    map[string]PendingObject
+	PathInfoByHash    map[string]*PathInfo
+	NARKeyToHash      map[string]string
+	LogPathsByKey     map[string]string
+	RealisationsByKey map[string]*RealisationInfo
+}
+
 // UploadPendingObjects uploads all pending objects (NARs, .ls files, build logs, and realisations).
 // Returns narinfo metadata for each closure to be signed and uploaded by the server.
 // Uses a unified worker pool where:
 // - Logs and realisations upload immediately (independent)
 // - NARs upload and queue their listings when complete
 // - Narinfo metadata is collected (not uploaded) for server-side signing.
-func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[string]PendingObject, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo) (map[string]NarinfoMetadata, error) {
+func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadContext) (map[string]NarinfoMetadata, error) {
 	// Collect pending objects by type
-	pendingByHash := make(map[string]struct {
-		narTask     *uploadTask
-		lsTask      *uploadTask
-		narinfoTask *uploadTask
-	})
+	pendingByHash := make(pendingObjectsByHash)
 
 	var (
 		logTasks         []uploadTask
 		realisationTasks []uploadTask
 	)
 
-	for key, obj := range pendingObjects {
+	for key, obj := range uploadCtx.PendingObjects {
 		switch obj.Type {
 		case "narinfo":
 			hash := strings.TrimSuffix(key, ".narinfo")
@@ -48,11 +60,14 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 			pendingByHash[hash] = entry
 
 		case "nar":
-			filename := strings.TrimPrefix(key, "nar/")
-			hash := strings.TrimSuffix(filename, ".nar.zst")
-			entry := pendingByHash[hash]
-			entry.narTask = &uploadTask{key: key, obj: obj, hash: hash}
-			pendingByHash[hash] = entry
+			storePathHash, ok := uploadCtx.NARKeyToHash[key]
+			if !ok {
+				return nil, fmt.Errorf("NAR key %s not found in mapping", key)
+			}
+
+			entry := pendingByHash[storePathHash]
+			entry.narTask = &uploadTask{key: key, obj: obj, hash: storePathHash}
+			pendingByHash[storePathHash] = entry
 
 		case "listing":
 			hash := strings.TrimSuffix(key, ".ls")
@@ -72,18 +87,13 @@ func (c *Client) UploadPendingObjects(ctx context.Context, pendingObjects map[st
 	}
 
 	// Upload all objects with unified worker pool and collect narinfo metadata
-	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, pathInfoByHash, logPathsByKey, realisationsByKey)
+	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, uploadCtx)
 }
 
 // uploadAllObjects uploads all objects using a unified worker pool.
 // Logs and realisations upload independently, NARs upload with their listings in the same goroutine,
 // then narinfo metadata is collected for server-side signing.
-func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]struct {
-	narTask     *uploadTask
-	lsTask      *uploadTask
-	narinfoTask *uploadTask
-}, logTasks []uploadTask, realisationTasks []uploadTask, pathInfoByHash map[string]*PathInfo, logPathsByKey map[string]string, realisationsByKey map[string]*RealisationInfo,
-) (map[string]NarinfoMetadata, error) {
+func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObjectsByHash, logTasks []uploadTask, realisationTasks []uploadTask, uploadCtx *UploadContext) (map[string]NarinfoMetadata, error) {
 	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
 	var compressedInfoMu sync.Mutex
 
@@ -116,13 +126,13 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 
 				switch task.taskType {
 				case "nar":
-					err = c.uploadNARWithListing(ctx, task, pendingByHash, pathInfoByHash, compressedInfo, &compressedInfoMu)
+					err = c.uploadNARWithListing(ctx, task, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
 
 				case "log":
-					err = c.uploadLog(ctx, task.task, logPathsByKey)
+					err = c.uploadLog(ctx, task.task, uploadCtx.LogPathsByKey)
 
 				case "realisation":
-					err = c.uploadRealisation(ctx, task.task, realisationsByKey)
+					err = c.uploadRealisation(ctx, task.task, uploadCtx.RealisationsByKey)
 				}
 
 				if err != nil {
@@ -175,7 +185,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 			continue
 		}
 
-		pathInfo := pathInfoByHash[hash]
+		pathInfo := uploadCtx.PathInfoByHash[hash]
 		if pathInfo == nil {
 			continue
 		}
@@ -186,10 +196,16 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash map[string]
 			narHash = convertedHash
 		}
 
+		// Use NarHash-based key for URL (content-based deduplication)
+		narURL, err := getNARKey(pathInfo.NarHash)
+		if err != nil {
+			return nil, fmt.Errorf("getting NAR key for %s: %w", pathInfo.Path, err)
+		}
+
 		// Create narinfo metadata
 		metadata := NarinfoMetadata{
 			StorePath:   pathInfo.Path,
-			URL:         "nar/" + hash + ".nar.zst",
+			URL:         narURL,
 			Compression: "zstd",
 			NarHash:     narHash,
 			NarSize:     pathInfo.NarSize,
