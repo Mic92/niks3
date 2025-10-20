@@ -22,17 +22,18 @@ import (
 func buildCADerivation(ctx context.Context, t *testing.T) string {
 	t.Helper()
 
-	// Create a CA (content-addressed) derivation
+	// Create a CA (content-addressed) derivation using bare derivation
 	nixExpr := filepath.Join(t.TempDir(), "ca-test.nix")
 	nixContent := `
-	{ pkgs ? import <nixpkgs> {} }:
-	pkgs.runCommand "ca-test" {
+	derivation {
+		name = "ca-test";
+		system = builtins.currentSystem;
+		builder = "/bin/sh";
+		args = [ "-c" "echo 'Hello from CA derivation' > $out" ];
 		__contentAddressed = true;
 		outputHashMode = "recursive";
 		outputHashAlgo = "sha256";
-	} ''
-		echo "Hello from CA derivation" > $out
-	''
+	}
 	`
 
 	err := os.WriteFile(nixExpr, []byte(nixContent), 0o600)
@@ -223,9 +224,14 @@ func TestClientCADerivations(t *testing.T) {
 
 		ctx := t.Context()
 
-		// Configure the binary cache URL
+		// Configure the binary cache URL with the correct store prefix
 		endpoint := testService.MinioClient.EndpointURL().Host
-		binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1", testService.Bucket, endpoint)
+		storeDir := os.Getenv("NIX_STORE_DIR")
+		if storeDir == "" {
+			storeDir = "/nix/store"
+		}
+
+		binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
 
 		testEnv := append(os.Environ(),
 			"AWS_ACCESS_KEY_ID=minioadmin",
@@ -233,10 +239,14 @@ func TestClientCADerivations(t *testing.T) {
 		)
 
 		// Try to copy from our cache
-		cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "copy",
+		// Pass the full absolute path - NIX_STORE_DIR env var handles the rest
+		copyArgs := []string{
+			"--extra-experimental-features", "nix-command flakes ca-derivations", "copy",
 			"--no-check-sigs",
 			"--from", binaryCacheURL,
-			caPath)
+			caPath,
+		}
+		cmd := exec.CommandContext(ctx, "nix", copyArgs...)
 		cmd.Env = testEnv
 
 		output, err := cmd.CombinedOutput()
@@ -245,7 +255,9 @@ func TestClientCADerivations(t *testing.T) {
 			t.Logf("nix copy failed (might be expected in some environments): %v", err)
 		} else {
 			// Verify realisation is registered locally
-			cmd = exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command ca-derivations", "realisation", "info", caPath)
+			realisationArgs := []string{"--extra-experimental-features", "nix-command flakes ca-derivations", "realisation", "info", caPath}
+			cmd = exec.CommandContext(ctx, "nix", realisationArgs...)
+			cmd.Env = testEnv
 
 			output, err = cmd.CombinedOutput()
 			if err != nil {
