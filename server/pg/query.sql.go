@@ -13,7 +13,7 @@ import (
 
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :exec
 WITH cutoff_time AS (
-    SELECT timezone('UTC', now()) - interval '1 second' * $1 AS time
+    SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
 ),
 
 old_closures AS (
@@ -52,7 +52,7 @@ WHERE pending_closures.id = old_closures.id
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
-func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 interface{}) error {
+func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 int32) error {
 	_, err := q.db.Exec(ctx, cleanupPendingClosures, dollar_1)
 	return err
 }
@@ -188,13 +188,13 @@ const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1
+  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
 LIMIT $2
 `
 
 type GetObjectsReadyForDeletionParams struct {
-	GracePeriodSeconds interface{} `json:"grace_period_seconds"`
-	LimitCount         int32       `json:"limit_count"`
+	GracePeriodSeconds int32 `json:"grace_period_seconds"`
+	LimitCount         int32 `json:"limit_count"`
 }
 
 // Returns objects marked for >= grace_period, safe to delete from S3
@@ -222,7 +222,7 @@ const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
 SELECT upload_id, object_key
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
-WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1
+WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int
 `
 
 type GetOldMultipartUploadsRow struct {
@@ -230,7 +230,7 @@ type GetOldMultipartUploadsRow struct {
 	ObjectKey string `json:"object_key"`
 }
 
-func (q *Queries) GetOldMultipartUploads(ctx context.Context, dollar_1 interface{}) ([]GetOldMultipartUploadsRow, error) {
+func (q *Queries) GetOldMultipartUploads(ctx context.Context, dollar_1 int32) ([]GetOldMultipartUploadsRow, error) {
 	rows, err := q.db.Query(ctx, getOldMultipartUploads, dollar_1)
 	if err != nil {
 		return nil, err
