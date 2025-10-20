@@ -17,10 +17,10 @@ WITH ct AS (
 
 SELECT
     o.key AS key,
-    CASE
+    (CASE
         WHEN o.first_deleted_at IS NULL THEN NULL
         ELSE ct.now - o.first_deleted_at
-    END AS deleted_at
+    END)::interval AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar []);
 
@@ -29,7 +29,7 @@ SELECT commit_pending_closure($1::bigint);
 
 -- name: CleanupPendingClosures :exec
 WITH cutoff_time AS (
-    SELECT timezone('UTC', now()) - interval '1 second' * $1 AS time
+    SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
 ),
 
 old_closures AS (
@@ -106,7 +106,7 @@ VALUES ($1, $2, $3);
 SELECT upload_id, object_key
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
-WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1;
+WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int;
 
 -- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
@@ -161,5 +161,5 @@ WHERE objects.key = stale_objects.key;
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)
+  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
 LIMIT sqlc.arg(limit_count);
