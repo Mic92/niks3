@@ -133,7 +133,7 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		gracePeriod = int32(pendingAge.Seconds())
 	}
 
-	objectStats, err := s.cleanupOrphanObjects(r.Context(), s.Pool, gracePeriod)
+	objectStats, err := s.cleanupOrphanObjects(r.Context(), gracePeriod)
 	if err != nil {
 		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
 
