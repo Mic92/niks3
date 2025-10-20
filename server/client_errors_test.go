@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,14 +76,9 @@ func TestClientErrorHandling(t *testing.T) {
 		ctx := t.Context()
 		nixEnv := setupIsolatedNixStore(t)
 
-		cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
-		cmd.Env = nixEnv
-		output, err := cmd.CombinedOutput()
-		ok(t, err)
+		storePath := nixStoreAdd(t, nixEnv, tempFile)
 
-		storePath := strings.TrimSpace(string(output))
-
-		err = pushToServer(ctx, ts.URL, "invalid-token", []string{storePath}, nixEnv)
+		err := pushToServer(ctx, ts.URL, "invalid-token", []string{storePath}, nixEnv)
 		if err == nil {
 			t.Fatal("Expected error for invalid auth token")
 		}
@@ -102,12 +96,7 @@ func TestClientErrorHandling(t *testing.T) {
 		err := os.WriteFile(tempFile, []byte("test"), 0o600)
 		ok(t, err)
 
-		cmd := exec.CommandContext(ctx, "nix-store", "--add", tempFile)
-		cmd.Env = nixEnv
-		output, err := cmd.CombinedOutput()
-		ok(t, err)
-
-		storePath := strings.TrimSpace(string(output))
+		storePath := nixStoreAdd(t, nixEnv, tempFile)
 
 		err = pushToServer(ctx, "http://localhost:19999", "test-token", []string{storePath}, nixEnv)
 		if err == nil {
