@@ -151,7 +151,7 @@ niks3 gc --older-than=720h
 
 The GC process runs in three phases:
 
-1. **Clean up failed uploads**: Removes incomplete uploads older than `--pending-older-than` (default: 6h)
+1. **Clean up failed uploads**: Removes incomplete uploads older than `--failed-uploads-older-than` (default: 6h)
 1. **Delete old closures**: Removes closures older than `--older-than`
 1. **Mark and delete orphaned objects**: Marks unreachable objects, then deletes them after a grace period
 
@@ -160,7 +160,7 @@ The GC process runs in three phases:
 The GC command logs detailed statistics:
 
 ```
-INFO Starting garbage collection older-than=720h pending-older-than=6h force=false
+INFO Starting garbage collection older-than=720h failed-uploads-older-than=6h force=false
 INFO Garbage collection completed successfully failed-uploads-deleted=5 old-closures-deleted=142 objects-marked-for-deletion=1523 objects-deleted-after-grace-period=1520 objects-failed-to-delete=3
 ```
 
@@ -174,7 +174,7 @@ Statistics explained:
 
 #### Grace Period
 
-The grace period (default: same as `--pending-older-than`) prevents race conditions during concurrent uploads. Objects are marked for deletion first, then deleted only after the grace period has elapsed. This ensures that objects from in-flight uploads are not prematurely deleted.
+The grace period (default: same as `--failed-uploads-older-than`) prevents race conditions during concurrent uploads. Objects are marked for deletion first, then deleted only after the grace period has elapsed. This ensures that objects from in-flight uploads are not prematurely deleted.
 
 #### Force Mode (Dangerous)
 
@@ -196,10 +196,11 @@ The NixOS module includes automatic garbage collection via a systemd timer:
     # ... other configuration ...
 
     gc = {
-      enable = true;           # Default: true
-      olderThan = "720h";      # 30 days (default)
-      schedule = "daily";      # Run at midnight daily (default)
-      randomizedDelaySec = 1800; # Add 0-30 min random delay (default)
+      enable = true;                      # Default: true
+      olderThan = "720h";                 # 30 days (default)
+      failedUploadsOlderThan = "6h";      # 6 hours (default)
+      schedule = "daily";                 # Run at midnight daily (default)
+      randomizedDelaySec = 1800;          # Add 0-30 min random delay (default)
     };
   };
 }

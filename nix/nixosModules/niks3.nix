@@ -138,6 +138,17 @@ in
         '';
       };
 
+      failedUploadsOlderThan = lib.mkOption {
+        type = lib.types.str;
+        default = "6h";
+        example = "12h";
+        description = ''
+          Duration string for how old failed uploads must be before being cleaned up.
+          Accepts Go duration format (e.g., "6h" for 6 hours, "12h" for 12 hours).
+          Failed uploads are incomplete or stale upload attempts.
+        '';
+      };
+
       schedule = lib.mkOption {
         type = lib.types.str;
         default = "daily";
@@ -273,7 +284,8 @@ in
           ${cfg.package}/bin/niks3 gc \
             --server-url "http://${cfg.httpAddr}" \
             --auth-token-path "${cfg.apiTokenFile}" \
-            --older-than "${cfg.gc.olderThan}"
+            --older-than "${cfg.gc.olderThan}" \
+            --failed-uploads-older-than "${cfg.gc.failedUploadsOlderThan}"
         '';
         User = cfg.user;
         Group = cfg.group;

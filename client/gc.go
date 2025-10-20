@@ -11,16 +11,16 @@ import (
 
 // RunGarbageCollection triggers garbage collection on the server for closures older than the specified duration.
 // If force is true, objects will be deleted immediately without a grace period (may be dangerous).
-// pendingOlderThan specifies how old pending closures must be before cleanup (server defaults to "6h" if empty).
+// failedUploadsOlderThan specifies how old failed uploads must be before cleanup (server defaults to "6h" if empty).
 // Returns statistics about the garbage collection run.
-func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, pendingOlderThan string, force bool) (*api.GCStats, error) {
+func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, failedUploadsOlderThan string, force bool) (*api.GCStats, error) {
 	// Build the URL with query parameters
 	gcURL := c.baseURL.JoinPath("/api/closures")
 	query := gcURL.Query()
 	query.Set("older-than", olderThan)
 
-	if pendingOlderThan != "" {
-		query.Set("pending-older-than", pendingOlderThan)
+	if failedUploadsOlderThan != "" {
+		query.Set("failed-uploads-older-than", failedUploadsOlderThan)
 	}
 
 	if force {
