@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/Mic92/niks3/server/pg"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -114,7 +113,6 @@ func handleFailedObject(ctx context.Context, objectName string, resultErr error,
 }
 
 func (s *Service) removeS3Objects(ctx context.Context,
-	pool *pgxpool.Pool,
 	objectCh <-chan minio.ObjectInfo,
 	stats *ObjectCleanupStats,
 ) ([]error, []error) {
@@ -122,7 +120,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	failedKeys := make([]string, 0, DeletionBatchSize)
 	deletedKeys := make([]string, 0, DeletionBatchSize)
 
-	queries := pg.New(pool)
+	queries := pg.New(s.Pool)
 
 	var s3Errors, batchErrors []error
 
@@ -182,7 +180,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	return s3Errors, batchErrors
 }
 
-func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, gracePeriod int32) (*ObjectCleanupStats, error) {
+func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32) (*ObjectCleanupStats, error) {
 	// limit channel size to 1000, as minio limits to 1000 in one request
 	objectCh := make(chan minio.ObjectInfo, DeletionBatchSize)
 
@@ -192,7 +190,7 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, pool *pgxpool.Pool, 
 
 	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, &stats.MarkedCount, gracePeriod)
 
-	s3Errs, batchErrs := s.removeS3Objects(ctx, pool, objectCh, stats)
+	s3Errs, batchErrs := s.removeS3Objects(ctx, objectCh, stats)
 
 	if queryErr != nil {
 		return stats, queryErr
