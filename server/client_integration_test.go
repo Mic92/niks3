@@ -519,6 +519,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	// S3 binary cache requires matching store prefixes between upload and download
 	if storeDir != defaultNixStoreDir {
 		t.Logf("Skipping nix copy test - isolated store (%s) requires matching store prefix", storeDir)
+
 		return
 	}
 
