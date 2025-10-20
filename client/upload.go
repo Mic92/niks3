@@ -392,7 +392,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 				req.Header.Set("Content-Type", "text/x-nix-narinfo")
 				req.Header.Set("Content-Encoding", "zstd")
 
-				resp, err := c.httpClient.Do(req)
+				resp, err := c.DoWithRetry(ctx, req)
 				if err != nil {
 					errOnce.Do(func() {
 						errChan <- fmt.Errorf("uploading narinfo %s: %w", task.key, err)

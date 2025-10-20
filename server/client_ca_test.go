@@ -53,7 +53,7 @@ func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) strin
 		"--option", "substitute", "false")
 	cmd.Env = nixEnv
 
-	output, err = cmd.CombinedOutput()
+	output, err = cmd.Output()
 	if err != nil {
 		t.Fatalf("Failed to build CA derivation: %v\nOutput: %s", err, output)
 	}
