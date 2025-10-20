@@ -1,12 +1,15 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -255,16 +258,161 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 	return pendingObjects, closureIDToNarinfoKey, nil
 }
 
-// CompletePendingClosures completes all pending closures with their respective narinfo metadata.
-// The narinfosByClosureID map should contain per-closure narinfo metadata (closure ID -> narinfo map).
-func (c *Client) CompletePendingClosures(ctx context.Context, narinfosByClosureID map[string]map[string]NarinfoMetadata) error {
-	for id, narinfos := range narinfosByClosureID {
-		if err := c.CompletePendingClosure(ctx, id, narinfos); err != nil {
-			return fmt.Errorf("completing pending closure %s: %w", id, err)
+type narinfoTask struct {
+	closureID string
+	key       string
+	meta      NarinfoMetadata
+}
+
+// SignAndUploadNarinfos signs narinfos on the server and uploads them to S3 in parallel.
+func (c *Client) SignAndUploadNarinfos(ctx context.Context, narinfosByClosureID map[string]map[string]NarinfoMetadata, pendingObjects map[string]PendingObject) error {
+	// Collect all narinfo metadata and closure IDs
+	var narinfosToSign []narinfoTask
+
+	for closureID, narinfos := range narinfosByClosureID {
+		for key, meta := range narinfos {
+			narinfosToSign = append(narinfosToSign, narinfoTask{
+				closureID: closureID,
+				key:       key,
+				meta:      meta,
+			})
 		}
 	}
 
-	return nil
+	if len(narinfosToSign) == 0 {
+		return nil
+	}
+
+	// Sign narinfos for each closure
+	signaturesByKey := make(map[string][]string)
+
+	for closureID, narinfos := range narinfosByClosureID {
+		signatures, err := c.SignPendingClosure(ctx, closureID, narinfos)
+		if err != nil {
+			return fmt.Errorf("signing narinfos for closure %s: %w", closureID, err)
+		}
+
+		for key, sigs := range signatures {
+			signaturesByKey[key] = sigs
+		}
+	}
+
+	// Generate, compress, and upload narinfos in parallel
+	return c.uploadNarinfosInParallel(ctx, narinfosToSign, signaturesByKey, pendingObjects)
+}
+
+// uploadNarinfosInParallel generates, compresses, and uploads narinfos in parallel.
+func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinfoTask, signaturesByKey map[string][]string, pendingObjects map[string]PendingObject) error {
+	if len(narinfos) == 0 {
+		return nil
+	}
+
+	slog.Info(fmt.Sprintf("Uploading %d narinfos", len(narinfos)))
+
+	errChan := make(chan error, 1)
+
+	var errOnce sync.Once
+
+	var wg sync.WaitGroup
+
+	// Determine number of workers (use same as NAR uploads for consistency)
+	numWorkers := c.MaxConcurrentNARUploads
+	if numWorkers <= 0 || numWorkers > len(narinfos) {
+		numWorkers = len(narinfos)
+	}
+
+	taskChan := make(chan narinfoTask, len(narinfos))
+
+	// Start workers
+	for range numWorkers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for task := range taskChan {
+				// Get signatures for this narinfo
+				signatures := signaturesByKey[task.key]
+
+				// Generate narinfo content with signatures
+				content := generateNarinfoContent(&task.meta, signatures)
+
+				// Compress narinfo
+				compressed, err := CompressNarinfo(content)
+				if err != nil {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("compressing narinfo %s: %w", task.key, err)
+					})
+
+					return
+				}
+
+				// Get presigned URL from pending objects
+				pendingObj, ok := pendingObjects[task.key]
+				if !ok || pendingObj.PresignedURL == "" {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("no presigned URL for narinfo %s", task.key)
+					})
+
+					return
+				}
+
+				// Upload to S3
+				req, err := http.NewRequestWithContext(ctx, http.MethodPut, pendingObj.PresignedURL, bytes.NewReader(compressed))
+				if err != nil {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("creating upload request for %s: %w", task.key, err)
+					})
+
+					return
+				}
+
+				req.Header.Set("Content-Type", "text/x-nix-narinfo")
+				req.Header.Set("Content-Encoding", "zstd")
+
+				resp, err := c.httpClient.Do(req)
+				if err != nil {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("uploading narinfo %s: %w", task.key, err)
+					})
+
+					return
+				}
+
+				if err := resp.Body.Close(); err != nil {
+					slog.Warn("Failed to close response body", "error", err)
+				}
+
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
+					})
+
+					return
+				}
+
+				slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
+			}
+		}()
+	}
+
+	// Queue all narinfo upload tasks
+	for _, narinfo := range narinfos {
+		taskChan <- narinfo
+	}
+
+	close(taskChan)
+
+	// Wait for all uploads to complete
+	wg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errChan:
+		return err
+	default:
+		return nil
+	}
 }
 
 // PushPaths uploads store paths and their closures to the server.
@@ -338,7 +486,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		closureByNarinfoKey[closure.NarinfoKey] = closure
 	}
 
-	// Build per-closure narinfo maps for completion
+	// Build per-closure narinfo maps for signing
 	// Only include narinfos for objects that belong to each specific closure
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
 
@@ -358,9 +506,16 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		narinfosByClosureID[id] = closureNarinfos
 	}
 
-	// Complete all pending closures with their respective narinfo metadata for server-side signing
-	if err := c.CompletePendingClosures(ctx, narinfosByClosureID); err != nil {
-		return fmt.Errorf("completing closures: %w", err)
+	// Sign narinfos for each closure and upload them
+	if err := c.SignAndUploadNarinfos(ctx, narinfosByClosureID, pendingObjects); err != nil {
+		return fmt.Errorf("signing and uploading narinfos: %w", err)
+	}
+
+	// Complete all pending closures (all objects including narinfos are now uploaded)
+	for id := range closureIDToNarinfoKey {
+		if err := c.CompletePendingClosure(ctx, id); err != nil {
+			return fmt.Errorf("completing pending closure %s: %w", id, err)
+		}
 	}
 
 	duration := time.Since(startTime)

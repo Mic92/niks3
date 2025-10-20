@@ -44,8 +44,11 @@ func buildCADerivation(ctx context.Context, t *testing.T) string {
 	// Use --option substitute false to prevent fetching from binary caches
 	// Enable ca-derivations experimental feature
 	// Retry up to 3 times to handle transient SQLite "database is busy" errors
-	var output []byte
-	var err error
+	var (
+		output []byte
+		err    error
+	)
+
 	for attempt := 1; attempt <= 3; attempt++ {
 		output, err = exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
 			"--extra-experimental-features", "ca-derivations",
@@ -53,10 +56,13 @@ func buildCADerivation(ctx context.Context, t *testing.T) string {
 		if err == nil {
 			break
 		}
+
 		if attempt < 3 && strings.Contains(string(output), "database is busy") {
 			t.Logf("nix-build attempt %d/3 failed (database busy), retrying...", attempt)
+
 			continue
 		}
+
 		t.Fatalf("Failed to build CA derivation: %v\nOutput: %s", err, output)
 	}
 
@@ -133,12 +139,7 @@ func TestClientCADerivations(t *testing.T) {
 	ok(t, err)
 
 	mux := http.NewServeMux()
-
-	// Register handlers
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
-	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
+	registerTestHandlers(mux, testService)
 
 	ts := httptest.NewServer(mux)
 

@@ -83,11 +83,7 @@ func BenchmarkPythonClosure(b *testing.B) {
 		}
 
 		mux := http.NewServeMux()
-
-		// Register handlers with auth
-		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+		registerTestHandlers(mux, testService)
 
 		ts := httptest.NewServer(mux)
 

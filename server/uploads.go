@@ -1,8 +1,6 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +13,6 @@ import (
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
-	"github.com/klauspost/compress/zstd"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -133,10 +130,6 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
-type commitPendingClosureRequest struct {
-	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
-}
-
 // CompleteMultipartUploadHandler completes a multipart upload with the list of ETags.
 // It handles POST /api/multipart/complete endpoint.
 func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
@@ -211,134 +204,120 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// generateNarinfoContent creates the narinfo file content from metadata.
-// If signatures are provided, they will be included in the output.
-func generateNarinfoContent(meta *NarinfoMetadata, signatures []string) string {
-	var sb strings.Builder
-
-	// StorePath
-	fmt.Fprintf(&sb, "StorePath: %s\n", meta.StorePath)
-
-	// URL to the NAR file
-	fmt.Fprintf(&sb, "URL: %s\n", meta.URL)
-
-	// Compression
-	fmt.Fprintf(&sb, "Compression: %s\n", meta.Compression)
-
-	// NAR hash and size (uncompressed)
-	fmt.Fprintf(&sb, "NarHash: %s\n", meta.NarHash)
-	fmt.Fprintf(&sb, "NarSize: %d\n", meta.NarSize)
-
-	// FileHash and FileSize for compressed file
-	fmt.Fprintf(&sb, "FileHash: %s\n", meta.FileHash)
-	fmt.Fprintf(&sb, "FileSize: %d\n", meta.FileSize)
-
-	// References (must have space after colon, even if empty)
-	fmt.Fprint(&sb, "References:")
-
-	// Sort references for deterministic output
-	sort.Strings(meta.References)
-
-	for _, ref := range meta.References {
-		// Remove /nix/store/ prefix
-		refName := strings.TrimPrefix(ref, "/nix/store/")
-		fmt.Fprintf(&sb, " %s", refName)
-	}
-
-	// Always add a space after "References:" even if empty
-	if len(meta.References) == 0 {
-		fmt.Fprint(&sb, " ")
-	}
-
-	fmt.Fprint(&sb, "\n")
-
-	// Deriver (optional)
-	if meta.Deriver != nil {
-		deriverName := strings.TrimPrefix(*meta.Deriver, "/nix/store/")
-		fmt.Fprintf(&sb, "Deriver: %s\n", deriverName)
-	}
-
-	// Signatures (passed as parameter from signing process)
-	if len(signatures) > 0 {
-		// Sort signatures for deterministic output
-		sortedSigs := make([]string, len(signatures))
-		copy(sortedSigs, signatures)
-		sort.Strings(sortedSigs)
-
-		for _, sig := range sortedSigs {
-			fmt.Fprintf(&sb, "Sig: %s\n", sig)
-		}
-	}
-
-	// CA (optional)
-	if meta.CA != nil {
-		fmt.Fprintf(&sb, "CA: %s\n", *meta.CA)
-	}
-
-	return sb.String()
+type signNarinfosRequest struct {
+	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
 }
 
-// processNarinfo generates, signs, compresses, and uploads a narinfo file to S3.
-func (s *Service) processNarinfo(ctx context.Context, objectKey string, meta *NarinfoMetadata) error {
-	// Sign narinfo if signing keys are configured
-	var signatures []string
+type signNarinfosResponse struct {
+	Signatures map[string][]string `json:"signatures"`
+}
 
-	if len(s.SigningKeys) > 0 {
-		narInfo := &signing.NarInfo{
-			StorePath:  meta.StorePath,
-			NarHash:    meta.NarHash,
-			NarSize:    meta.NarSize,
-			References: meta.References,
+// SignNarinfosHandler handles POST /api/pending_closures/{id}/sign endpoint.
+// Signs narinfo metadata and returns signatures for client to upload.
+// Request body: JSON with narinfos metadata
+// Response body: JSON with signatures map.
+func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Received sign narinfos request", "method", r.Method, "url", r.URL)
+
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			slog.Error("Failed to close request body", "error", err)
+		}
+	}()
+
+	pendingClosureValue := r.PathValue("id")
+	if pendingClosureValue == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+
+		return
+	}
+
+	parsedUploadID, err := strconv.ParseInt(pendingClosureValue, 10, 32)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid id: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
+	// Parse request body with narinfo metadata
+	req := &signNarinfosRequest{}
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	// Get list of valid pending objects for this closure to validate against
+	queries := pg.New(s.Pool)
+
+	validObjectKeys, err := queries.GetPendingObjectKeys(r.Context(), parsedUploadID)
+	if err != nil {
+		slog.Error("Failed to get pending objects", "id", parsedUploadID, "error", err)
+		http.Error(w, "failed to get pending objects", http.StatusInternalServerError)
+
+		return
+	}
+
+	// Create a set of valid object keys for O(1) lookup
+	validKeys := make(map[string]bool, len(validObjectKeys))
+	for _, key := range validObjectKeys {
+		validKeys[key] = true
+	}
+
+	// Sign each narinfo and collect signatures
+	signaturesMap := make(map[string][]string, len(req.Narinfos))
+
+	for objectKey, meta := range req.Narinfos {
+		// Validate objectKey belongs to this pending closure
+		if !validKeys[objectKey] {
+			slog.Error("Invalid narinfo key: not part of pending closure", "object_key", objectKey, "closure_id", parsedUploadID)
+			http.Error(w, "invalid narinfo key: not part of this pending closure", http.StatusForbidden)
+
+			return
 		}
 
-		var err error
+		// Sign narinfo if signing keys are configured
+		// Initialize as empty slice to ensure JSON serializes as [] not null
+		signatures := []string{}
 
-		signatures, err = signing.SignNarinfo(s.SigningKeys, narInfo)
-		if err != nil {
-			return fmt.Errorf("failed to sign narinfo: %w", err)
+		if len(s.SigningKeys) > 0 {
+			narInfo := &signing.NarInfo{
+				StorePath:  meta.StorePath,
+				NarHash:    meta.NarHash,
+				NarSize:    meta.NarSize,
+				References: meta.References,
+			}
+
+			signatures, err = signing.SignNarinfo(s.SigningKeys, narInfo)
+			if err != nil {
+				slog.Error("Failed to sign narinfo", "object_key", objectKey, "error", err)
+				http.Error(w, fmt.Sprintf("failed to sign narinfo: %v", err), http.StatusInternalServerError)
+
+				return
+			}
+
+			slog.Debug("Signed narinfo", "object_key", objectKey, "signatures", len(signatures))
 		}
 
-		slog.Info("Signed narinfo", "object_key", objectKey, "signatures", len(signatures))
+		signaturesMap[objectKey] = signatures
 	}
 
-	narinfoContent := generateNarinfoContent(meta, signatures)
+	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap))
 
-	var compressedBuf bytes.Buffer
+	// Return signatures
+	w.Header().Set("Content-Type", "application/json")
 
-	zstdWriter, err := zstd.NewWriter(&compressedBuf)
-	if err != nil {
-		return fmt.Errorf("failed to create zstd writer: %w", err)
+	if err := json.NewEncoder(w).Encode(signNarinfosResponse{Signatures: signaturesMap}); err != nil {
+		slog.Error("Failed to encode response", "error", err)
+		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
+
+		return
 	}
-
-	if _, err := zstdWriter.Write([]byte(narinfoContent)); err != nil {
-		return fmt.Errorf("failed to compress narinfo: %w", err)
-	}
-
-	if err := zstdWriter.Close(); err != nil {
-		return fmt.Errorf("failed to close zstd writer: %w", err)
-	}
-
-	compressedData := compressedBuf.Bytes()
-
-	// Upload to S3 with Content-Encoding: zstd header
-	_, err = s.MinioClient.PutObject(ctx, s.Bucket, objectKey,
-		bytes.NewReader(compressedData),
-		int64(len(compressedData)),
-		minio.PutObjectOptions{
-			ContentType:     "text/x-nix-narinfo",
-			ContentEncoding: "zstd",
-		})
-	if err != nil {
-		return fmt.Errorf("failed to upload narinfo to S3: %w", err)
-	}
-
-	slog.Info("Uploaded narinfo", "object_key", objectKey, "size", len(compressedData))
-
-	return nil
 }
 
 // CommitPendingClosureHandler handles POST /api/pending_closures/{id}/complete endpoint.
-// Request body: JSON with narinfos metadata
+// Commits the pending closure to the database after all objects have been uploaded.
+// Request body: empty (all uploads should be complete before calling this)
 // Response body: -.
 func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
@@ -363,51 +342,7 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Parse request body with narinfo metadata
-	req := &commitPendingClosureRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
-		return
-	}
-
-	// Get list of valid pending objects for this closure to validate against
-	queries := pg.New(s.Pool)
-
-	validObjectKeys, err := queries.GetPendingObjectKeys(r.Context(), parsedUploadID)
-	if err != nil {
-		slog.Error("Failed to get pending objects", "id", parsedUploadID, "error", err)
-		http.Error(w, "failed to get pending objects", http.StatusInternalServerError)
-
-		return
-	}
-
-	// Create a set of valid object keys for O(1) lookup
-	validKeys := make(map[string]bool, len(validObjectKeys))
-	for _, key := range validObjectKeys {
-		validKeys[key] = true
-	}
-
-	// Validate and process each narinfo
-	for objectKey, meta := range req.Narinfos {
-		// Validate objectKey belongs to this pending closure
-		if !validKeys[objectKey] {
-			slog.Error("Invalid narinfo key: not part of pending closure", "object_key", objectKey, "closure_id", parsedUploadID)
-			http.Error(w, "invalid narinfo key: not part of this pending closure", http.StatusForbidden)
-
-			return
-		}
-
-		// Process narinfo (validated to be part of this closure)
-		if err := s.processNarinfo(r.Context(), objectKey, &meta); err != nil {
-			slog.Error("Failed to process narinfo", "object_key", objectKey, "error", err)
-			http.Error(w, fmt.Sprintf("failed to process narinfo: %v", err), http.StatusInternalServerError)
-
-			return
-		}
-	}
-
-	// Commit the pending closure
+	// Commit the pending closure (all objects including narinfos should already be uploaded)
 	if err = commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)

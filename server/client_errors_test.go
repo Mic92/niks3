@@ -29,9 +29,7 @@ func TestClientErrorHandling(t *testing.T) {
 			APIToken:    testAuthToken,
 		}
 		mux := http.NewServeMux()
-		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+		registerTestHandlers(mux, testService)
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -64,9 +62,7 @@ func TestClientErrorHandling(t *testing.T) {
 			APIToken:    correctAuthToken,
 		}
 		mux := http.NewServeMux()
-		mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-		mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-		mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+		registerTestHandlers(mux, testService)
 
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -81,17 +77,23 @@ func TestClientErrorHandling(t *testing.T) {
 		ctx := t.Context()
 
 		// Retry nix-store --add to handle transient SQLite errors
-		var output []byte
-		var err error
+		var (
+			output []byte
+			err    error
+		)
+
 		for attempt := 1; attempt <= 3; attempt++ {
 			output, err = exec.CommandContext(ctx, "nix-store", "--add", tempFile).CombinedOutput()
 			if err == nil {
 				break
 			}
+
 			if attempt < 3 && strings.Contains(string(output), "database is busy") {
 				t.Logf("nix-store --add attempt %d/3 failed (database busy), retrying...", attempt)
+
 				continue
 			}
+
 			ok(t, err)
 		}
 
