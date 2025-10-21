@@ -69,6 +69,10 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
     # Signing keys for NAR signing
     signKeyFiles = [ "/run/secrets/niks3-signing-key" ];
+
+    # Public cache URL (optional) - if exposed via https
+    # Generates a landing page with usage instructions and public keys
+    # cacheUrl = "https://cache.example.com";
   };
 }
 ```

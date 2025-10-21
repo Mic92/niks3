@@ -106,6 +106,18 @@ in
       example = lib.literalExpression ''[ /run/secrets/niks3-sign-key ]'';
     };
 
+    cacheUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "https://cache.example.com";
+      description = ''
+        Public URL where the binary cache is accessible.
+        This is used to generate a landing page (index.html) with usage instructions
+        and public keys, which is uploaded to the S3 bucket.
+        Also used for redirecting requests to the niks3 server root to the public cache.
+      '';
+    };
+
     user = lib.mkOption {
       type = lib.types.str;
       default = "niks3";
@@ -227,6 +239,10 @@ in
             --s3-access-key-path "${cfg.s3.accessKeyFile}" \
             --s3-secret-key-path "${cfg.s3.secretKeyFile}" \
             --api-token-path "${cfg.apiTokenFile}"${
+              lib.optionalString (cfg.cacheUrl != null) ''
+                \
+                            --cache-url "${cfg.cacheUrl}"''
+            }${
               lib.optionalString (cfg.signKeyFiles != [ ]) ''
                 \
                            ${lib.concatMapStringsSep " \\\n            " (

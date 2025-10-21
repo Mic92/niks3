@@ -84,3 +84,17 @@ func (k *Key) Sign(msg []byte) string {
 
 	return fmt.Sprintf("%s:%s", k.Name, signatureBase64)
 }
+
+// PublicKey returns the public key in the format "name:base64-public-key" for use in nix configuration.
+func (k *Key) PublicKey() (string, error) {
+	// Ed25519 public key is the last 32 bytes of the private key
+	publicKey, ok := k.key.Public().(ed25519.PublicKey)
+	if !ok {
+		// Type assertion failed - this should never happen with a properly initialized Ed25519 key
+		return "", fmt.Errorf("failed to extract Ed25519 public key from key %s", k.Name)
+	}
+
+	publicKeyBase64 := base64.StdEncoding.EncodeToString(publicKey)
+
+	return fmt.Sprintf("%s:%s", k.Name, publicKeyBase64), nil
+}
