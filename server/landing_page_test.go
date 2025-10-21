@@ -1,20 +1,23 @@
-package server
+package server_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/signing"
 )
 
 func TestGenerateLandingPage(t *testing.T) {
+	t.Parallel()
+
 	// Create a test signing key
 	key, err := signing.ParseKey("test-cache:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=")
 	if err != nil {
 		t.Fatalf("Failed to parse test key: %v", err)
 	}
 
-	service := &Service{
+	service := &server.Service{
 		SigningKeys: []*signing.Key{key},
 		CacheURL:    "https://cache.example.com",
 	}

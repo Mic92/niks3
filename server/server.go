@@ -198,20 +198,29 @@ Priority: 30
 	// Generate and upload landing page if we have a cache URL
 	// This runs on every startup to keep the landing page up-to-date with current signing keys
 	if s.CacheURL != "" {
-		landingHTML, err := s.GenerateLandingPage(s.CacheURL)
-		if err != nil {
-			slog.Warn("Failed to generate landing page", "error", err)
-		} else {
-			_, err = s.MinioClient.PutObject(ctx, s.Bucket, "index.html",
-				bytes.NewReader([]byte(landingHTML)), int64(len(landingHTML)),
-				minio.PutObjectOptions{ContentType: "text/html; charset=utf-8"})
-			if err != nil {
-				slog.Warn("Failed to upload landing page", "error", err)
-			} else {
-				slog.Info("Uploaded landing page to bucket", "bucket", s.Bucket)
-			}
-		}
+		s.uploadLandingPage(ctx)
 	}
 
 	return nil
+}
+
+// uploadLandingPage generates and uploads the landing page to S3.
+func (s *Service) uploadLandingPage(ctx context.Context) {
+	landingHTML, err := s.GenerateLandingPage(s.CacheURL)
+	if err != nil {
+		slog.Warn("Failed to generate landing page", "error", err)
+
+		return
+	}
+
+	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "index.html",
+		bytes.NewReader([]byte(landingHTML)), int64(len(landingHTML)),
+		minio.PutObjectOptions{ContentType: "text/html; charset=utf-8"})
+	if err != nil {
+		slog.Warn("Failed to upload landing page", "error", err)
+
+		return
+	}
+
+	slog.Info("Uploaded landing page to bucket", "bucket", s.Bucket)
 }
