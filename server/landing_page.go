@@ -255,6 +255,7 @@ func (s *Service) GenerateLandingPage(cacheURL string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to get public key: %w", err)
 		}
+
 		publicKeys = append(publicKeys, pubKey)
 	}
 
