@@ -14,10 +14,8 @@ linters:
     - noinlineerr
     - lll
     - wsl
+    - misspell
   settings:
-    misspell:
-      ignore-words:
-        - substituters
     tagliatelle:
       case:
         rules:
