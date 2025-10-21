@@ -1,8 +1,6 @@
 -- name: InsertPendingClosure :one
 INSERT INTO pending_closures (started_at, key)
 VALUES (timezone('UTC', now()), $1)
-ON CONFLICT (key) DO UPDATE
-    SET started_at = EXCLUDED.started_at
 RETURNING *;
 
 -- name: InsertPendingObjects :copyfrom
