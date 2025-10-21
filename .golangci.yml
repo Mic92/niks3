@@ -15,6 +15,9 @@ linters:
     - lll
     - wsl
   settings:
+    misspell:
+      ignore-words:
+        - substituters
     tagliatelle:
       case:
         rules:
