@@ -68,6 +68,8 @@ func parseArgs() (*options, error) {
 		"Path to file containing S3 secret key")
 	flag.StringVar(&opts.APIToken, "api-token", getEnvOrDefault("NIKS3_API_TOKEN", ""), "API token for authentication")
 	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
+	flag.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
+		"Public cache URL for the landing page (e.g., https://cache.example.com)")
 
 	// Parse signing key paths from environment variable (space-separated for backward compatibility)
 	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
