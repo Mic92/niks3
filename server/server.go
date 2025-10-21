@@ -32,6 +32,7 @@ type options struct {
 	APIToken string
 
 	SignKeyPaths []string
+	CacheURL     string
 }
 
 type Service struct {
@@ -40,6 +41,7 @@ type Service struct {
 	Bucket      string
 	APIToken    string
 	SigningKeys []*signing.Key
+	CacheURL    string
 }
 
 // Close closes the database connection pool.
@@ -96,7 +98,13 @@ func runServer(opts *options) error {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
 	}
 
-	service := &Service{Pool: pool, MinioClient: minioClient, Bucket: opts.S3Bucket, APIToken: opts.APIToken}
+	service := &Service{
+		Pool:        pool,
+		MinioClient: minioClient,
+		Bucket:      opts.S3Bucket,
+		APIToken:    opts.APIToken,
+		CacheURL:    opts.CacheURL,
+	}
 
 	// Load signing keys
 	if len(opts.SignKeyPaths) == 0 {
@@ -125,6 +133,7 @@ func runServer(opts *options) error {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", service.RootRedirectHandler)
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
 
 	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
@@ -154,40 +163,55 @@ func runServer(opts *options) error {
 func (s *Service) InitializeBucket(ctx context.Context) error {
 	// Check if nix-cache-info already exists
 	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
-	if err == nil {
-		// File already exists
-		return nil
-	}
+	if err != nil {
+		// Check if this is a "not found" error vs other errors
+		errResp := minio.ToErrorResponse(err)
+		if errResp.Code != "NoSuchKey" {
+			// This is not a "not found" error - could be network, permissions, etc.
+			return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
+		}
 
-	// Check if this is a "not found" error vs other errors
-	errResp := minio.ToErrorResponse(err)
-	if errResp.Code != "NoSuchKey" {
-		// This is not a "not found" error - could be network, permissions, etc.
-		return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
-	}
+		// Object doesn't exist, create it
+		// Priority 30 is higher than the default nixos.org cache (priority 40)
+		// Use NIX_STORE_DIR from environment if set, otherwise default to /nix/store
+		storeDir := os.Getenv("NIX_STORE_DIR")
+		if storeDir == "" {
+			storeDir = "/nix/store"
+		}
 
-	// Object doesn't exist, create it
-	// Priority 30 is higher than the default nixos.org cache (priority 40)
-	// Use NIX_STORE_DIR from environment if set, otherwise default to /nix/store
-	storeDir := os.Getenv("NIX_STORE_DIR")
-	if storeDir == "" {
-		storeDir = "/nix/store"
-	}
-
-	cacheInfo := fmt.Sprintf(`StoreDir: %s
+		cacheInfo := fmt.Sprintf(`StoreDir: %s
 WantMassQuery: 1
 Priority: 30
 `, storeDir)
 
-	// Upload nix-cache-info to the bucket
-	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
-		bytes.NewReader([]byte(cacheInfo)), int64(len(cacheInfo)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
-	if err != nil {
-		return fmt.Errorf("failed to create nix-cache-info: %w", err)
+		// Upload nix-cache-info to the bucket
+		_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
+			bytes.NewReader([]byte(cacheInfo)), int64(len(cacheInfo)),
+			minio.PutObjectOptions{ContentType: "text/plain"})
+		if err != nil {
+			return fmt.Errorf("failed to create nix-cache-info: %w", err)
+		}
+
+		slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
 	}
 
-	slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
+	// Generate and upload landing page if we have a cache URL
+	// This runs on every startup to keep the landing page up-to-date with current signing keys
+	if s.CacheURL != "" {
+		landingHTML, err := s.GenerateLandingPage(s.CacheURL)
+		if err != nil {
+			slog.Warn("Failed to generate landing page", "error", err)
+		} else {
+			_, err = s.MinioClient.PutObject(ctx, s.Bucket, "index.html",
+				bytes.NewReader([]byte(landingHTML)), int64(len(landingHTML)),
+				minio.PutObjectOptions{ContentType: "text/html; charset=utf-8"})
+			if err != nil {
+				slog.Warn("Failed to upload landing page", "error", err)
+			} else {
+				slog.Info("Uploaded landing page to bucket", "bucket", s.Bucket)
+			}
+		}
+	}
 
 	return nil
 }
