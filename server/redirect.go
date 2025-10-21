@@ -9,6 +9,7 @@ func (s *Service) RootRedirectHandler(w http.ResponseWriter, r *http.Request) {
 	// Only handle requests to the root path
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+
 		return
 	}
 
@@ -17,6 +18,7 @@ func (s *Service) RootRedirectHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("niks3 binary cache server\n"))
+
 		return
 	}
 
