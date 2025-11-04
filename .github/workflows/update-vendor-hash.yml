@@ -21,6 +21,8 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
           nix_path: nixpkgs=channel:nixos-unstable
       - name: Update checksum
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           ./.github/workflows/update-vendor-hash.sh
           # git push if we have a diff
@@ -29,5 +31,5 @@ jobs:
             git config --global user.email "<49699333+dependabot[bot]@users.noreply.github.com>"
             git config --global user.name "dependabot[bot]"
             git commit -m "update vendorHash"
-            git push origin HEAD:${{ github.head_ref }}
+            git push origin HEAD:"${HEAD_REF}"
           fi
