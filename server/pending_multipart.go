@@ -19,6 +19,20 @@ type MultipartUploadInfo struct {
 	PartURLs []string `json:"part_urls"`
 }
 
+// requestPartsRequest is the request to request additional part URLs.
+type requestPartsRequest struct {
+	ObjectKey       string `json:"object_key"`
+	UploadID        string `json:"upload_id"`
+	StartPartNumber int    `json:"start_part_number"` // The first part number to generate URLs for
+	NumParts        int    `json:"num_parts"`         // Number of parts to generate
+}
+
+// requestPartsResponse is the response with additional part URLs.
+type requestPartsResponse struct {
+	PartURLs        []string `json:"part_urls"`
+	StartPartNumber int      `json:"start_part_number"`
+}
+
 // estimatePartsNeeded estimates how many multipart parts we'll need based on NarSize.
 // Assumes worst-case: no compression (1:1 ratio) plus buffer for overhead.
 func estimatePartsNeeded(narSize uint64) int {
@@ -81,10 +95,30 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
-	// Presign URLs for each part
+	// Generate presigned URLs for each part (starting from part 1)
+	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
+	if err != nil {
+		// Cleanup: abort multipart upload
+		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+
+		return PendingObject{}, err
+	}
+
+	return PendingObject{
+		MultipartInfo: &MultipartUploadInfo{
+			UploadID: uploadID,
+			PartURLs: partURLs,
+		},
+	}, nil
+}
+
+// generatePartURLs generates presigned URLs for multipart upload parts.
+func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID string, startPartNumber, numParts int) ([]string, error) {
 	partURLs := make([]string, numParts)
+
 	for i := range numParts {
-		partNumber := i + 1 // Part numbers start at 1
+		partNumber := startPartNumber + i
+
 		// Use Client.Presign with query parameters for multipart
 		reqParams := make(url.Values)
 		reqParams.Set("uploadId", uploadID)
@@ -97,19 +131,11 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 			maxSignedURLDuration,
 			reqParams)
 		if err != nil {
-			// Cleanup: abort multipart upload
-			_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
-
-			return PendingObject{}, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
+			return nil, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
 		}
 
 		partURLs[i] = presignedURL.String()
 	}
 
-	return PendingObject{
-		MultipartInfo: &MultipartUploadInfo{
-			UploadID: uploadID,
-			PartURLs: partURLs,
-		},
-	}, nil
+	return partURLs, nil
 }

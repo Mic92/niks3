@@ -15,7 +15,7 @@ import (
 // zstdEncoderPool pools zstd encoders to reduce memory allocations.
 // Each encoder maintains compression history buffers (~60-80MB) that can be reused.
 var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
-	New: func() interface{} {
+	New: func() any {
 		// Create encoder with nil writer (will use Reset() to set the actual writer)
 		encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 		if err != nil {

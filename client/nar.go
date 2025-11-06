@@ -24,7 +24,7 @@ const (
 var useCaseHack = runtime.GOOS == "darwin"
 
 var copyBufferPool = sync.Pool{ //nolint:gochecknoglobals
-	New: func() interface{} {
+	New: func() any {
 		// 128KB buffer for efficient large file reads
 		buf := make([]byte, 128*1024)
 

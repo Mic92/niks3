@@ -158,10 +158,7 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 	// Store paths are ~60 chars, so 1000 paths per chunk is safe (~300KB with overhead)
 	const maxPathsPerChunk = 1000
 	for i := 0; i < len(caPaths); i += maxPathsPerChunk {
-		end := i + maxPathsPerChunk
-		if end > len(caPaths) {
-			end = len(caPaths)
-		}
+		end := min(i+maxPathsPerChunk, len(caPaths))
 
 		chunk := caPaths[i:end]
 
