@@ -130,6 +130,96 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
+// RequestMorePartsHandler handles POST /api/multipart/request-parts endpoint.
+// Requests additional presigned URLs for an existing multipart upload.
+func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Received request for more parts", "method", r.Method, "url", r.URL)
+
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			slog.Error("Failed to close request body", "error", err)
+		}
+	}()
+
+	req := &requestPartsRequest{}
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	if req.ObjectKey == "" {
+		http.Error(w, "missing object_key", http.StatusBadRequest)
+
+		return
+	}
+
+	if req.UploadID == "" {
+		http.Error(w, "missing upload_id", http.StatusBadRequest)
+
+		return
+	}
+
+	if req.StartPartNumber <= 0 {
+		http.Error(w, "start_part_number must be positive", http.StatusBadRequest)
+
+		return
+	}
+
+	if req.NumParts <= 0 || req.NumParts > 1000 {
+		http.Error(w, "num_parts must be between 1 and 1000", http.StatusBadRequest)
+
+		return
+	}
+
+	// Verify the upload exists and belongs to a valid pending closure
+	queries := pg.New(s.Pool)
+
+	upload, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
+		UploadID:  req.UploadID,
+		ObjectKey: req.ObjectKey,
+	})
+	if err != nil {
+		slog.Error("Failed to get multipart upload", "error", err, "upload_id", req.UploadID, "object_key", req.ObjectKey)
+		http.Error(w, "multipart upload not found", http.StatusNotFound)
+
+		return
+	}
+
+	slog.Info("Generating additional parts",
+		"upload_id", req.UploadID,
+		"object_key", req.ObjectKey,
+		"start_part_number", req.StartPartNumber,
+		"num_parts", req.NumParts,
+		"pending_closure_id", upload.PendingClosureID)
+
+	// Generate presigned URLs for the requested parts
+	partURLs, err := s.generatePartURLs(r.Context(), req.ObjectKey, req.UploadID, req.StartPartNumber, req.NumParts)
+	if err != nil {
+		slog.Error("Failed to generate part URLs", "error", err)
+		http.Error(w, fmt.Sprintf("failed to generate part URLs: %v", err), http.StatusInternalServerError)
+
+		return
+	}
+
+	// Return the part URLs
+	resp := requestPartsResponse{
+		PartURLs:        partURLs,
+		StartPartNumber: req.StartPartNumber,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("Failed to encode response", "error", err)
+		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	slog.Info("Generated additional parts", "upload_id", req.UploadID, "parts", len(partURLs))
+}
+
 // CompleteMultipartUploadHandler completes a multipart upload with the list of ETags.
 // It handles POST /api/multipart/complete endpoint.
 func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {

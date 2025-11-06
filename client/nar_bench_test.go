@@ -18,9 +18,7 @@ func BenchmarkDumpPathLargeClosure(b *testing.B) {
 
 	makeBenchmarkTree(b, root)
 
-	b.ResetTimer()
-
-	for range b.N {
+	for b.Loop() {
 		if _, err := client.DumpPathWithListing(io.Discard, root); err != nil {
 			b.Fatalf("DumpPathWithListing failed: %v", err)
 		}

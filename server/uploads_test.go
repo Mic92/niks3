@@ -41,11 +41,11 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	closureHash := "00000000000000000000000000000000"
 	closureKey := closureHash + ".narinfo"
 	narKey := "nar/" + closureHash + ".nar.zst"
-	objects := []map[string]interface{}{
+	objects := []map[string]any{
 		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
 		{"key": narKey, "type": "nar", "refs": []string{}},
 	}
-	body, err := json.Marshal(map[string]interface{}{
+	body, err := json.Marshal(map[string]any{
 		"closure": closureKey,
 		"objects": objects,
 	})
@@ -70,8 +70,8 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	ok(t, err)
 
 	// Try to complete the cleaned up closure - should fail with not found
-	emptyNarinfos, err := json.Marshal(map[string]interface{}{
-		"narinfos": map[string]interface{}{},
+	emptyNarinfos, err := json.Marshal(map[string]any{
+		"narinfos": map[string]any{},
 	})
 	ok(t, err)
 
@@ -93,7 +93,7 @@ func handleMultipartUpload(ctx context.Context, t *testing.T, key string, pendin
 	t.Helper()
 
 	httpClient := &http.Client{}
-	completedParts := make([]map[string]interface{}, 0, len(pendingObject.MultipartInfo.PartURLs))
+	completedParts := make([]map[string]any, 0, len(pendingObject.MultipartInfo.PartURLs))
 
 	// Create dummy data that meets S3 minimum part size (5MB)
 	minPartSize := 5 * 1024 * 1024 // 5MB
@@ -125,7 +125,7 @@ func handleMultipartUpload(ctx context.Context, t *testing.T, key string, pendin
 		// Remove quotes from ETag if present
 		etag = strings.Trim(etag, "\"")
 
-		completedParts = append(completedParts, map[string]interface{}{
+		completedParts = append(completedParts, map[string]any{
 			"part_number": partNumber,
 			"etag":        etag,
 		})
@@ -136,7 +136,7 @@ func handleMultipartUpload(ctx context.Context, t *testing.T, key string, pendin
 	}
 
 	// Complete the multipart upload
-	completeReq := map[string]interface{}{
+	completeReq := map[string]any{
 		"object_key": key,
 		"upload_id":  pendingObject.MultipartInfo.UploadID,
 		"parts":      completedParts,
@@ -187,7 +187,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	service := createTestService(t)
 	defer service.Close()
 
-	invalidBody, err := json.Marshal(map[string]interface{}{})
+	invalidBody, err := json.Marshal(map[string]any{})
 	ok(t, err)
 
 	checkBadRequest := checkStatusCode(http.StatusBadRequest)
@@ -204,9 +204,9 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	narinfoKey := closureHash + ".narinfo"
 	narKey := "nar/" + closureHash + ".nar.zst"
 
-	bodyBareClosure, err := json.Marshal(map[string]interface{}{
+	bodyBareClosure, err := json.Marshal(map[string]any{
 		"closure": closureHash,
-		"objects": []map[string]interface{}{
+		"objects": []map[string]any{
 			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
 			{"key": narKey, "type": "nar", "refs": []string{}},
 		},
@@ -224,11 +224,11 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	closureKey := "00000000000000000000000000000000"
 	firstObject := closureKey + ".narinfo"           // This should be the narinfo file
 	secondObject := "nar/" + closureKey + ".nar.zst" // This should be the NAR file
-	objects := []map[string]interface{}{
+	objects := []map[string]any{
 		{"key": firstObject, "type": "narinfo", "refs": []string{secondObject}}, // narinfo references the NAR file
 		{"key": secondObject, "type": "nar", "refs": []string{}},                // NAR file has no references
 	}
-	body, err := json.Marshal(map[string]interface{}{
+	body, err := json.Marshal(map[string]any{
 		"closure": firstObject, // Send the narinfo key as closure key
 		"objects": objects,
 	})
@@ -255,13 +255,13 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	}
 
 	// Upload non-narinfo objects and collect narinfo metadata
-	narinfoMetadata := make(map[string]map[string]interface{})
+	narinfoMetadata := make(map[string]map[string]any)
 
 	for key, pendingObject := range pendingClosureResponse.PendingObjects {
 		switch {
 		case pendingObject.Type == "narinfo":
 			// Narinfo is handled server-side - collect metadata instead
-			narinfoMetadata[key] = map[string]interface{}{
+			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureKey + "-test-package",
 				"url":         "nar/" + closureKey + ".nar.zst",
 				"compression": "zstd",
@@ -279,7 +279,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	}
 
 	// Send completion request with narinfo metadata
-	completionBody, err := json.Marshal(map[string]interface{}{
+	completionBody, err := json.Marshal(map[string]any{
 		"narinfos": narinfoMetadata,
 	})
 	ok(t, err)
@@ -315,12 +315,12 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	thirdObject := "cccccccccccccccccccccccccccccccc.narinfo"
 
-	objects2 := []map[string]interface{}{
+	objects2 := []map[string]any{
 		{"key": firstObject, "type": "narinfo", "refs": []string{}},
 		{"key": secondObject, "type": "nar", "refs": []string{firstObject}},
 		{"key": thirdObject, "type": "narinfo", "refs": []string{secondObject}},
 	}
-	body2, err := json.Marshal(map[string]interface{}{
+	body2, err := json.Marshal(map[string]any{
 		"closure": "11111111111111111111111111111111.narinfo", // Send the narinfo key as closure key
 		"objects": objects2,
 	})

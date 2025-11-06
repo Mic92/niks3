@@ -49,9 +49,9 @@ func getNARURLFromNarinfo(ctx context.Context, t *testing.T, testService *server
 	ok(t, err)
 
 	// Extract URL from narinfo
-	for _, line := range strings.Split(string(narinfoText), "\n") {
-		if strings.HasPrefix(line, "URL: ") {
-			return strings.TrimPrefix(line, "URL: ")
+	for line := range strings.SplitSeq(string(narinfoText), "\n") {
+		if after, ok0 := strings.CutPrefix(line, "URL: "); ok0 {
+			return after
 		}
 	}
 
@@ -140,7 +140,7 @@ func verifyLsFileInS3(ctx context.Context, t *testing.T, testService *server.Ser
 	ok(t, err)
 	t.Logf("Decompressed .ls content (%d bytes):\n%s", len(lsContent), lsContent)
 
-	var listing map[string]interface{}
+	var listing map[string]any
 	if err := json.Unmarshal(lsContent, &listing); err != nil {
 		t.Errorf("Failed to parse .ls content as JSON: %v", err)
 	}
@@ -173,7 +173,7 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 		var (
 			key            string
 			isDeleted      bool
-			firstDeletedAt interface{}
+			firstDeletedAt any
 		)
 
 		err = rows3.Scan(&key, &isDeleted, &firstDeletedAt)
@@ -227,7 +227,7 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 // pushToServer uses the client package to push store paths.
 func pushToServer(ctx context.Context, serverURL, authToken string, paths []string, nixEnv []string) error {
 	// Create client
-	c, err := client.NewClient(serverURL, authToken)
+	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
@@ -304,7 +304,7 @@ func TestClientIntegration(t *testing.T) {
 	t.Log("Testing garbage collection...")
 	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
 
-	c, err := client.NewClient(ts.URL, testAuthToken)
+	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
 
 	verifyGarbageCollection(ctx, t, service, c)
@@ -489,8 +489,8 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	var storeDir string
 
 	for _, envVar := range nixEnv {
-		if strings.HasPrefix(envVar, "NIX_STORE_DIR=") {
-			storeDir = strings.TrimPrefix(envVar, "NIX_STORE_DIR=")
+		if after, ok0 := strings.CutPrefix(envVar, "NIX_STORE_DIR="); ok0 {
+			storeDir = after
 
 			break
 		}

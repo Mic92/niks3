@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -300,9 +301,7 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 		closureIDToNarinfoKey[resp.ID] = closure.NarinfoKey
 
 		// Collect pending objects
-		for key, obj := range resp.PendingObjects {
-			pendingObjects[key] = obj
-		}
+		maps.Copy(pendingObjects, resp.PendingObjects)
 	}
 
 	return pendingObjects, closureIDToNarinfoKey, nil
@@ -342,9 +341,7 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, narinfosByClosureID 
 			return fmt.Errorf("signing narinfos for closure %s: %w", closureID, err)
 		}
 
-		for key, sigs := range signatures {
-			signaturesByKey[key] = sigs
-		}
+		maps.Copy(signaturesByKey, signatures)
 	}
 
 	// Generate, compress, and upload narinfos in parallel

@@ -37,7 +37,7 @@ func formatBytes(bytes uint64) string {
 
 // uploadBufferPool pools 10MB buffers for multipart uploads to reduce memory allocations.
 var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
-	New: func() interface{} {
+	New: func() any {
 		buf := make([]byte, multipartPartSize)
 
 		return &buf
@@ -61,6 +61,63 @@ type completeMultipartRequest struct {
 	ObjectKey string          `json:"object_key"`
 	UploadID  string          `json:"upload_id"`
 	Parts     []CompletedPart `json:"parts"`
+}
+
+// requestMorePartsRequest is the request to request additional part URLs.
+type requestMorePartsRequest struct {
+	ObjectKey       string `json:"object_key"`
+	UploadID        string `json:"upload_id"`
+	StartPartNumber int    `json:"start_part_number"`
+	NumParts        int    `json:"num_parts"`
+}
+
+// requestMorePartsResponse is the response with additional part URLs.
+type requestMorePartsResponse struct {
+	PartURLs        []string `json:"part_urls"`
+	StartPartNumber int      `json:"start_part_number"`
+}
+
+// RequestMoreParts requests additional part URLs for an existing multipart upload.
+func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID string, startPartNumber, numParts int) ([]string, error) {
+	reqURL := c.baseURL.JoinPath("api/multipart/request-parts")
+
+	reqBody := requestMorePartsRequest{
+		ObjectKey:       objectKey,
+		UploadID:        uploadID,
+		StartPartNumber: startPartNumber,
+		NumParts:        numParts,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.DoWithRetry(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	defer deferCloseBody(resp)
+
+	if err := checkResponse(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+
+	var respBody requestMorePartsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	return respBody.PartURLs, nil
 }
 
 // CompleteMultipartUpload completes a multipart upload.
@@ -121,9 +178,29 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	buffer := *bufferPtr
 
 	partNumber := 1
-	reachedEOF := false
+	partURLs := multipartInfo.PartURLs
 
-	for partNumber <= len(multipartInfo.PartURLs) {
+	var reachedEOF bool
+
+	for {
+		// Check if we need more part URLs
+		if partNumber > len(partURLs) {
+			// Request more parts (batch of 100)
+			const additionalParts = 100
+			slog.Info("Requesting additional part URLs",
+				"object_key", objectKey,
+				"current_part", partNumber,
+				"requesting", additionalParts)
+
+			newPartURLs, err := c.RequestMoreParts(ctx, objectKey, multipartInfo.UploadID, partNumber, additionalParts)
+			if err != nil {
+				return nil, fmt.Errorf("requesting more parts at part %d: %w", partNumber, err)
+			}
+
+			partURLs = append(partURLs, newPartURLs...)
+			slog.Info("Received additional part URLs", "count", len(newPartURLs), "total_parts", len(partURLs))
+		}
+
 		// Read up to multipartPartSize for this part
 		n, readErr := io.ReadFull(r, buffer)
 		if errors.Is(readErr, io.EOF) {
@@ -145,7 +222,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 		totalSize.Add(uint64(n))
 
 		// Upload this part
-		partURL := multipartInfo.PartURLs[partNumber-1]
+		partURL := partURLs[partNumber-1]
 
 		etag, err := c.uploadPart(ctx, partURL, partData)
 		if err != nil {
@@ -167,20 +244,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 		}
 	}
 
-	// Detect if we exhausted PartURLs without reaching EOF (indicating insufficient parts)
 	if !reachedEOF {
-		// Attempt a minimal read to check for remaining data (reuse existing buffer)
-		_, probeErr := io.ReadFull(r, buffer[:1])
-
-		// If we can read data (or get ErrUnexpectedEOF which means partial data exists),
-		// the stream has more content than the provided PartURLs can handle
-		if probeErr == nil || errors.Is(probeErr, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf(
-				"insufficient part URLs for %s: stream contains more data than %d parts can accommodate; "+
-					"server should over-provision part URLs when estimating from NarSize",
-				objectKey, len(multipartInfo.PartURLs))
-		}
-		// probeErr == io.EOF is acceptable - we happened to end exactly at a part boundary
+		return nil, errors.New("unexpected end of upload loop without reaching EOF")
 	}
 
 	// Complete the multipart upload

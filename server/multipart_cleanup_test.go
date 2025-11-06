@@ -27,12 +27,12 @@ func TestMultipartCleanup(t *testing.T) {
 	// Use a large NarSize to ensure multipart upload is used
 	largeNarSize := uint64(100 * 1024 * 1024) // 100MB
 
-	objects := []map[string]interface{}{
+	objects := []map[string]any{
 		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
 		{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": largeNarSize},
 	}
 
-	body, err := json.Marshal(map[string]interface{}{
+	body, err := json.Marshal(map[string]any{
 		"closure": closureKey,
 		"objects": objects,
 	})
