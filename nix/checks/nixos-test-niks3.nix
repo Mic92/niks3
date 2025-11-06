@@ -17,6 +17,18 @@ nixosTest {
         # Test signing key pair (generated with nix key generate-secret / convert-secret-to-public)
         signingSecretKey = writeText "niks3-signing-key" "niks3-test-1:0knWkx/F+6IJmI4dkvNs14SCaewg9ZWSAQUNg9juRxh/8x+rzUJx9SWdyGOVl21IbJlQemUKG40qW2TTyrE++w==";
         signingPublicKey = "niks3-test-1:f/Mfq81CcfUlnchjlZdtSGyZUHplChuNKltk08qxPvs=";
+
+        # Create a symlink wrapper for testing issue #59
+        symlinkWrapper = pkgs.runCommand "symlink-wrapper" { } ''
+          ln -s ${
+            pkgs.runCommand "base-package" { } ''
+              mkdir -p $out/bin
+              echo "#!/bin/sh" > $out/bin/test-program
+              echo "echo 'Hello from subdirectory'" >> $out/bin/test-program
+              chmod +x $out/bin/test-program
+            ''
+          }/bin/test-program $out
+        '';
       in
       {
         imports = [ ../nixosModules/niks3.nix ];
@@ -118,6 +130,9 @@ nixosTest {
           pkgs.hello
           pkgs.zstd
         ];
+
+        # Add symlink wrapper for testing issue #59
+        environment.etc."niks3-test/symlink-wrapper".source = symlinkWrapper;
 
         networking.firewall.allowedTCPPorts = [
           5751
@@ -249,6 +264,39 @@ nixosTest {
     # Verify realisation info is available in the chroot store
     realisation_info = server.succeed(f"nix --store /tmp/chroot-store realisation info {ca_output}")
     print(f"Realisation info in chroot store: {realisation_info}")
+
+    # Test uploading a store path that is a symlink to a subdirectory
+    # This tests the fix for issue #59: a store path that's a symlink pointing
+    # to a file in another store path's subdirectory
+
+    # Follow symlinks to get to the actual store path
+    # /etc/niks3-test/symlink-wrapper -> /etc/static/... -> /nix/store/.../symlink-wrapper
+    symlink_step1 = server.succeed("readlink /etc/niks3-test/symlink-wrapper").strip()
+    symlink_wrapper = server.succeed(f"readlink {symlink_step1}").strip()
+    print(f"Symlink wrapper store path: {symlink_wrapper}")
+
+    # Verify that the wrapper is indeed a symlink to a subdirectory
+    server.succeed(f"test -L {symlink_wrapper}")
+    symlink_target = server.succeed(f"readlink {symlink_wrapper}").strip()
+    print(f"Symlink wrapper points to: {symlink_target}")
+    # The symlink-wrapper itself is a store path that points to a subdirectory
+    assert symlink_target.endswith("/bin/test-program"), f"Symlink should point to a subdirectory path: {symlink_target}"
+
+    # Push the symlink wrapper (this would fail before the fix)
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 push {symlink_wrapper}
+    """)
+
+    # Verify we can retrieve it from the cache
+    server.succeed(f"""
+      export AWS_ACCESS_KEY_ID=minioadmin
+      export AWS_SECRET_ACCESS_KEY=minioadmin
+      nix copy --from '{binary_cache_url}' \
+                --to /tmp/test-store \
+                {symlink_wrapper}
+    """)
 
     # Test that GC systemd service runs successfully
     server.succeed("systemctl start niks3-gc.service")

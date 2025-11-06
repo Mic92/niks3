@@ -28,21 +28,49 @@ func getNARKey(narHash string) (string, error) {
 }
 
 // resolveSymlinks resolves any symlinks in the given paths to their actual store paths.
-func resolveSymlinks(paths []string) ([]string, error) {
+// Resolves symlinks iteratively until reaching a path in the Nix store, then stops.
+// This prevents resolving symlinks within the store to subdirectory paths which would break hash extraction.
+func resolveSymlinks(paths []string, storeDir string) ([]string, error) {
 	resolved := make([]string, 0, len(paths))
+	storeDirPrefix := storeDir + "/"
+	const maxSymlinkDepth = 40 // Same limit as filepath.EvalSymlinks
+
 	for _, path := range paths {
-		// Evaluate symlinks to get the actual target
-		realPath, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			// If it's not a symlink or doesn't exist, try to use it as-is
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("path does not exist: %s: %w", path, err)
+
+		currentPath := path
+
+		// Resolve symlinks iteratively until we reach a path in the store
+		for i := 0; i < maxSymlinkDepth; i++ {
+			// If we've reached a path in the store, stop resolving
+			if strings.HasPrefix(currentPath, storeDirPrefix) {
+				break
 			}
-			// For other errors, still try the original path
-			resolved = append(resolved, path)
-		} else {
-			resolved = append(resolved, realPath)
+
+			// Check if the current path is a symlink
+			linkTarget, err := os.Readlink(currentPath)
+			if err != nil {
+				// Not a symlink or doesn't exist
+				if os.IsNotExist(err) {
+					return nil, fmt.Errorf("path does not exist: %s: %w", currentPath, err)
+				}
+				// Not a symlink, use as-is
+				break
+			}
+
+			// Make the link target absolute if it's relative
+			if !filepath.IsAbs(linkTarget) {
+				linkTarget = filepath.Join(filepath.Dir(currentPath), linkTarget)
+			}
+
+			currentPath = linkTarget
+
+			// Check if we've hit the limit (which would indicate a symlink loop)
+			if i == maxSymlinkDepth-1 {
+				return nil, fmt.Errorf("too many symlinks resolving path: %s", path)
+			}
 		}
+
+		resolved = append(resolved, currentPath)
 	}
 
 	return resolved, nil
@@ -442,7 +470,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths
-	resolvedPaths, err := resolveSymlinks(paths)
+	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
 	if err != nil {
 		return fmt.Errorf("resolving symlinks: %w", err)
 	}

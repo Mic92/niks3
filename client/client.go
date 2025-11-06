@@ -18,6 +18,7 @@ type Client struct {
 	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig // Retry configuration for HTTP requests
+	storeDir                string      // Cached Nix store directory (e.g., "/nix/store"), lazily initialized
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
@@ -51,6 +52,13 @@ func NewClient(serverURL, authToken string) (*Client, error) {
 		return nil, fmt.Errorf("parsing server URL: %w", err)
 	}
 
+	// Get the Nix store directory at startup
+	ctx := context.Background()
+	storeDir, err := GetStoreDir(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("getting store directory: %w", err)
+	}
+
 	return &Client{
 		baseURL:   baseURL,
 		authToken: authToken,
@@ -59,6 +67,7 @@ func NewClient(serverURL, authToken string) (*Client, error) {
 		},
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
+		storeDir:                storeDir,
 	}, nil
 }
 
