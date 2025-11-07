@@ -112,6 +112,11 @@ WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int;
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
 
+-- name: GetMultipartUpload :one
+SELECT pending_closure_id, object_key, upload_id
+FROM multipart_uploads
+WHERE upload_id = $1 AND object_key = $2;
+
 -- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now

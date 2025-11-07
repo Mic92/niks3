@@ -53,6 +53,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 
 	// Update closure A to have a newer timestamp
 	timeAfterB := time.Now().UTC()
+
 	time.Sleep(100 * time.Millisecond)
 
 	pendingClosureA2, err := queries.InsertPendingClosure(ctx, hashA+".narinfo")
@@ -89,6 +90,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	defer rows.Close()
 
 	var markedForDeletion []string
+
 	for rows.Next() {
 		var key string
 
