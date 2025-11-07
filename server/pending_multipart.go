@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	multipartPartSize = 5 * 1024 * 1024 // 5MB parts (S3 minimum)
+	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
 )
 
 type MultipartUploadInfo struct {
@@ -48,7 +48,7 @@ func estimatePartsNeeded(narSize uint64) int {
 	// Assume worst case: no compression, file stays same size
 	estimatedSize := narSize
 
-	// Calculate parts needed (5MB per part)
+	// Calculate parts needed (10MB per part)
 	partsU64 := (estimatedSize + multipartPartSize - 1) / multipartPartSize
 
 	// Add 20% buffer for compression overhead/metadata
