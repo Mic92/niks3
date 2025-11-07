@@ -131,7 +131,7 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int)
 	}
 
 	// Create client
-	c, err := client.NewClient(serverURL, authToken)
+	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
@@ -152,7 +152,7 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 	defer stop()
 
 	// Create client
-	c, err := client.NewClient(serverURL, authToken)
+	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}

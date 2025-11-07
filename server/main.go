@@ -75,7 +75,7 @@ func parseArgs() (*options, error) {
 	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
 
 	if envPaths := getEnvOrDefault("NIKS3_SIGN_KEY_PATHS", ""); envPaths != "" {
-		for _, path := range strings.Fields(envPaths) {
+		for path := range strings.FieldsSeq(envPaths) {
 			if err := signKeyPaths.Set(path); err != nil {
 				return nil, fmt.Errorf("failed to parse NIKS3_SIGN_KEY_PATHS: %w", err)
 			}

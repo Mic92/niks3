@@ -89,7 +89,7 @@ func verifyRealisationFiles(ctx context.Context, t *testing.T, testService *serv
 		realisationDecoder.Close()
 		ok(t, err)
 
-		var realisation map[string]interface{}
+		var realisation map[string]any
 
 		err = json.Unmarshal(realisationContent, &realisation)
 		ok(t, err)
@@ -231,8 +231,8 @@ func TestClientCADerivations(t *testing.T) {
 	var storeDir string
 
 	for _, envVar := range nixEnv {
-		if strings.HasPrefix(envVar, "NIX_STORE_DIR=") {
-			storeDir = strings.TrimPrefix(envVar, "NIX_STORE_DIR=")
+		if after, ok0 := strings.CutPrefix(envVar, "NIX_STORE_DIR="); ok0 {
+			storeDir = after
 
 			break
 		}

@@ -114,7 +114,9 @@ func TestOrphanedObjectsGC(t *testing.T) {
 
 	// Wait and set cutoff time (B will be deleted, A will be kept)
 	time.Sleep(100 * time.Millisecond)
+
 	cutoffTime := time.Now().UTC()
+
 	time.Sleep(100 * time.Millisecond)
 
 	// Create Closure A (should be kept)
@@ -356,7 +358,9 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 
 	// Wait and set cutoff time (deleted closures will be removed, active ones will be kept)
 	time.Sleep(100 * time.Millisecond)
+
 	cutoffTime := time.Now().UTC()
+
 	time.Sleep(100 * time.Millisecond)
 
 	// ===== Create active closures (should be kept) =====
@@ -542,6 +546,7 @@ func TestResurrectedObjectNotDeleted(t *testing.T) {
 	// Step 2: Delete the closure (objects become orphaned)
 	// Use a cutoff time slightly in the future to ensure deletion
 	time.Sleep(10 * time.Millisecond)
+
 	cutoffTime := time.Now().UTC().Add(1 * time.Second)
 
 	deletedCount, err := queries.DeleteClosures(ctx, pgtype.Timestamp{

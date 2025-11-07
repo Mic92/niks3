@@ -5,10 +5,48 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// GetStoreDir determines the Nix store directory path.
+// It checks in order:
+// 1. NIX_STORE_DIR environment variable (from nixEnv if provided)
+// 2. Queries nix command
+// 3. Falls back to default "/nix/store"
+// Returns the store directory (e.g., "/nix/store").
+func GetStoreDir(ctx context.Context, nixEnv []string) (string, error) {
+	// First check NIX_STORE_DIR environment variable
+	if len(nixEnv) > 0 {
+		for _, env := range nixEnv {
+			if after, ok := strings.CutPrefix(env, "NIX_STORE_DIR="); ok {
+				return after, nil
+			}
+		}
+	} else if storeDir := os.Getenv("NIX_STORE_DIR"); storeDir != "" {
+		return storeDir, nil
+	}
+
+	// Try to query nix command
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command", "eval", "--raw", "--expr", "builtins.storeDir")
+	if len(nixEnv) > 0 {
+		cmd.Env = nixEnv
+	}
+
+	output, err := cmd.Output()
+	if err == nil {
+		storeDir := strings.TrimSpace(string(output))
+		if storeDir != "" {
+			return storeDir, nil
+		}
+	}
+
+	// Fall back to default /nix/store
+	// This is the standard location on NixOS and most Nix installations
+	return "/nix/store", nil
+}
 
 // PathInfo represents Nix path information.
 type PathInfo struct {
@@ -120,10 +158,7 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 	// Store paths are ~60 chars, so 1000 paths per chunk is safe (~300KB with overhead)
 	const maxPathsPerChunk = 1000
 	for i := 0; i < len(caPaths); i += maxPathsPerChunk {
-		end := i + maxPathsPerChunk
-		if end > len(caPaths) {
-			end = len(caPaths)
-		}
+		end := min(i+maxPathsPerChunk, len(caPaths))
 
 		chunk := caPaths[i:end]
 

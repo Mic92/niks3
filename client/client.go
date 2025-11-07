@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // Client handles uploads to the niks3 server.
@@ -18,6 +19,7 @@ type Client struct {
 	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig // Retry configuration for HTTP requests
+	storeDir                string      // Cached Nix store directory (e.g., "/nix/store"), lazily initialized
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
@@ -45,10 +47,16 @@ type ObjectWithRefs struct {
 //
 // TODO: Test this value in various network setups (local network, high-latency WAN,
 // rate-limited connections) to determine optimal defaults for different scenarios.
-func NewClient(serverURL, authToken string) (*Client, error) {
+func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error) {
 	baseURL, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing server URL: %w", err)
+	}
+
+	// Get the Nix store directory at startup
+	storeDir, err := GetStoreDir(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("getting store directory: %w", err)
 	}
 
 	return &Client{
@@ -59,6 +67,7 @@ func NewClient(serverURL, authToken string) (*Client, error) {
 		},
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
+		storeDir:                storeDir,
 	}, nil
 }
 
@@ -69,10 +78,8 @@ func deferCloseBody(resp *http.Response) {
 }
 
 func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
-	for _, status := range acceptedStatuses {
-		if resp.StatusCode == status {
-			return nil
-		}
+	if slices.Contains(acceptedStatuses, resp.StatusCode) {
+		return nil
 	}
 
 	body, _ := io.ReadAll(resp.Body)

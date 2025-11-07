@@ -60,10 +60,9 @@ func BenchmarkPythonClosure(b *testing.B) {
 	}
 
 	// Reset the timer to exclude setup time
-	b.ResetTimer()
 
 	// Run the benchmark
-	for range b.N {
+	for b.Loop() {
 		// Start fresh services for each iteration (don't count setup time)
 		b.StopTimer()
 		service := createTestService(b)
