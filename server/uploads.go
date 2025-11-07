@@ -172,6 +172,14 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Validate that the end part number doesn't exceed S3's limit
+	endPart := req.StartPartNumber + req.NumParts - 1
+	if endPart > 10000 {
+		http.Error(w, "requested parts exceed S3 maximum of 10000", http.StatusBadRequest)
+
+		return
+	}
+
 	// Verify the upload exists and belongs to a valid pending closure
 	queries := pg.New(s.Pool)
 
