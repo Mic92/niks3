@@ -34,14 +34,14 @@ func getNARKey(narHash string) (string, error) {
 func resolveSymlinks(paths []string, storeDir string) ([]string, error) {
 	resolved := make([]string, 0, len(paths))
 	storeDirPrefix := storeDir + "/"
-	const maxSymlinkDepth = 40 // Same limit as filepath.EvalSymlinks
+
+	const maxSymlinkDepth = 255 // Same limit as Go's filepath.EvalSymlinks (allows 255 resolutions, errors on 256th)
 
 	for _, path := range paths {
-
 		currentPath := path
 
 		// Resolve symlinks iteratively until we reach a path in the store
-		for i := 0; i < maxSymlinkDepth; i++ {
+		for i := range maxSymlinkDepth {
 			// If we've reached a path in the store, stop resolving
 			if strings.HasPrefix(currentPath, storeDirPrefix) {
 				break
@@ -63,12 +63,11 @@ func resolveSymlinks(paths []string, storeDir string) ([]string, error) {
 				linkTarget = filepath.Join(filepath.Dir(currentPath), linkTarget)
 			}
 
-			currentPath = linkTarget
-
-			// Check if we've hit the limit (which would indicate a symlink loop)
-			if i == maxSymlinkDepth-1 {
+			if i+1 > maxSymlinkDepth {
 				return nil, fmt.Errorf("too many symlinks resolving path: %s", path)
 			}
+
+			currentPath = linkTarget
 		}
 
 		resolved = append(resolved, currentPath)
