@@ -117,6 +117,11 @@ func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID strin
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
+	// Validate that the server returned the correct start part number
+	if respBody.StartPartNumber != startPartNumber {
+		return nil, fmt.Errorf("server returned start part %d but requested %d", respBody.StartPartNumber, startPartNumber)
+	}
+
 	// Validate that the server returned at least one part URL
 	if len(respBody.PartURLs) == 0 {
 		return nil, fmt.Errorf("server returned empty part URLs list (requested %d parts starting at %d)", numParts, startPartNumber)
