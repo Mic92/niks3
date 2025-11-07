@@ -117,6 +117,18 @@ func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID strin
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
+	// Validate that the server returned at least one part URL
+	if len(respBody.PartURLs) == 0 {
+		return nil, fmt.Errorf("server returned empty part URLs list (requested %d parts starting at %d)", numParts, startPartNumber)
+	}
+
+	// Validate that none of the URLs are empty strings
+	for i, url := range respBody.PartURLs {
+		if url == "" {
+			return nil, fmt.Errorf("server returned empty URL at index %d (out of %d URLs)", i, len(respBody.PartURLs))
+		}
+	}
+
 	return respBody.PartURLs, nil
 }
 
