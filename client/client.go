@@ -19,7 +19,7 @@ type Client struct {
 	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig // Retry configuration for HTTP requests
-	storeDir                string      // Cached Nix store directory (e.g., "/nix/store"), lazily initialized
+	storeDir                string      // Cached Nix store directory (e.g., "/nix/store")
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
