@@ -1,5 +1,5 @@
 {
-  nixosTest,
+  testers,
   writeText,
   minio-client,
   getent,
@@ -8,7 +8,7 @@
   ...
 }:
 
-nixosTest {
+testers.nixosTest {
   name = "nixos-test-niks3";
 
   nodes = {
