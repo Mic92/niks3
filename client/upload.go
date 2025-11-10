@@ -292,7 +292,7 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 	closureIDToNarinfoKey := make(map[string]string) // Maps closure ID -> narinfo key
 
 	for _, closure := range closures {
-		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects)
+		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects, c.VerifyS3Integrity)
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
 		}
