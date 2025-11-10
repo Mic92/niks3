@@ -93,7 +93,7 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 				_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
 				if err != nil {
 					errResp := minio.ToErrorResponse(err)
-					if errResp.Code == "NoSuchKey" {
+					if errResp.Code == s3ErrorCodeNoSuchKey {
 						resultChan <- checkResult{key: key, missing: true}
 					} else {
 						// Report error and stop processing
