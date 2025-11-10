@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server"
+	"github.com/minio/minio-go/v7"
 )
 
 // checkStatusCode returns a checkResponse function that validates the expected status code.
@@ -368,4 +369,130 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 			"key": closureKey,
 		},
 	})
+}
+
+func TestService_verifyS3Integrity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	// Step 1: Upload a closure
+	closureKey := "deadbeefdeadbeefdeadbeefdeadbeef"
+	narinfoKey := closureKey + ".narinfo"
+	narKey := "nar/" + closureKey + ".nar.zst"
+	objects := []map[string]any{
+		{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
+		{"key": narKey, "type": "nar", "refs": []string{}},
+	}
+	body, err := json.Marshal(map[string]any{
+		"closure": narinfoKey,
+		"objects": objects,
+	})
+	ok(t, err)
+
+	rr := testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/pending_closures",
+		body:    body,
+		handler: service.CreatePendingClosureHandler,
+	})
+
+	var pendingClosureResponse server.PendingClosureResponse
+
+	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
+	ok(t, err)
+
+	// Upload the objects
+	narinfoMetadata := make(map[string]map[string]any)
+
+	for key, pendingObject := range pendingClosureResponse.PendingObjects {
+		switch {
+		case pendingObject.Type == "narinfo":
+			narinfoMetadata[key] = map[string]any{
+				"store_path":  "/nix/store/" + closureKey + "-test-package",
+				"url":         narKey,
+				"compression": "zstd",
+				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
+				"nar_size":    1000,
+				"file_hash":   "sha256:1111111111111111111111111111111111111111111111111111",
+				"file_size":   500,
+				"references":  []string{},
+			}
+		case pendingObject.MultipartInfo != nil:
+			handleMultipartUpload(ctx, t, key, pendingObject, service)
+		default:
+			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
+		}
+	}
+
+	// Complete the closure
+	completionBody, err := json.Marshal(map[string]any{
+		"narinfos": narinfoMetadata,
+	})
+	ok(t, err)
+
+	testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
+		body:    completionBody,
+		handler: service.CommitPendingClosureHandler,
+		pathValues: map[string]string{
+			"id": pendingClosureResponse.ID,
+		},
+	})
+
+	// Step 2: Delete the narinfo from S3 to simulate the bug
+	err = service.MinioClient.RemoveObject(ctx, service.Bucket, narinfoKey, minio.RemoveObjectOptions{})
+	ok(t, err)
+
+	// Step 3: Try to upload the same closure WITHOUT verify_s3 - should skip upload
+	rr = testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/pending_closures",
+		body:    body,
+		handler: service.CreatePendingClosureHandler,
+	})
+
+	var responseWithoutVerify server.PendingClosureResponse
+
+	err = json.Unmarshal(rr.Body.Bytes(), &responseWithoutVerify)
+	ok(t, err)
+
+	// Should have no pending objects because DB thinks they exist
+	if len(responseWithoutVerify.PendingObjects) != 0 {
+		t.Errorf("expected 0 pending objects without verify_s3, got %d", len(responseWithoutVerify.PendingObjects))
+	}
+
+	// Step 4: Try again WITH verify_s3=true - should detect missing object
+	bodyWithVerify, err := json.Marshal(map[string]any{
+		"closure":   narinfoKey,
+		"objects":   objects,
+		"verify_s3": true,
+	})
+	ok(t, err)
+
+	rr = testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/pending_closures",
+		body:    bodyWithVerify,
+		handler: service.CreatePendingClosureHandler,
+	})
+
+	var responseWithVerify server.PendingClosureResponse
+
+	err = json.Unmarshal(rr.Body.Bytes(), &responseWithVerify)
+	ok(t, err)
+
+	// Should detect the missing narinfo and return it as a pending object
+	if len(responseWithVerify.PendingObjects) != 1 {
+		t.Errorf("expected 1 pending object with verify_s3, got %d", len(responseWithVerify.PendingObjects))
+	}
+
+	if _, exists := responseWithVerify.PendingObjects[narinfoKey]; !exists {
+		t.Errorf("expected narinfo %s to be in pending objects", narinfoKey)
+	}
 }

@@ -7,16 +7,19 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/minio/minio-go/v7"
 )
 
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
+	s3CheckBatchSize     = 100
 )
 
 type PendingObject struct {
@@ -50,6 +53,103 @@ func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *boo
 			slog.Error("failed to rollback transaction", "error", rbErr)
 		}
 	}
+}
+
+// checkS3ObjectsExist checks which of the given object keys exist in S3 using a worker pool.
+// Returns a map of keys that are missing from S3 and any S3 error encountered.
+// If an S3 error occurs, returns immediately with partial results.
+func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) (map[string]bool, error) {
+	if len(objectKeys) == 0 {
+		return make(map[string]bool), nil
+	}
+
+	type checkResult struct {
+		key     string
+		missing bool
+		err     error
+	}
+
+	// Task channel for S3 checks
+	taskChan := make(chan string, len(objectKeys))
+	resultChan := make(chan checkResult, len(objectKeys))
+
+	// Track errors
+	errChan := make(chan error, 1)
+
+	var errOnce sync.Once
+
+	// Create worker pool (use s3CheckBatchSize as concurrency limit)
+	numWorkers := min(s3CheckBatchSize, len(objectKeys))
+
+	var wg sync.WaitGroup
+
+	for range numWorkers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for key := range taskChan {
+				_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
+				if err != nil {
+					errResp := minio.ToErrorResponse(err)
+					if errResp.Code == "NoSuchKey" {
+						resultChan <- checkResult{key: key, missing: true}
+					} else {
+						// Report error and stop processing
+						errOnce.Do(func() {
+							errChan <- fmt.Errorf("failed to check S3 object %q: %w", key, err)
+						})
+
+						resultChan <- checkResult{key: key, err: err}
+
+						return
+					}
+				} else {
+					resultChan <- checkResult{key: key, missing: false}
+				}
+			}
+		}()
+	}
+
+	// Queue all check tasks
+	for _, key := range objectKeys {
+		taskChan <- key
+	}
+
+	close(taskChan)
+
+	// Wait for workers to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	missingObjects := make(map[string]bool)
+
+	for result := range resultChan {
+		// Check for errors first
+		select {
+		case err := <-errChan:
+			return missingObjects, err
+		default:
+		}
+
+		if result.missing {
+			missingObjects[result.key] = true
+			slog.Info("Object in database but missing from S3", "key", result.key)
+		}
+	}
+
+	// Final error check
+	select {
+	case err := <-errChan:
+		return missingObjects, err
+	default:
+	}
+
+	return missingObjects, nil
 }
 
 func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
@@ -98,6 +198,8 @@ func createPendingClosureInner(
 	pool *pgxpool.Pool,
 	closureKey string,
 	objectsMap map[string]objectWithRefs,
+	s *Service,
+	verifyS3 bool,
 ) (*PendingClosure, error) {
 	if !strings.HasSuffix(closureKey, ".narinfo") {
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
@@ -131,12 +233,38 @@ func createPendingClosureInner(
 	}
 
 	deletedObjects := make([]string, 0, len(existingObjects))
+	keysToVerifyInS3 := make([]string, 0, len(existingObjects))
+	// Keep track of "existing" objects before we delete them from the map
+	existingObjectsMap := make(map[string]objectWithRefs)
 
 	for _, existingObject := range existingObjects {
 		if existingObject.DeletedAt.Valid {
 			deletedObjects = append(deletedObjects, existingObject.Key)
 		} else {
+			// Track keys that DB says exist (to verify in S3)
+			keysToVerifyInS3 = append(keysToVerifyInS3, existingObject.Key)
+			// Save the object info before deleting from map
+			existingObjectsMap[existingObject.Key] = objectsMap[existingObject.Key]
 			delete(objectsMap, existingObject.Key)
+		}
+	}
+
+	// Verify that objects the DB says exist actually exist in S3 (if requested)
+	if verifyS3 && len(keysToVerifyInS3) > 0 {
+		missingFromS3, err := s.checkS3ObjectsExist(ctx, keysToVerifyInS3)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify objects in S3: %w", err)
+		}
+
+		if len(missingFromS3) > 0 {
+			slog.Warn("Found objects in DB but missing from S3, will re-upload",
+				"count", len(missingFromS3))
+			// Add missing objects back to objectsMap so they get uploaded
+			for missingKey := range missingFromS3 {
+				if obj, ok := existingObjectsMap[missingKey]; ok {
+					objectsMap[missingKey] = obj
+				}
+			}
 		}
 	}
 
@@ -232,8 +360,9 @@ func (s *Service) createPendingClosure(
 	pool *pgxpool.Pool,
 	closureKey string,
 	objectsMap map[string]objectWithRefs,
+	verifyS3 bool,
 ) (*PendingClosureResponse, error) {
-	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsMap)
+	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsMap, s, verifyS3)
 	if err != nil {
 		return nil, err
 	}

@@ -11,8 +11,9 @@ import (
 
 // createPendingClosureRequest is the request to create a pending closure.
 type createPendingClosureRequest struct {
-	Closure string           `json:"closure"`
-	Objects []ObjectWithRefs `json:"objects"`
+	Closure  string           `json:"closure"`
+	Objects  []ObjectWithRefs `json:"objects"`
+	VerifyS3 bool             `json:"verify_s3,omitempty"`
 }
 
 // PendingObject contains upload information for an object.
@@ -30,12 +31,13 @@ type CreatePendingClosureResponse struct {
 }
 
 // CreatePendingClosure creates a pending closure and returns upload URLs.
-func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objects []ObjectWithRefs) (*CreatePendingClosureResponse, error) {
+func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objects []ObjectWithRefs, verifyS3 bool) (*CreatePendingClosureResponse, error) {
 	reqURL := c.baseURL.JoinPath("api/pending_closures")
 
 	reqBody := createPendingClosureRequest{
-		Closure: closure,
-		Objects: objects,
+		Closure:  closure,
+		Objects:  objects,
+		VerifyS3: verifyS3,
 	}
 
 	jsonData, err := json.Marshal(reqBody)
