@@ -49,6 +49,7 @@ func run() error {
 	pushServerURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
 	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
+	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify that objects in database actually exist in S3 before skipping upload")
 
 	// Define flags for gc command
 	gcCmd := flag.NewFlagSet("gc", flag.ExitOnError)
@@ -88,7 +89,7 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent)
+		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity)
 
 	case "gc":
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
@@ -122,7 +123,7 @@ func run() error {
 	}
 }
 
-func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int) error {
+func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -138,6 +139,7 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int)
 
 	// Set maximum concurrent uploads
 	c.MaxConcurrentNARUploads = maxConcurrent
+	c.VerifyS3Integrity = verifyS3Integrity
 
 	// Use the high-level PushPaths method
 	if err := c.PushPaths(ctx, paths); err != nil {
