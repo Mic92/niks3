@@ -20,6 +20,7 @@ type Client struct {
 	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig // Retry configuration for HTTP requests
 	storeDir                string      // Cached Nix store directory (e.g., "/nix/store")
+	VerifyS3Integrity       bool        // Enable S3 integrity checking when creating pending closures
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.

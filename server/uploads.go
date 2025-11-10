@@ -24,8 +24,9 @@ type objectWithRefs struct {
 }
 
 type createPendingClosureRequest struct {
-	Closure *string          `json:"closure"`
-	Objects []objectWithRefs `json:"objects"`
+	Closure  *string          `json:"closure"`
+	Objects  []objectWithRefs `json:"objects"`
+	VerifyS3 bool             `json:"verify_s3,omitempty"`
 }
 
 // CreatePendingClosureHandler handles POST /pending_closures endpoint.
@@ -88,7 +89,7 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		objectsMap[object.Key] = object
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap, req.VerifyS3)
 	if err != nil {
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
