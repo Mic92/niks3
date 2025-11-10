@@ -50,7 +50,8 @@ func (s *Service) Close() {
 }
 
 const (
-	dbConnectionTimeout = 10 * time.Second
+	dbConnectionTimeout  = 10 * time.Second
+	s3ErrorCodeNoSuchKey = "NoSuchKey"
 )
 
 func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -167,7 +168,7 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 	if err != nil {
 		// Check if this is a "not found" error vs other errors
 		errResp := minio.ToErrorResponse(err)
-		if errResp.Code != "NoSuchKey" {
+		if errResp.Code != s3ErrorCodeNoSuchKey {
 			// This is not a "not found" error - could be network, permissions, etc.
 			return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
 		}
