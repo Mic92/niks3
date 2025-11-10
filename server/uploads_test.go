@@ -15,6 +15,10 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
+const (
+	objectTypeNarinfo = "narinfo"
+)
+
 // checkStatusCode returns a checkResponse function that validates the expected status code.
 func checkStatusCode(expectedStatus int) func(*testing.T, *httptest.ResponseRecorder) {
 	return func(t *testing.T, rr *httptest.ResponseRecorder) {
@@ -260,7 +264,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	for key, pendingObject := range pendingClosureResponse.PendingObjects {
 		switch {
-		case pendingObject.Type == "narinfo":
+		case pendingObject.Type == objectTypeNarinfo:
 			// Narinfo is handled server-side - collect metadata instead
 			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureKey + "-test-package",
@@ -348,7 +352,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	if v, ok := pendingClosureResponse2.PendingObjects[thirdObject]; !ok {
 		t.Errorf("expected thirdObject in response")
-	} else if v.Type != "narinfo" || v.PresignedURL == "" {
+	} else if v.Type != objectTypeNarinfo || v.PresignedURL == "" {
 		t.Errorf("expected narinfo with presigned URL, got type=%s url=%s", v.Type, v.PresignedURL)
 	}
 
@@ -411,7 +415,7 @@ func TestService_verifyS3Integrity(t *testing.T) {
 
 	for key, pendingObject := range pendingClosureResponse.PendingObjects {
 		switch {
-		case pendingObject.Type == "narinfo":
+		case pendingObject.Type == objectTypeNarinfo:
 			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureKey + "-test-package",
 				"url":         narKey,
