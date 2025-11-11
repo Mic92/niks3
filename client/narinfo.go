@@ -28,10 +28,6 @@ func generateNarinfoContent(meta *NarinfoMetadata, signatures []string) string {
 	fmt.Fprintf(&sb, "NarHash: %s\n", meta.NarHash)
 	fmt.Fprintf(&sb, "NarSize: %d\n", meta.NarSize)
 
-	// FileHash and FileSize for compressed file
-	fmt.Fprintf(&sb, "FileHash: %s\n", meta.FileHash)
-	fmt.Fprintf(&sb, "FileSize: %d\n", meta.FileSize)
-
 	// References (must have space after colon, even if empty)
 	fmt.Fprint(&sb, "References:")
 

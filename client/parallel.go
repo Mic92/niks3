@@ -128,6 +128,9 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 				case "nar":
 					err = c.uploadNARWithListing(ctx, task, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
 
+				case "metadata":
+					err = c.uploadMetadataOnly(ctx, task.hash, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+
 				case "log":
 					err = c.uploadLog(ctx, task.task, uploadCtx.LogPathsByKey)
 
@@ -154,10 +157,13 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 		taskChan <- genericUploadTask{taskType: "realisation", task: task}
 	}
 
-	// Queue all NAR tasks
+	// Queue all NAR tasks and metadata-only tasks
 	for hash, entry := range pendingByHash {
 		if entry.narTask != nil {
 			taskChan <- genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}
+		} else if entry.narinfoTask != nil {
+			// Deduplicated NAR - queue metadata-only task
+			taskChan <- genericUploadTask{taskType: "metadata", task: *entry.narinfoTask, hash: hash}
 		}
 	}
 
@@ -179,9 +185,8 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	narinfoMetadata := make(map[string]NarinfoMetadata)
 
 	for hash, entry := range pendingByHash {
-		// Only collect metadata if NAR was successfully uploaded (check compressedInfo)
-		info, ok := compressedInfo[hash]
-		if !ok || entry.narinfoTask == nil {
+		// Only collect metadata if we have compressedInfo (NAR uploaded or metadata-only)
+		if _, ok := compressedInfo[hash]; !ok || entry.narinfoTask == nil {
 			continue
 		}
 
@@ -209,8 +214,6 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 			Compression: "zstd",
 			NarHash:     narHash,
 			NarSize:     pathInfo.NarSize,
-			FileHash:    info.Hash,
-			FileSize:    info.Size,
 			References:  pathInfo.References,
 			Deriver:     pathInfo.Deriver,
 			Signatures:  pathInfo.Signatures,
@@ -221,4 +224,46 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	}
 
 	return narinfoMetadata, nil
+}
+
+// uploadMetadataOnly handles metadata-only uploads for deduplicated NARs.
+// It generates the listing and uploads .ls file without uploading the NAR.
+func (c *Client) uploadMetadataOnly(
+	ctx context.Context,
+	hash string,
+	pendingByHash pendingObjectsByHash,
+	pathInfoByHash map[string]*PathInfo,
+	compressedInfo map[string]*CompressedFileInfo,
+	compressedInfoMu *sync.Mutex,
+) error {
+	// Get path info
+	pathInfo, ok := pathInfoByHash[hash]
+	if !ok || pathInfo == nil {
+		return fmt.Errorf("missing PathInfo for hash %s", hash)
+	}
+
+	// Generate listing from store path (fast directory walk, no NAR serialization)
+	listing, err := GenerateListingOnly(pathInfo.Path)
+	if err != nil {
+		return fmt.Errorf("generating listing for %s: %w", pathInfo.Path, err)
+	}
+
+	// Store listing in compressedInfo (protected by mutex)
+	compressedInfoMu.Lock()
+
+	compressedInfo[hash] = &CompressedFileInfo{
+		Listing: listing,
+	}
+
+	compressedInfoMu.Unlock()
+
+	// Upload .ls file if needed
+	entry := pendingByHash[hash]
+	if entry.lsTask != nil {
+		if err := c.uploadListing(ctx, *entry.lsTask, &CompressedFileInfo{Listing: listing}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

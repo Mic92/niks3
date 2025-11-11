@@ -29,8 +29,6 @@ var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should b
 
 // CompressedFileInfo contains information about a compressed file.
 type CompressedFileInfo struct {
-	Size    uint64
-	Hash    string
 	Listing *NarListing // Directory listing (if generated)
 }
 
@@ -130,7 +128,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 		info.Listing = listing
 	}
 
-	slog.Debug("Uploaded NAR", "object_key", objectKey, "size", info.Size, "hash", info.Hash)
+	slog.Debug("Uploaded NAR", "object_key", objectKey)
 
 	return info, nil
 }
