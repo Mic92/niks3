@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"slices"
 )
@@ -21,6 +22,38 @@ type Client struct {
 	Retry                   RetryConfig // Retry configuration for HTTP requests
 	storeDir                string      // Cached Nix store directory (e.g., "/nix/store")
 	VerifyS3Integrity       bool        // Enable S3 integrity checking when creating pending closures
+	DebugHTTP               bool        // Enable HTTP request/response debug logging
+}
+
+// loggingTransport wraps an http.RoundTripper to log requests and responses.
+type loggingTransport struct {
+	transport http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Log request
+	reqDump, err := httputil.DumpRequestOut(req, false)
+	if err != nil {
+		slog.Debug("Failed to dump request", "error", err)
+	} else {
+		slog.Debug("HTTP Request", "dump", string(reqDump))
+	}
+
+	// Perform request
+	resp, err := t.transport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Log response
+	respDump, err := httputil.DumpResponse(resp, false)
+	if err != nil {
+		slog.Debug("Failed to dump response", "error", err)
+	} else {
+		slog.Debug("HTTP Response", "dump", string(respDump))
+	}
+
+	return resp, nil
 }
 
 // ObjectType classifies cache objects by their purpose and upload strategy.
@@ -70,6 +103,25 @@ func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error
 		Retry:                   DefaultRetryConfig(),
 		storeDir:                storeDir,
 	}, nil
+}
+
+// SetDebugHTTP enables or disables HTTP request/response logging.
+// When enabled, wraps the HTTP client transport with a logging transport.
+func (c *Client) SetDebugHTTP(enabled bool) {
+	c.DebugHTTP = enabled
+	if enabled {
+		// Wrap existing transport with logging
+		transport := c.httpClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		c.httpClient.Transport = &loggingTransport{transport: transport}
+	} else {
+		// Unwrap if it's a logging transport
+		if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
+			c.httpClient.Transport = lt.transport
+		}
+	}
 }
 
 func deferCloseBody(resp *http.Response) {
