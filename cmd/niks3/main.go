@@ -37,7 +37,66 @@ func getAuthToken() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: niks3 <command> [flags]")
+	fmt.Fprintln(os.Stderr, "\nCommands:")
+	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
+	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
+	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
+	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
+	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
+}
+
+func printPushHelp() {
+	fmt.Fprintln(os.Stderr, "Usage: niks3 push [flags] <store-paths...>")
+	fmt.Fprintln(os.Stderr, "\nUpload Nix store paths to S3-compatible binary cache.")
+	fmt.Fprintln(os.Stderr, "\nFlags:")
+	fmt.Fprintln(os.Stderr, "  --server-url string")
+	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
+	fmt.Fprintln(os.Stderr, "  --auth-token string")
+	fmt.Fprintln(os.Stderr, "        Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
+	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
+	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
+	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  -h, --help")
+	fmt.Fprintln(os.Stderr, "        Show this help message")
+}
+
+func printGcHelp() {
+	fmt.Fprintln(os.Stderr, "Usage: niks3 gc [flags]")
+	fmt.Fprintln(os.Stderr, "\nRun garbage collection on old closures and failed uploads.")
+	fmt.Fprintln(os.Stderr, "\nFlags:")
+	fmt.Fprintln(os.Stderr, "  --server-url string")
+	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
+	fmt.Fprintln(os.Stderr, "  --auth-token string")
+	fmt.Fprintln(os.Stderr, "        Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	fmt.Fprintln(os.Stderr, "  --auth-token-path string")
+	fmt.Fprintln(os.Stderr, "        Path to auth token file")
+	fmt.Fprintln(os.Stderr, "  --older-than string")
+	fmt.Fprintln(os.Stderr, "        Delete closures older than this duration (default: '720h' for 30 days)")
+	fmt.Fprintln(os.Stderr, "  --failed-uploads-older-than string")
+	fmt.Fprintln(os.Stderr, "        Delete failed uploads older than this duration (default: '6h')")
+	fmt.Fprintln(os.Stderr, "  --force")
+	fmt.Fprintln(os.Stderr, "        Force immediate deletion without grace period")
+	fmt.Fprintln(os.Stderr, "        WARNING: may delete objects still being uploaded")
+	fmt.Fprintln(os.Stderr, "  -h, --help")
+	fmt.Fprintln(os.Stderr, "        Show this help message")
+}
+
 func run() error {
+	// Check for global help flag
+	if len(os.Args) < 2 {
+		printUsage()
+		return errors.New("no command provided")
+	}
+
+	// Handle global --help or -h
+	if os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
+		printUsage()
+		os.Exit(0)
+	}
+
 	// Get default auth token from environment (file or var)
 	defaultAuthToken, err := getAuthToken()
 	if err != nil {
@@ -45,35 +104,41 @@ func run() error {
 	}
 
 	// Define flags for push command
-	pushCmd := flag.NewFlagSet("push", flag.ExitOnError)
+	pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
+	pushCmd.Usage = func() {} // Suppress default usage, we'll handle it
 	pushServerURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
 	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify that objects in database actually exist in S3 before skipping upload")
+	pushHelp := pushCmd.Bool("help", false, "Show help")
+	pushCmd.BoolVar(pushHelp, "h", false, "Show help")
 
 	// Define flags for gc command
-	gcCmd := flag.NewFlagSet("gc", flag.ExitOnError)
+	gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
+	gcCmd.Usage = func() {} // Suppress default usage, we'll handle it
 	gcServerURL := gcCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
 	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
 	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
 	pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration (e.g., '6h' for 6 hours)")
 	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
+	gcHelp := gcCmd.Bool("help", false, "Show help")
+	gcCmd.BoolVar(gcHelp, "h", false, "Show help")
 
 	// Parse command
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: niks3 <command> [flags]")
-		fmt.Fprintln(os.Stderr, "\nCommands:")
-		fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
-		fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
-
-		return errors.New("no command provided")
-	}
-
 	switch os.Args[1] {
 	case "push":
 		if err := pushCmd.Parse(os.Args[2:]); err != nil {
+			if err == flag.ErrHelp {
+				printPushHelp()
+				os.Exit(0)
+			}
 			return fmt.Errorf("parsing flags: %w", err)
+		}
+
+		if *pushHelp {
+			printPushHelp()
+			os.Exit(0)
 		}
 
 		if *pushServerURL == "" {
@@ -93,7 +158,16 @@ func run() error {
 
 	case "gc":
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
+			if err == flag.ErrHelp {
+				printGcHelp()
+				os.Exit(0)
+			}
 			return fmt.Errorf("parsing flags: %w", err)
+		}
+
+		if *gcHelp {
+			printGcHelp()
+			os.Exit(0)
 		}
 
 		if *gcServerURL == "" {
