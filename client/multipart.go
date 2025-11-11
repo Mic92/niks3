@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 const (
@@ -180,10 +178,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 	var completedParts []CompletedPart
 
-	hasher := sha256.New()
-
-	var totalSize atomic.Uint64
-
 	// Get buffer from pool
 	bufferPtr, ok := uploadBufferPool.Get().(*[]byte)
 	if !ok {
@@ -233,11 +227,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 		partData := buffer[:n]
 
-		// Update hash and size
-		hasher.Write(partData)
-		//nolint:gosec // n is from io.ReadFull which returns valid int
-		totalSize.Add(uint64(n))
-
 		// Upload this part
 		partURL := partURLs[partNumber-1]
 
@@ -271,17 +260,9 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 		return nil, fmt.Errorf("completing multipart upload: %w", err)
 	}
 
-	// Log completion with final size
-	slog.Debug("Completed upload", "size", formatBytes(totalSize.Load()), "parts", len(completedParts))
+	slog.Debug("Completed upload", "parts", len(completedParts))
 
-	// Compute final hash
-	hashBytes := hasher.Sum(nil)
-	hash := "sha256:" + EncodeNixBase32(hashBytes)
-
-	return &CompressedFileInfo{
-		Size: totalSize.Load(),
-		Hash: hash,
-	}, nil
+	return &CompressedFileInfo{}, nil
 }
 
 // uploadPart uploads a single part and returns the ETag.

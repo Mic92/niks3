@@ -81,8 +81,6 @@ type NarinfoMetadata struct {
 	Compression string   `json:"compression"` // e.g., "zstd"
 	NarHash     string   `json:"nar_hash"`    // e.g., "sha256:xxxxx"
 	NarSize     uint64   `json:"nar_size"`    // Uncompressed NAR size
-	FileHash    string   `json:"file_hash"`   // Hash of compressed file
-	FileSize    uint64   `json:"file_size"`   // Size of compressed file
 	References  []string `json:"references"`  // Store paths (with /nix/store prefix)
 	Deriver     *string  `json:"deriver,omitempty"`
 	Signatures  []string `json:"signatures,omitempty"`
