@@ -14,6 +14,22 @@ import (
 	"github.com/Mic92/niks3/client"
 )
 
+// setupLogger configures the global slog logger with the specified level.
+func setupLogger(debug bool) {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: level,
+	}
+
+	handler := slog.NewTextHandler(os.Stderr, opts)
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -59,6 +75,8 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --debug")
+	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
@@ -80,6 +98,8 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "  --force")
 	fmt.Fprintln(os.Stderr, "        Force immediate deletion without grace period")
 	fmt.Fprintln(os.Stderr, "        WARNING: may delete objects still being uploaded")
+	fmt.Fprintln(os.Stderr, "  --debug")
+	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
@@ -110,6 +130,7 @@ func run() error {
 	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify that objects in database actually exist in S3 before skipping upload")
+	pushDebug := pushCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
 	pushHelp := pushCmd.Bool("help", false, "Show help")
 	pushCmd.BoolVar(pushHelp, "h", false, "Show help")
 
@@ -122,6 +143,7 @@ func run() error {
 	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
 	pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration (e.g., '6h' for 6 hours)")
 	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
+	gcDebug := gcCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
 	gcHelp := gcCmd.Bool("help", false, "Show help")
 	gcCmd.BoolVar(gcHelp, "h", false, "Show help")
 
@@ -141,6 +163,9 @@ func run() error {
 			os.Exit(0)
 		}
 
+		// Setup logger with debug level if requested
+		setupLogger(*pushDebug)
+
 		if *pushServerURL == "" {
 			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
 		}
@@ -154,7 +179,7 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity)
+		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pushDebug)
 
 	case "gc":
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
@@ -169,6 +194,9 @@ func run() error {
 			printGcHelp()
 			os.Exit(0)
 		}
+
+		// Setup logger with debug level if requested
+		setupLogger(*gcDebug)
 
 		if *gcServerURL == "" {
 			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
@@ -190,14 +218,14 @@ func run() error {
 			return errors.New("auth token is required (use --auth-token, --auth-token-path, or NIKS3_AUTH_TOKEN_FILE env var)")
 		}
 
-		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force)
+		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
 }
 
-func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool) error {
+func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -215,6 +243,11 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
 
+	// Enable HTTP debug logging if requested
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
 	// Use the high-level PushPaths method
 	if err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
@@ -223,7 +256,7 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	return nil
 }
 
-func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool) error {
+func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -231,6 +264,11 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
+	}
+
+	// Enable HTTP debug logging if requested
+	if debug {
+		c.SetDebugHTTP(true)
 	}
 
 	if force {
