@@ -115,7 +115,10 @@ func (c *Client) SetDebugHTTP(enabled bool) {
 		if transport == nil {
 			transport = http.DefaultTransport
 		}
-		c.httpClient.Transport = &loggingTransport{transport: transport}
+		// Only wrap if not already wrapped
+		if _, ok := transport.(*loggingTransport); !ok {
+			c.httpClient.Transport = &loggingTransport{transport: transport}
+		}
 	} else {
 		// Unwrap if it's a logging transport
 		if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
