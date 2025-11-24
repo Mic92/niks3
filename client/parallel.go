@@ -196,13 +196,13 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 		}
 
 		// Convert NarHash to Nix32 format for the narinfo
-		narHash := pathInfo.NarHash
-		if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash); err == nil {
+		narHash := pathInfo.NarHash.String()
+		if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash.String()); err == nil {
 			narHash = convertedHash
 		}
 
 		// Use NarHash-based key for URL (content-based deduplication)
-		narURL, err := getNARKey(pathInfo.NarHash)
+		narURL, err := getNARKey(pathInfo.NarHash.String())
 		if err != nil {
 			return nil, fmt.Errorf("getting NAR key for %s: %w", pathInfo.Path, err)
 		}
