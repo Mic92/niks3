@@ -134,7 +134,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		}
 
 		// NAR file object - use NarHash for content-based deduplication
-		narKey, err := getNARKey(pathInfo.NarHash.String())
+		narKey, err := getNARKey(pathInfo.NarHash)
 		if err != nil {
 			return nil, fmt.Errorf("getting NAR key: %w", err)
 		}
