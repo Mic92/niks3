@@ -207,6 +207,13 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 			return nil, fmt.Errorf("getting NAR key for %s: %w", pathInfo.Path, err)
 		}
 
+		// Convert CA to string if present
+		var caStr *string
+		if pathInfo.CA != nil {
+			s := pathInfo.CA.String()
+			caStr = &s
+		}
+
 		// Create narinfo metadata
 		metadata := NarinfoMetadata{
 			StorePath:   pathInfo.Path,
@@ -217,7 +224,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 			References:  pathInfo.References,
 			Deriver:     pathInfo.Deriver,
 			Signatures:  pathInfo.Signatures,
-			CA:          pathInfo.CA,
+			CA:          caStr,
 		}
 
 		narinfoMetadata[entry.narinfoTask.key] = metadata

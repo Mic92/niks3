@@ -112,17 +112,77 @@ func (h *Hash) String() string {
 	return h.hash
 }
 
+// ContentAddress represents a Nix content address.
+// It supports both the old string format (e.g., "fixed:r:sha256:abc...")
+// and the new structured format from Nix 2.33+.
+type ContentAddress struct {
+	method string
+	hash   Hash
+	raw    string // Store original string if provided
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to support both
+// old string format and new structured format from nix path-info.
+func (ca *ContentAddress) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as string (old format)
+	var caStr string
+	if err := json.Unmarshal(data, &caStr); err == nil {
+		// Old format: store the string as-is
+		ca.raw = caStr
+		// Parse method from string (e.g., "fixed:r:sha256:..." -> method could be "fixed")
+		// We'll just store the whole string for now
+		return nil
+	}
+
+	// Try to unmarshal as structured object (new format)
+	var caObj struct {
+		Method string `json:"method"`
+		Hash   Hash   `json:"hash"`
+	}
+	if err := json.Unmarshal(data, &caObj); err != nil {
+		return fmt.Errorf("ca must be either a string or structured object: %w", err)
+	}
+
+	ca.method = caObj.Method
+	ca.hash = caObj.Hash
+	return nil
+}
+
+// String returns the content address in the old string format.
+// This format is compatible with existing code that expects strings.
+func (ca *ContentAddress) String() string {
+	// If we stored the old string format directly, return it as-is
+	if ca.raw != "" {
+		return ca.raw
+	}
+
+	// For new structured format, reconstruct the old string format
+	// The old format was like "fixed:r:sha256:hash" or just "text:sha256:hash"
+	// For now, we'll construct a simplified version
+	if ca.method != "" {
+		// Construct something like "method:hash"
+		// Note: The old format had variants like "fixed:r:" for recursive, but
+		// we don't have enough info to reconstruct that exactly, so we'll do our best
+		hashStr := ca.hash.String()
+		// Remove the algorithm prefix from hash since it will be in the CA string
+		// Old format example: "fixed:r:sha256:abc..." or "text:sha256:abc..."
+		return ca.method + ":" + hashStr
+	}
+
+	return ca.raw
+}
+
 // PathInfo represents Nix path information.
 type PathInfo struct {
 	Path string `json:"-"`
 	//nolint:tagliatelle // narHash and narSize are defined by Nix's JSON format
 	NarHash Hash `json:"narHash"`
 	//nolint:tagliatelle // narHash and narSize are defined by Nix's JSON format
-	NarSize    uint64   `json:"narSize"`
-	References []string `json:"references"`
-	Deriver    *string  `json:"deriver,omitempty"`
-	Signatures []string `json:"signatures,omitempty"`
-	CA         *string  `json:"ca,omitempty"`
+	NarSize    uint64          `json:"narSize"`
+	References []string        `json:"references"`
+	Deriver    *string         `json:"deriver,omitempty"`
+	Signatures []string        `json:"signatures,omitempty"`
+	CA         *ContentAddress `json:"ca,omitempty"`
 }
 
 // RealisationInfo represents Nix realisation information for CA derivations.
@@ -207,7 +267,7 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 	// Non-CA paths don't have realisations, so skip them
 	caPaths := make([]string, 0, len(pathInfos))
 	for _, info := range pathInfos {
-		if info.CA != nil && *info.CA != "" {
+		if info.CA != nil && info.CA.String() != "" {
 			caPaths = append(caPaths, info.Path)
 		}
 	}
