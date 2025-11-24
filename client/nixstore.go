@@ -48,11 +48,123 @@ func GetStoreDir(ctx context.Context, nixEnv []string) (string, error) {
 	return "/nix/store", nil
 }
 
+// Hash represents a Nix hash value.
+// It supports both the old string format (e.g., "sha256:base64-hash")
+// and the new structured format from Nix 2.x.
+type Hash struct {
+	algorithm string
+	format    string
+	hash      string
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to support both
+// old string format and new structured format from nix path-info.
+func (h *Hash) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as string (old format)
+	var hashStr string
+	if err := json.Unmarshal(data, &hashStr); err == nil {
+		// Old format: "sha256:base64-hash" or "sha256-base64-hash"
+		h.hash = hashStr
+		// Parse algorithm and format from string
+		if strings.HasPrefix(hashStr, "sha256:") || strings.HasPrefix(hashStr, "sha256-") {
+			h.algorithm = "sha256"
+			// Determine format based on separator
+			if strings.HasPrefix(hashStr, "sha256:") {
+				hashValue := strings.TrimPrefix(hashStr, "sha256:")
+				// Check if it's base64 or nix32
+				if strings.ContainsAny(hashValue, "+/=") {
+					h.format = "base64"
+				} else {
+					h.format = "nix32"
+				}
+			} else {
+				h.format = "base64" // SRI format uses base64
+			}
+		} else if strings.HasPrefix(hashStr, "sha512:") || strings.HasPrefix(hashStr, "sha512-") {
+			h.algorithm = "sha512"
+			h.format = "base64"
+		}
+		return nil
+	}
+
+	// Try to unmarshal as structured object (new format)
+	var hashObj struct {
+		Algorithm string `json:"algorithm"`
+		Format    string `json:"format"`
+		Hash      string `json:"hash"`
+	}
+	if err := json.Unmarshal(data, &hashObj); err != nil {
+		return fmt.Errorf("hash must be either a string or structured object: %w", err)
+	}
+
+	h.algorithm = hashObj.Algorithm
+	h.format = hashObj.Format
+	h.hash = hashObj.Hash
+	return nil
+}
+
+// String returns the hash in the legacy string format (e.g., "sha256:base64-hash").
+// This is needed for backward compatibility with existing code.
+func (h *Hash) String() string {
+	if h.hash == "" {
+		return ""
+	}
+
+	// If we have the old string format stored directly, return it
+	if strings.Contains(h.hash, ":") || strings.Contains(h.hash, "-") {
+		return h.hash
+	}
+
+	// Otherwise construct the string from components
+	// For the new format, construct the old-style string
+	separator := ":"
+	hashValue := h.hash
+
+	// If format is specified and not what's already in the hash string
+	if h.format != "" && h.algorithm != "" {
+		// Return in the format "algorithm:hash" or "algorithm-hash"
+		// Most Nix tooling expects the colon format for base64
+		if h.format == "base64" || h.format == "base16" || h.format == "nix32" {
+			return h.algorithm + separator + hashValue
+		}
+	}
+
+	return h.algorithm + separator + hashValue
+}
+
+// Algorithm returns the hash algorithm (e.g., "sha256").
+func (h *Hash) Algorithm() string {
+	return h.algorithm
+}
+
+// Format returns the hash encoding format (e.g., "base64", "nix32").
+func (h *Hash) Format() string {
+	return h.format
+}
+
+// HashValue returns the raw hash value without algorithm prefix.
+func (h *Hash) HashValue() string {
+	// If we stored the full string, extract just the hash part
+	if strings.Contains(h.hash, ":") {
+		parts := strings.SplitN(h.hash, ":", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	if strings.Contains(h.hash, "-") {
+		parts := strings.SplitN(h.hash, "-", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	return h.hash
+}
+
 // PathInfo represents Nix path information.
 type PathInfo struct {
 	Path string `json:"-"`
 	//nolint:tagliatelle // narHash and narSize are defined by Nix's JSON format
-	NarHash string `json:"narHash"`
+	NarHash Hash `json:"narHash"`
 	//nolint:tagliatelle // narHash and narSize are defined by Nix's JSON format
 	NarSize    uint64   `json:"narSize"`
 	References []string `json:"references"`
