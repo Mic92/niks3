@@ -288,6 +288,12 @@ cd server
 go test -bench=BenchmarkPythonClosure -benchtime=3x -v
 ```
 
+## Real-World Deployments
+
+- **Clan infra**:
+  [Configuration](https://git.clan.lol/clan/clan-infra/src/branch/main/modules/web01/niks3.nix)
+  | [Instance](https://cache.clan.lol/)
+
 ## Need commercial support or customization?
 
 For commercial support, please contact [Mic92](https://github.com/Mic92/) at
