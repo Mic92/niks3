@@ -148,25 +148,47 @@ func (ca *ContentAddress) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// String returns the content address in the old string format.
-// This format is compatible with existing code that expects strings.
+// String returns the content address in the narinfo-compatible string format.
+// Nix narinfo files use these prefixes:
+//   - "text:sha256:..." for text
+//   - "fixed:sha256:..." for flat
+//   - "fixed:r:sha256:..." for nar (recursive)
+//   - "fixed:git:sha256:..." for git
+//
+// The hash is in nix32 format (sha256:base32hash).
 func (ca *ContentAddress) String() string {
 	// If we stored the old string format directly, return it as-is
 	if ca.raw != "" {
 		return ca.raw
 	}
 
-	// For new structured format, reconstruct the old string format
-	// The old format was like "fixed:r:sha256:hash" or just "text:sha256:hash"
-	// For now, we'll construct a simplified version
+	// For new structured format, reconstruct the narinfo-compatible format
+	// The JSON "method" field maps to narinfo prefixes as follows:
+	//   "text" -> "text:"
+	//   "flat" -> "fixed:"
+	//   "nar"  -> "fixed:r:"
+	//   "git"  -> "fixed:git:"
 	if ca.method != "" {
-		// Construct something like "method:hash"
-		// Note: The old format had variants like "fixed:r:" for recursive, but
-		// we don't have enough info to reconstruct that exactly, so we'll do our best
+		// Convert hash from SRI format to nix32 format for narinfo
 		hashStr := ca.hash.String()
-		// Remove the algorithm prefix from hash since it will be in the CA string
-		// Old format example: "fixed:r:sha256:abc..." or "text:sha256:abc..."
-		return ca.method + ":" + hashStr
+		nix32Hash, err := ConvertHashToNix32(hashStr)
+		if err != nil {
+			// Fall back to original format if conversion fails
+			nix32Hash = hashStr
+		}
+		switch ca.method {
+		case "text":
+			return "text:" + nix32Hash
+		case "flat":
+			return "fixed:" + nix32Hash
+		case "nar":
+			return "fixed:r:" + nix32Hash
+		case "git":
+			return "fixed:git:" + nix32Hash
+		default:
+			// Unknown method, use as-is (shouldn't happen)
+			return ca.method + ":" + nix32Hash
+		}
 	}
 
 	return ca.raw
