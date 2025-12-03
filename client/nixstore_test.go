@@ -150,14 +150,14 @@ func TestPathInfoCACompatibility(t *testing.T) {
 		{
 			name:          "new structured format - text",
 			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"FePFYIlM"},"narSize":1000,"references":[],"ca":{"method":"text","hash":{"algorithm":"sha256","format":"base64","hash":"h1JyyIYA"}}}`,
-			expectedCAStr: "text:sha256-h1JyyIYA",
+			expectedCAStr: "text:sha256:00hv474ll7",
 			expectNil:     false,
 			wantErr:       false,
 		},
 		{
 			name:          "new structured format - nar method",
 			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"FePF"},"narSize":1000,"references":[],"ca":{"method":"nar","hash":{"algorithm":"sha256","format":"base64","hash":"abcd1234"}}}`,
-			expectedCAStr: "nar:sha256-abcd1234",
+			expectedCAStr: "fixed:r:sha256:7qdpbivdv9",
 			expectNil:     false,
 			wantErr:       false,
 		},
