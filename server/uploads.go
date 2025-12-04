@@ -51,7 +51,7 @@ type createPendingClosureRequest struct {
 //	   }
 //	}
 func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received uploads request", "method", r.Method, "url", r.URL)
+	slog.Info("Received uploads request", "method", r.Method, "path", r.URL.Path)
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
@@ -132,7 +132,7 @@ type NarinfoMetadata struct {
 // RequestMorePartsHandler handles POST /api/multipart/request-parts endpoint.
 // Requests additional presigned URLs for an existing multipart upload.
 func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received request for more parts", "method", r.Method, "url", r.URL)
+	slog.Info("Received request for more parts", "method", r.Method, "path", r.URL.Path)
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
@@ -230,7 +230,7 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 // CompleteMultipartUploadHandler completes a multipart upload with the list of ETags.
 // It handles POST /api/multipart/complete endpoint.
 func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received complete multipart upload request", "method", r.Method, "url", r.URL)
+	slog.Info("Received complete multipart upload request", "method", r.Method, "path", r.URL.Path)
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
@@ -314,7 +314,7 @@ type signNarinfosResponse struct {
 // Request body: JSON with narinfos metadata
 // Response body: JSON with signatures map.
 func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received sign narinfos request", "method", r.Method, "url", r.URL)
+	slog.Info("Received sign narinfos request", "method", r.Method, "path", r.URL.Path)
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
@@ -417,7 +417,7 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 // Request body: empty (all uploads should be complete before calling this)
 // Response body: -.
 func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received complete upload request", "method", r.Method, "url", r.URL)
+	slog.Info("Received complete upload request", "method", r.Method, "path", r.URL.Path)
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
@@ -463,7 +463,7 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 // Request body: -
 // Response body: -.
 func (s *Service) CleanupPendingClosuresHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received cleanup request", "method", r.Method, "url", r.URL)
+	slog.Info("Received cleanup request", "method", r.Method, "path", r.URL.Path)
 
 	olderThanParam := r.URL.Query().Get("older-than")
 	if olderThanParam == "" {

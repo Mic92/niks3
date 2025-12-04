@@ -14,7 +14,7 @@ import (
 
 // GetClosureHandler handles the GET /closures/<key> endpoint.
 func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Received get closure request", "method", r.Method, "url", r.URL)
+	slog.Info("Received get closure request", "method", r.Method, "path", r.URL.Path)
 
 	key := r.PathValue("key")
 	if key == "" {
@@ -48,7 +48,7 @@ func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
 
 // CleanupClosuresOlder handles the DELETE /closures endpoint.
 func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
-	slog.Info("Starting cleanup of old closures", "method", r.Method, "url", r.URL)
+	slog.Info("Starting cleanup of old closures", "method", r.Method, "path", r.URL.Path)
 
 	olderThan := r.URL.Query().Get("older-than")
 	if olderThan == "" {
