@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/server/oidc"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,17 +32,19 @@ type options struct {
 
 	APIToken string
 
-	SignKeyPaths []string
-	CacheURL     string
+	SignKeyPaths   []string
+	CacheURL       string
+	OIDCConfigPath string
 }
 
 type Service struct {
-	Pool        *pgxpool.Pool
-	MinioClient *minio.Client
-	Bucket      string
-	APIToken    string
-	SigningKeys []*signing.Key
-	CacheURL    string
+	Pool          *pgxpool.Pool
+	MinioClient   *minio.Client
+	Bucket        string
+	APIToken      string
+	SigningKeys   []*signing.Key
+	CacheURL      string
+	OIDCValidator *oidc.Validator
 }
 
 // Close closes the database connection pool.
@@ -56,28 +59,88 @@ const (
 
 func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		authToken := r.Header.Get("Authorization")
-		if authToken == "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
 			return
 		}
 
 		const bearerPrefix = "Bearer "
-		if !strings.HasPrefix(authToken, bearerPrefix) {
+		if !strings.HasPrefix(authHeader, bearerPrefix) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
 			return
 		}
 
-		authToken = strings.TrimPrefix(authToken, bearerPrefix)
-		if subtle.ConstantTimeCompare([]byte(authToken), []byte(s.APIToken)) != 1 {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		token := strings.TrimPrefix(authHeader, bearerPrefix)
+
+		// Try OIDC validation first if configured
+		var oidcErr *oidc.ValidationError
+		if s.OIDCValidator != nil {
+			claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
+			if err == nil {
+				slog.Info("OIDC auth successful", "provider", claims.Provider)
+				slog.Debug("OIDC auth details", "subject", claims.Subject)
+				next.ServeHTTP(w, r)
+
+				return
+			}
+			// Store the OIDC error for later logging if static token also fails
+			if validationErr, ok := err.(*oidc.ValidationError); ok {
+				oidcErr = validationErr
+			}
+			slog.Debug("OIDC validation failed, trying static token")
+		}
+
+		// Fall back to static API token
+		if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
+			next.ServeHTTP(w, r)
 
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Both OIDC and static token failed - log details for debugging
+		s.logAuthFailure(token, oidcErr)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}
+}
+
+// logAuthFailure logs detailed information about an authentication failure.
+func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
+	// Truncate token for logging (show first and last 10 chars)
+	tokenPreview := token
+	if len(token) > 25 {
+		tokenPreview = token[:10] + "..." + token[len(token)-10:]
+	}
+
+	if oidcErr != nil {
+		// Log OIDC-specific failure details
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"oidc_error", oidcErr.Reason,
+			"oidc_provider", oidcErr.Provider,
+			"tried_providers", oidcErr.TriedProviders,
+		)
+		// Log claims if available (helps debug bound_claims/bound_subject mismatches)
+		if oidcErr.Claims != nil {
+			slog.Debug("OIDC token claims", "claims", oidcErr.Claims)
+		}
+	} else if s.OIDCValidator != nil {
+		// OIDC configured but we didn't get a ValidationError (shouldn't happen normally)
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"reason", "token did not match OIDC or static API token",
+		)
+	} else {
+		// No OIDC configured, just static token mismatch
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"reason", "static API token mismatch",
+		)
 	}
 }
 
@@ -105,6 +168,25 @@ func runServer(opts *options) error {
 		Bucket:      opts.S3Bucket,
 		APIToken:    opts.APIToken,
 		CacheURL:    opts.CacheURL,
+	}
+
+	// Initialize OIDC validator if configured
+	if opts.OIDCConfigPath != "" {
+		oidcCfg, err := oidc.LoadConfig(opts.OIDCConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load OIDC config: %w", err)
+		}
+
+		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		validator, err := oidc.NewValidator(initCtx, oidcCfg)
+		initCancel()
+
+		if err != nil {
+			return fmt.Errorf("failed to initialize OIDC validator: %w", err)
+		}
+
+		service.OIDCValidator = validator
+		slog.Info("OIDC authentication enabled", "config", opts.OIDCConfigPath)
 	}
 
 	// Load signing keys

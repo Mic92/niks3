@@ -4,6 +4,7 @@
   s5cmd,
   niks3,
   rustfs,
+  mock-oidc-server,
   pkgs,
   ...
 }:
@@ -57,10 +58,37 @@ testers.nixosTest {
           apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
           signKeyFiles = [ signingSecretKey ];
 
+          # OIDC configuration for testing
+          oidc = {
+            allowInsecure = true; # Allow HTTP for mock server
+            providers = {
+              test = {
+                issuer = "http://127.0.0.1:8080/oidc";
+                audience = "http://server:5751";
+                boundClaims = {
+                  repository_owner = [ "myorg" ];
+                };
+              };
+            };
+          };
+
           gc = {
             enable = true;
             olderThan = "720h"; # Default 30 days for production use
             # Note: Test uses CLI with --older-than 10s for faster testing
+          };
+        };
+
+        # Mock OIDC server for testing
+        systemd.services.mock-oidc = {
+          description = "Mock OIDC server for testing";
+          after = [ "network.target" ];
+          wantedBy = [ "multi-user.target" ];
+
+          serviceConfig = {
+            ExecStart = "${mock-oidc-server}/bin/mock-oidc-server -addr 127.0.0.1:8080";
+            DynamicUser = true;
+            Restart = "on-failure";
           };
         };
 
@@ -133,6 +161,7 @@ testers.nixosTest {
           niks3
           pkgs.hello
           pkgs.zstd
+          pkgs.curl
         ];
 
         # Add symlink wrapper for testing issue #59
@@ -140,6 +169,8 @@ testers.nixosTest {
 
         networking.firewall.allowedTCPPorts = [
           5751
+          8080
+          8081
           9000
         ];
       };
@@ -152,8 +183,10 @@ testers.nixosTest {
     server.wait_for_unit("postgresql.service")
     server.wait_for_unit("rustfs.service")
     server.wait_for_unit("rustfs-setup.service")
+    server.wait_for_unit("mock-oidc.service")
     server.wait_for_unit("niks3.service")
     server.wait_for_open_port(5751)
+    server.wait_for_open_port(8080)
     server.wait_for_open_port(9000)
 
     # Create auth token file for testing
@@ -301,6 +334,84 @@ testers.nixosTest {
                 --to /tmp/test-store \
                 {symlink_wrapper}
     """)
+
+    # ============================================
+    # OIDC Authentication Tests
+    # ============================================
+
+    # Build a simple test derivation for OIDC tests
+    server.succeed("""
+    cat > /tmp/oidc-test.nix << 'EOF'
+    derivation {
+      name = "oidc-test";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo 'OIDC test derivation' > $out" ];
+    }
+    EOF
+    """)
+
+    oidc_test_path = server.succeed("nix-build --log-format bar-with-logs /tmp/oidc-test.nix --no-out-link").strip()
+    print(f"OIDC test store path: {oidc_test_path}")
+
+    # Test 1: Push with valid OIDC token (matching repository_owner claim)
+    valid_oidc_token = server.succeed(
+      "curl -s 'http://127.0.0.1:8081/issue?sub=repo:myorg/myrepo:ref:refs/heads/main&aud=http://server:5751&repository_owner=myorg'"
+    ).strip()
+    print(f"Valid OIDC token obtained (length={len(valid_oidc_token)})")
+
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      ${niks3}/bin/niks3 push --auth-token '{valid_oidc_token}' {oidc_test_path}
+    """)
+    print("OIDC push with valid token: SUCCESS")
+
+    # Build another derivation for the failure tests
+    server.succeed("""
+    cat > /tmp/oidc-test2.nix << 'EOF'
+    derivation {
+      name = "oidc-test2";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo 'OIDC test 2' > $out" ];
+    }
+    EOF
+    """)
+
+    oidc_test_path2 = server.succeed("nix-build --log-format bar-with-logs /tmp/oidc-test2.nix --no-out-link").strip()
+
+    # Test 2: Push with invalid OIDC token (wrong repository_owner claim)
+    invalid_oidc_token = server.succeed(
+      "curl -s 'http://127.0.0.1:8081/issue?sub=repo:otherorg/repo:ref:refs/heads/main&aud=http://server:5751&repository_owner=otherorg'"
+    ).strip()
+    print("Invalid OIDC token obtained (wrong org)")
+
+    server.fail(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      ${niks3}/bin/niks3 push --auth-token '{invalid_oidc_token}' {oidc_test_path2}
+    """)
+    print("OIDC push with wrong org: correctly rejected")
+
+    # Test 3: Push with invalid OIDC token (wrong audience)
+    wrong_aud_token = server.succeed(
+      "curl -s 'http://127.0.0.1:8081/issue?sub=repo:myorg/myrepo:ref:refs/heads/main&aud=http://wrong:5751&repository_owner=myorg'"
+    ).strip()
+    print("Wrong audience OIDC token obtained")
+
+    server.fail(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      ${niks3}/bin/niks3 push --auth-token '{wrong_aud_token}' {oidc_test_path2}
+    """)
+    print("OIDC push with wrong audience: correctly rejected")
+
+    # Test 4: Push with malformed token (not a valid JWT)
+    server.fail(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      ${niks3}/bin/niks3 push --auth-token 'not-a-valid-jwt-token' {oidc_test_path2}
+    """)
+    print("OIDC push with malformed token: correctly rejected")
+
+    print("All OIDC tests passed!")
 
     # Test that GC systemd service runs successfully
     server.succeed("systemctl start niks3-gc.service")
