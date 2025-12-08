@@ -7,6 +7,79 @@
 
 let
   cfg = config.services.niks3;
+
+  # OIDC provider submodule
+  providerModule = lib.types.submodule {
+    options = {
+      issuer = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          OIDC issuer URL. Must use HTTPS.
+          Used to construct discovery URL: {issuer}/.well-known/openid-configuration
+        '';
+        example = "https://token.actions.githubusercontent.com";
+      };
+
+      audience = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Expected audience claim. Should be your niks3 server URL.
+          This must match the audience requested when obtaining the OIDC token.
+        '';
+        example = "https://niks3.example.com";
+      };
+
+      boundClaims = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        description = ''
+          Claims that must match for authorization. All specified claims must match (AND logic).
+          Values support glob patterns (* and ?).
+        '';
+        example = {
+          repository_owner = [ "myorg" ];
+          ref = [
+            "refs/heads/main"
+            "refs/tags/*"
+          ];
+        };
+      };
+
+      boundSubject = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Subject patterns that must match. If set, the 'sub' claim must match one of these patterns.
+          Supports glob patterns (* and ?).
+        '';
+        example = [ "repo:myorg/*:*" ];
+      };
+    };
+  };
+
+  # Convert Nix OIDC config to JSON format expected by the server
+  oidcConfigJson = pkgs.writeText "niks3-oidc.json" (
+    builtins.toJSON (
+      {
+        providers = lib.mapAttrs (
+          _name: provider:
+          {
+            issuer = provider.issuer;
+            audience = provider.audience;
+          }
+          // lib.optionalAttrs (provider.boundClaims != { }) {
+            bound_claims = provider.boundClaims;
+          }
+          // lib.optionalAttrs (provider.boundSubject != [ ]) {
+            bound_subject = provider.boundSubject;
+          }
+        ) cfg.oidc.providers;
+      }
+      // lib.optionalAttrs cfg.oidc.allowInsecure {
+        allow_insecure = true;
+      }
+    )
+  );
 in
 {
   options.services.niks3 = {
@@ -92,7 +165,39 @@ in
         Path to file containing the API token for authentication.
         The token must be at least 36 characters long.
         The file should contain only the token without any newlines.
+        Required for server authentication and GC operations.
       '';
+    };
+
+    oidc = {
+      providers = lib.mkOption {
+        type = lib.types.attrsOf providerModule;
+        default = { };
+        description = ''
+          OIDC providers for authentication. Enables OIDC authentication for CI/CD systems
+          like GitHub Actions and GitLab CI. Optional, used alongside apiTokenFile.
+        '';
+        example = lib.literalExpression ''
+          {
+            github = {
+              issuer = "https://token.actions.githubusercontent.com";
+              audience = "https://cache.example.com";
+              boundClaims = {
+                repository_owner = [ "myorg" ];
+              };
+            };
+          }
+        '';
+      };
+
+      allowInsecure = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Allow HTTP issuers instead of requiring HTTPS.
+          WARNING: This should ONLY be used for testing purposes.
+        '';
+      };
     };
 
     signKeyFiles = lib.mkOption {
@@ -271,6 +376,10 @@ in
             --s3-access-key-path "${cfg.s3.accessKeyFile}" \
             --s3-secret-key-path "${cfg.s3.secretKeyFile}" \
             --api-token-path "${cfg.apiTokenFile}"${
+              lib.optionalString (cfg.oidc.providers != { }) ''
+                \
+                            --oidc-config "${oidcConfigJson}"''
+            }${
               lib.optionalString (cfg.cacheUrl != null) ''
                 \
                             --cache-url "${cfg.cacheUrl}"''

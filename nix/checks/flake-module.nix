@@ -55,11 +55,15 @@
                 echo "Running server tests..."
                 niks3-server.test -test.v
 
+                echo "Running OIDC tests..."
+                niks3-server-oidc.test -test.v
+
                 touch $out
               '';
         }
         // lib.optionalAttrs (lib.hasSuffix "linux" system) {
           nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {
+            mock-oidc-server = config.packages.mock-oidc-server;
             niks3 = config.packages.niks3;
             rustfs = config.packages.rustfs;
           };

@@ -14,6 +14,7 @@
       packages.niks3-docker = pkgs.callPackage ./niks3-docker.nix {
         inherit (config.packages) niks3;
       };
+      packages.mock-oidc-server = pkgs.callPackage ./mock-oidc-server.nix { };
       packages.default = config.packages.niks3;
     };
 }
