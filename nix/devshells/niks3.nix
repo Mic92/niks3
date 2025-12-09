@@ -17,7 +17,7 @@
             command = "${pkgs.watchexec}/bin/watchexec --restart --watch cmd --watch server --watch client --exts go -- go run ./cmd/niks3-server";
             depends_on = {
               postgres.condition = "process_healthy";
-              minio.condition = "process_healthy";
+              rustfs.condition = "process_healthy";
             };
             readiness_probe = {
               http_get = {

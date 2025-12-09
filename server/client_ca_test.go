@@ -245,8 +245,8 @@ func TestClientCADerivations(t *testing.T) {
 	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
 
 	nixEnv = append(nixEnv,
-		"AWS_ACCESS_KEY_ID=minioadmin",
-		"AWS_SECRET_ACCESS_KEY="+testMinioServer.secret,
+		"AWS_ACCESS_KEY_ID=rustfsadmin",
+		"AWS_SECRET_ACCESS_KEY="+testRustfsServer.secret,
 	)
 	testEnv := nixEnv
 

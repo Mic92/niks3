@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  rustfs,
 }:
 
 let
@@ -31,7 +32,7 @@ pkgs.buildGoModule {
   nativeCheckInputs = with pkgs; [
     nix
     postgresql
-    minio-client
-    minio
+    minio-client # mc client works with any S3-compatible storage
+    rustfs
   ];
 }

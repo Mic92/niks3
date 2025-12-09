@@ -28,14 +28,14 @@ func innerTestMain(m *testing.M) int {
 
 	defer testPostgresServer.Cleanup()
 
-	testMinioServer, err = startMinioServer(ctx)
+	testRustfsServer, err = startRustfsServer(ctx)
 	if err != nil {
-		slog.Error("failed to start minio", "error", err)
+		slog.Error("failed to start rustfs", "error", err)
 
 		return 1
 	}
 
-	defer testMinioServer.Cleanup()
+	defer testRustfsServer.Cleanup()
 
 	return m.Run()
 }
