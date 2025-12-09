@@ -14,6 +14,10 @@ pkgs.rustPlatform.buildRustPackage rec {
     hash = "sha256-iWaZgvy40RW67oqyVttaWyrFrAVy17UJz5JydI51uDM=";
   };
 
+  patches = [
+    ./rustfs-content-encoding.patch
+  ];
+
   cargoHash = "sha256-ApVUUpeLXpMwqRnuNI/Q20/FTEvUyPTtDSpmPsDco2I=";
 
   nativeBuildInputs = with pkgs; [
