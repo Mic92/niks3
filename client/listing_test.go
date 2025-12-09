@@ -20,9 +20,18 @@ func TestCaseHackSuffix(t *testing.T) {
 
 	// Create temporary directory structure (same input on all platforms)
 	tmpDir := t.TempDir()
+
+	// On macOS, t.TempDir() returns /var/folders/... but /var is a symlink
+	// to /private/var, and nix-store --dump fails on paths containing symlinks.
+	// Resolve the real path to avoid this issue.
+	tmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to resolve symlinks in temp dir: %v", err)
+	}
+
 	testDir := filepath.Join(tmpDir, "test")
 
-	err := os.Mkdir(testDir, 0o755)
+	err = os.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatalf("Failed to create test directory: %v", err)
 	}
