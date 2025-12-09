@@ -1,8 +1,7 @@
 {
   testers,
   writeText,
-  minio-client,
-  getent,
+  s5cmd,
   niks3,
   rustfs,
   pkgs,
@@ -86,10 +85,13 @@ testers.nixosTest {
           before = [ "niks3.service" ];
           wantedBy = [ "multi-user.target" ];
 
-          path = [
-            minio-client
-            getent
-          ];
+          environment = {
+            S3_ENDPOINT_URL = "http://localhost:9000";
+            AWS_ACCESS_KEY_ID = "rustfsadmin";
+            AWS_SECRET_ACCESS_KEY = "rustfsadmin";
+          };
+
+          path = [ s5cmd ];
 
           script = ''
             set -e
@@ -97,7 +99,7 @@ testers.nixosTest {
             # Wait for RustFS to be ready
             ready=0
             for i in {1..60}; do
-              if mc alias set local http://localhost:9000 rustfsadmin rustfsadmin; then
+              if s5cmd ls 2>/dev/null; then
                 ready=1
                 break
               fi
@@ -111,10 +113,7 @@ testers.nixosTest {
             fi
 
             # Create the bucket if it doesn't exist
-            if ! mc mb --ignore-existing local/niks3-test; then
-              echo "ERROR: Failed to create bucket 'niks3-test'" >&2
-              exit 1
-            fi
+            s5cmd mb s3://niks3-test || true
           '';
 
           serviceConfig = {

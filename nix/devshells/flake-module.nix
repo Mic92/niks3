@@ -25,7 +25,7 @@
 
           # Database and storage tools
           pkgs.postgresql_16
-          pkgs.minio-client # mc client works with any S3-compatible storage
+          pkgs.s5cmd # fast S3 client
           pkgs.awscli
           config.packages.rustfs
 
