@@ -21,11 +21,11 @@ import (
 )
 
 var (
-	testMinioServer *minioServer //nolint:gochecknoglobals
-	testBucketCount atomic.Int32 //nolint:gochecknoglobals
+	testRustfsServer *rustfsServer //nolint:gochecknoglobals
+	testBucketCount  atomic.Int32  //nolint:gochecknoglobals
 )
 
-type minioServer struct {
+type rustfsServer struct {
 	cmd     *exec.Cmd
 	tempDir string
 	secret  string
@@ -62,12 +62,13 @@ func randPort(ctx context.Context) (uint16, error) {
 	return port, nil
 }
 
-func (s *minioServer) Client(tb testing.TB) *minio.Client {
+func (s *rustfsServer) Client(tb testing.TB) *minio.Client {
 	tb.Helper()
 
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
+	// minio-go client works with any S3-compatible storage including RustFS
 	minioClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4("minioadmin", s.secret, ""),
+		Creds:  credentials.NewStaticV4("rustfsadmin", s.secret, ""),
 		Secure: false,
 	})
 	ok(tb, err)
@@ -86,39 +87,39 @@ func terminateProcess(cmd *exec.Cmd) {
 	time.AfterFunc(10*time.Second, func() {
 		err = syscall.Kill(pgid, syscall.SIGKILL)
 		if err != nil {
-			slog.Error("failed to kill minio", "error", err)
+			slog.Error("failed to kill rustfs", "error", err)
 
 			return
 		}
 
-		slog.Info("killed minio")
+		slog.Info("killed rustfs")
 	})
 
 	err = syscall.Kill(pgid, syscall.SIGTERM)
 	if err != nil {
-		slog.Error("failed to kill minio", "error", err)
+		slog.Error("failed to kill rustfs", "error", err)
 	}
 
 	err = cmd.Wait()
 	if err != nil {
-		slog.Error("failed to wait for minio", "error", err)
+		slog.Error("failed to wait for rustfs", "error", err)
 
 		return
 	}
 }
 
-func (s *minioServer) Cleanup() {
+func (s *rustfsServer) Cleanup() {
 	defer func() {
 		if err := os.RemoveAll(s.tempDir); err != nil {
-			slog.Warn("Failed to remove minio temp directory", "error", err)
+			slog.Warn("Failed to remove rustfs temp directory", "error", err)
 		}
 	}()
 
 	terminateProcess(s.cmd)
 }
 
-func startMinioServer(ctx context.Context) (*minioServer, error) {
-	tempDir, err := os.MkdirTemp("", "minio")
+func startRustfsServer(ctx context.Context) (*rustfsServer, error) {
+	tempDir, err := os.MkdirTemp("", "rustfs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -136,29 +137,36 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
-	//nolint:gosec
-	minioProc := exec.CommandContext(ctx, "minio", "server", "--address", fmt.Sprintf(":%d", port), filepath.Join(tempDir, "data"))
-	minioProc.Stdout = os.Stdout
-	minioProc.Stderr = os.Stderr
-	minioProc.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
 	// random hex string
 	secret, err := randToken(20)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access key: %w", err)
 	}
 
-	env := os.Environ()
-	env = append(env, "MINIO_ROOT_USER=minioadmin")
-	env = append(env, "MINIO_ROOT_PASSWORD="+secret)
-	env = append(env, "AWS_ACCESS_KEY_ID=minioadmin")
-	env = append(env, "AWS_SECRET_ACCESS_KEY="+secret)
-	minioProc.Env = env
+	dataDir := filepath.Join(tempDir, "data")
+	if err = os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create data dir: %w", err)
+	}
 
-	if err = minioProc.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start minio: %w", err)
+	//nolint:gosec
+	rustfsProc := exec.CommandContext(ctx, "rustfs",
+		"--address", fmt.Sprintf("127.0.0.1:%d", port),
+		"--access-key", "rustfsadmin",
+		"--secret-key", secret,
+		dataDir)
+	rustfsProc.Stdout = os.Stdout
+	rustfsProc.Stderr = os.Stderr
+	rustfsProc.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	env := os.Environ()
+	env = append(env, "AWS_ACCESS_KEY_ID=rustfsadmin")
+	env = append(env, "AWS_SECRET_ACCESS_KEY="+secret)
+	rustfsProc.Env = env
+
+	if err = rustfsProc.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start rustfs: %w", err)
 	}
 
 	// wait for server to start
@@ -167,7 +175,7 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 	for range 200 {
 		// Check if context has been cancelled/timed out
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("timeout waiting for minio server to start: %w", ctx.Err())
+			return nil, fmt.Errorf("timeout waiting for rustfs server to start: %w", ctx.Err())
 		}
 
 		var conn net.Conn
@@ -183,11 +191,11 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to minio server: %w", err)
+		return nil, fmt.Errorf("failed to connect to rustfs server: %w", err)
 	}
 
-	server := &minioServer{
-		cmd:     minioProc,
+	server := &rustfsServer{
+		cmd:     rustfsProc,
 		tempDir: tempDir,
 		secret:  secret,
 		port:    port,
@@ -202,8 +210,7 @@ func startMinioServer(ctx context.Context) (*minioServer, error) {
 	return server, nil
 }
 
-// TODO: remove this test once we use minio in actual code.
-func TestService_Miniotest(t *testing.T) {
+func TestService_Rustfstest(t *testing.T) {
 	t.Parallel()
 
 	server := createTestService(t)
