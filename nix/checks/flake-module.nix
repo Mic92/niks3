@@ -57,6 +57,7 @@
         // lib.optionalAttrs (lib.hasSuffix "linux" system) {
           nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {
             niks3 = config.packages.niks3;
+            rustfs = config.packages.rustfs;
           };
         };
     };

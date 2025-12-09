@@ -2,7 +2,7 @@
 {
   imports = [
     inputs.process-compose.flakeModule
-    ./minio.nix
+    ./rustfs.nix
     ./postgres
     ./niks3.nix
   ];
@@ -25,9 +25,9 @@
 
           # Database and storage tools
           pkgs.postgresql_16
-          pkgs.minio-client
+          pkgs.minio-client # mc client works with any S3-compatible storage
           pkgs.awscli
-          pkgs.minio
+          config.packages.rustfs
 
           # General tools
           pkgs.watchexec

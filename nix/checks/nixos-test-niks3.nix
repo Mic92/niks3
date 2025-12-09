@@ -4,6 +4,7 @@
   minio-client,
   getent,
   niks3,
+  rustfs,
   pkgs,
   ...
 }:
@@ -50,8 +51,8 @@ testers.nixosTest {
             endpoint = "localhost:9000";
             bucket = "niks3-test";
             useSSL = false;
-            accessKeyFile = writeText "s3-access-key" "minioadmin";
-            secretKeyFile = writeText "s3-secret-key" "minioadmin";
+            accessKeyFile = writeText "s3-access-key" "rustfsadmin";
+            secretKeyFile = writeText "s3-secret-key" "rustfsadmin";
           };
 
           apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
@@ -64,20 +65,24 @@ testers.nixosTest {
           };
         };
 
-        # Run MinIO for S3 storage
-        services.minio = {
-          enable = true;
-          rootCredentialsFile = writeText "minio-credentials" ''
-            MINIO_ROOT_USER=minioadmin
-            MINIO_ROOT_PASSWORD=minioadmin
-          '';
-          listenAddress = ":9000";
+        # Run RustFS for S3 storage
+        systemd.services.rustfs = {
+          description = "RustFS S3-compatible object storage";
+          after = [ "network.target" ];
+          wantedBy = [ "multi-user.target" ];
+
+          serviceConfig = {
+            ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key rustfsadmin --secret-key rustfsadmin /var/lib/rustfs";
+            StateDirectory = "rustfs";
+            DynamicUser = true;
+            Restart = "on-failure";
+          };
         };
 
-        systemd.services.minio-setup = {
-          description = "Setup MinIO bucket";
-          after = [ "minio.service" ];
-          requires = [ "minio.service" ];
+        systemd.services.rustfs-setup = {
+          description = "Setup RustFS bucket";
+          after = [ "rustfs.service" ];
+          requires = [ "rustfs.service" ];
           before = [ "niks3.service" ];
           wantedBy = [ "multi-user.target" ];
 
@@ -89,19 +94,19 @@ testers.nixosTest {
           script = ''
             set -e
 
-            # Wait for MinIO to be ready
+            # Wait for RustFS to be ready
             ready=0
             for i in {1..60}; do
-              if mc alias set local http://localhost:9000 minioadmin minioadmin; then
+              if mc alias set local http://localhost:9000 rustfsadmin rustfsadmin; then
                 ready=1
                 break
               fi
-              echo "Waiting for MinIO to start... ($i/60)"
+              echo "Waiting for RustFS to start... ($i/60)"
               sleep 2
             done
 
             if [ "$ready" -eq 0 ]; then
-              echo "ERROR: MinIO did not become ready after 60 attempts" >&2
+              echo "ERROR: RustFS did not become ready after 60 attempts" >&2
               exit 1
             fi
 
@@ -118,10 +123,10 @@ testers.nixosTest {
           };
         };
 
-        # Ensure niks3 starts after minio-setup
+        # Ensure niks3 starts after rustfs-setup
         systemd.services.niks3 = {
-          after = [ "minio-setup.service" ];
-          requires = [ "minio-setup.service" ];
+          after = [ "rustfs-setup.service" ];
+          requires = [ "rustfs-setup.service" ];
         };
 
         # Add niks3 client and hello to the server
@@ -146,8 +151,8 @@ testers.nixosTest {
 
     # Wait for services to be ready
     server.wait_for_unit("postgresql.service")
-    server.wait_for_unit("minio.service")
-    server.wait_for_unit("minio-setup.service")
+    server.wait_for_unit("rustfs.service")
+    server.wait_for_unit("rustfs-setup.service")
     server.wait_for_unit("niks3.service")
     server.wait_for_open_port(5751)
     server.wait_for_open_port(9000)
@@ -184,8 +189,8 @@ testers.nixosTest {
     # Test that signatures are verified by default (without --no-check-sigs)
     # This will fail if narinfos aren't properly signed
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=minioadmin
-      export AWS_SECRET_ACCESS_KEY=minioadmin
+      export AWS_ACCESS_KEY_ID=rustfsadmin
+      export AWS_SECRET_ACCESS_KEY=rustfsadmin
       nix copy --from '{binary_cache_url}' \
                 --to /tmp/test-store \
                 {test_path}
@@ -213,8 +218,8 @@ testers.nixosTest {
     """)
 
     log_output = server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=minioadmin
-      export AWS_SECRET_ACCESS_KEY=minioadmin
+      export AWS_ACCESS_KEY_ID=rustfsadmin
+      export AWS_SECRET_ACCESS_KEY=rustfsadmin
       nix log --store '{binary_cache_url}' {test_output}
     """)
     assert "test build log output" in log_output, "Build log missing expected output"
@@ -250,8 +255,8 @@ testers.nixosTest {
 
     # Verify nix can retrieve the CA derivation from the cache with signature verification
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=minioadmin
-      export AWS_SECRET_ACCESS_KEY=minioadmin
+      export AWS_ACCESS_KEY_ID=rustfsadmin
+      export AWS_SECRET_ACCESS_KEY=rustfsadmin
       nix copy --from '{binary_cache_url}' \
                 --to /tmp/chroot-store \
                 {ca_output}
@@ -291,8 +296,8 @@ testers.nixosTest {
 
     # Verify we can retrieve it from the cache
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=minioadmin
-      export AWS_SECRET_ACCESS_KEY=minioadmin
+      export AWS_ACCESS_KEY_ID=rustfsadmin
+      export AWS_SECRET_ACCESS_KEY=rustfsadmin
       nix copy --from '{binary_cache_url}' \
                 --to /tmp/test-store \
                 {symlink_wrapper}

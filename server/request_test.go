@@ -27,8 +27,8 @@ func createTestService(tb testing.TB) *server.Service {
 		tb.Fatal("postgres server not started")
 	}
 
-	if testMinioServer == nil {
-		tb.Fatal("minio server not started")
+	if testRustfsServer == nil {
+		tb.Fatal("rustfs server not started")
 	}
 
 	// create database for test
@@ -51,7 +51,7 @@ func createTestService(tb testing.TB) *server.Service {
 	}
 	// create bucket for test
 	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
-	minioClient := testMinioServer.Client(tb)
+	minioClient := testRustfsServer.Client(tb)
 
 	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	ok(tb, err)
