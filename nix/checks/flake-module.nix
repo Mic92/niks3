@@ -20,6 +20,7 @@
         // {
           golangci-lint = config.packages.niks3.overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
+            outputs = [ "out" ];
             buildPhase = ''
               HOME=$TMPDIR
               golangci-lint run
@@ -29,30 +30,33 @@
             '';
           });
 
-          go-unit-tests = config.packages.niks3.overrideAttrs (_old: {
-            # Don't restrict to subPackages for tests
-            subPackages = [ ];
-            # Allow network access for integration tests on macOS
-            __darwinAllowLocalNetworking = true;
-            # Don't build binaries
-            buildPhase = ''
-              runHook preBuild
-              runHook postBuild
-            '';
-            # Run all tests in checkPhase
-            checkPhase = ''
-              runHook preCheck
-              export HOME=$TMPDIR
+          # Run pre-compiled Go test binaries with rustfs and postgres
+          # The test binaries are built as part of niks3 package (unittest output)
+          # and can be substituted from cache, avoiding rebuilding rustfs locally
+          go-unit-tests =
+            pkgs.runCommand "niks3-go-unit-tests"
+              {
+                nativeBuildInputs = [
+                  config.packages.niks3.unittest
+                  config.packages.rustfs
+                  pkgs.postgresql
+                  pkgs.nix
+                ];
+                # Allow network access for integration tests on macOS
+                __darwinAllowLocalNetworking = true;
+              }
+              ''
+                export HOME=$TMPDIR
 
-              # Run all tests with verbose output
-              go test -v ./client/... ./server/...
+                # Run the pre-compiled test binaries
+                echo "Running client tests..."
+                niks3-client.test -test.v
 
-              runHook postCheck
-            '';
-            installPhase = ''
-              touch $out
-            '';
-          });
+                echo "Running server tests..."
+                niks3-server.test -test.v
+
+                touch $out
+              '';
         }
         // lib.optionalAttrs (lib.hasSuffix "linux" system) {
           nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {

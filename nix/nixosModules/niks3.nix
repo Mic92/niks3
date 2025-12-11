@@ -7,7 +7,6 @@
 
 let
   cfg = config.services.niks3;
-  rustfs = pkgs.callPackage ../packages/rustfs.nix { };
 in
 {
   options.services.niks3 = {
@@ -15,7 +14,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../packages/niks3.nix { inherit rustfs; };
+      default = pkgs.callPackage ../packages/niks3.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage ./niks3.nix { }";
       description = "The niks3 package to use.";
     };
