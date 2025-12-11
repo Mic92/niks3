@@ -1,12 +1,39 @@
 # GC server for Nix binary caches based on S3-compatible storage
 
-Status: beta
-
 The idea is to have all reads be handled by the s3 cache (which itself can be high-available)
 and have a gc server that tracks all uploads to the cache and runs periodic GC on s3 cache.
 Since writes to a binary cache are often not as critical as reads,
 we can vastly simplify the operational complexity of the GC server, i.e. only
 running one instance next to the CI infrastructure.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        niks3cli[niks3 CLI]
+        nix[Nix Client]
+    end
+
+    subgraph Infrastructure
+        s3[(S3 Bucket<br/>NAR files, narinfo,<br/>logs, realisations)]
+        niks3[niks3 Server]
+        db[(PostgreSQL<br/>closure tracking)]
+    end
+
+    niks3cli -->|1. request upload| niks3
+    niks3 -->|2. signed S3 URLs| niks3cli
+    niks3cli -->|3. upload NAR/narinfo| s3
+    niks3 -->|track references| db
+    nix -->|4. read NAR/narinfo| s3
+```
+
+**Write path**: The niks3 CLI requests an upload from the server, which returns pre-signed S3 URLs.
+The client uploads NAR files and narinfo directly to S3.
+The server tracks references in PostgreSQL for garbage collection.
+
+**Read path**: Nix clients read directly from S3 (or a CDN in front of it) without going through niks3.
+This allows the read path to scale independently and remain highly available.
 
 ## Features
 
@@ -53,7 +80,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 {
   services.niks3 = {
     enable = true;
-    httpAddr = "0.0.0.0:5751";
+    httpAddr = "127.0.0.1:5751";
 
     # S3 configuration
     s3 = {
@@ -73,6 +100,16 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
     # Public cache URL (optional) - if exposed via https
     # Generates a landing page with usage instructions and public keys
     # cacheUrl = "https://cache.example.com";
+
+    # Nginx reverse proxy (optional)
+    nginx = {
+      enable = true;
+      # Domain for the niks3 server, not for the binary cache.
+      # This is used by `niks3 push`
+      domain = "niks3.example.com";
+      # enableACME = true;      # default
+      # forceSSL = true;        # default
+    };
   };
 }
 ```

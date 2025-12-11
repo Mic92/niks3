@@ -131,6 +131,38 @@ in
       description = "Group under which the niks3 server runs.";
     };
 
+    nginx = {
+      enable = lib.mkEnableOption "nginx reverse proxy for niks3";
+
+      domain = lib.mkOption {
+        type = lib.types.str;
+        example = "cache.example.com";
+        description = "Domain name for the nginx virtual host.";
+      };
+
+      proxyTimeout = lib.mkOption {
+        type = lib.types.str;
+        default = "300s";
+        example = "600s";
+        description = ''
+          Timeout for proxy connections. This sets proxy_connect_timeout,
+          proxy_send_timeout, and proxy_read_timeout.
+        '';
+      };
+
+      enableACME = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to enable ACME (Let's Encrypt) for the domain.";
+      };
+
+      forceSSL = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to force SSL for the domain.";
+      };
+    };
+
     gc = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -342,6 +374,22 @@ in
         OnCalendar = cfg.gc.schedule;
         RandomizedDelaySec = cfg.gc.randomizedDelaySec;
         Persistent = true;
+      };
+    };
+
+    services.nginx = lib.mkIf cfg.nginx.enable {
+      enable = true;
+      virtualHosts.${cfg.nginx.domain} = {
+        forceSSL = cfg.nginx.forceSSL;
+        enableACME = cfg.nginx.enableACME;
+        locations."/" = {
+          proxyPass = "http://${cfg.httpAddr}";
+          extraConfig = ''
+            proxy_connect_timeout ${cfg.nginx.proxyTimeout};
+            proxy_send_timeout ${cfg.nginx.proxyTimeout};
+            proxy_read_timeout ${cfg.nginx.proxyTimeout};
+          '';
+        };
       };
     };
   };
