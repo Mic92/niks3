@@ -53,7 +53,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 {
   services.niks3 = {
     enable = true;
-    httpAddr = "0.0.0.0:5751";
+    httpAddr = "127.0.0.1:5751";
 
     # S3 configuration
     s3 = {
@@ -73,6 +73,16 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
     # Public cache URL (optional) - if exposed via https
     # Generates a landing page with usage instructions and public keys
     # cacheUrl = "https://cache.example.com";
+
+    # Nginx reverse proxy (optional)
+    nginx = {
+      enable = true;
+      # Domain for the niks3 server, not for the binary cache.
+      # This is used by `niks3 push`
+      domain = "niks3.example.com";
+      # enableACME = true;      # default
+      # forceSSL = true;        # default
+    };
   };
 }
 ```
