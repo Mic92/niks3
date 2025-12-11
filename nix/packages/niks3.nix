@@ -8,7 +8,8 @@ let
   vendorHash = lib.fileContents ./goVendorHash.txt;
 in
 pkgs.buildGoModule {
-  name = "niks3";
+  pname = "niks3";
+  version = "0.1.0";
   src = lib.fileset.toSource {
     fileset = lib.fileset.unions [
       ../../api
