@@ -70,7 +70,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 ### Prerequisites
 
 - NixOS system (or Nix with flakes enabled)
-- S3-compatible storage (MinIO, AWS S3, etc.)
+- S3-compatible storage (AWS S3, Backblaze B2, Hetzner Object Storage, etc.)
 - PostgreSQL database (automatically configured on NixOS)
 - Nix signing keys
 
@@ -291,7 +291,7 @@ Start the complete development environment with `nix run .#dev`.
 This launches a process-compose setup with:
 
 - **PostgreSQL**: Database server with automatic initialization and health checks
-- **MinIO**: S3-compatible storage server with health checks
+- **RustFS**: S3-compatible storage server with health checks
 - **niks3-server**: API server with automatic recompilation on code changes (via watchexec)
 
 ### Features
