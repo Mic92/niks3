@@ -330,6 +330,7 @@ go test -bench=BenchmarkPythonClosure -benchtime=3x -v
 - **Clan infra**:
   [Configuration](https://git.clan.lol/clan/clan-infra/src/branch/main/modules/web01/niks3.nix)
   | [Instance](https://cache.clan.lol/)
+- **Numtide**: [Instance](https://cache.numtide.com/)
 
 ## Need commercial support or customization?
 
