@@ -65,12 +65,72 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
 - Authentication via API tokens (Bearer auth)
 
+## S3 Provider Comparison
+
+niks3 works with any S3-compatible storage provider, but different providers have varying characteristics that may affect your deployment:
+
+| Provider | Performance | Content-Encoding | CDN | Storage | Egress/Bandwidth | Notes |
+|----------|-------------|-----------------|-----|---------|------------------|-------|
+| **Cloudflare R2** | ✅ Excellent | ✅ Native | ✅ Built-in | $0.015/GB | **$0/GB** (free!) | **Recommended**: Built-in CDN, zero egress fees, works out of the box. Free tier: 10GB storage, 10M reads, 1M writes/month. |
+| **Backblaze B2** | ✅ Good | ⚠️ Workaround | ✅ Required | $0.006/GB | First 3× storage free, then $0.01/GB | Very affordable storage. Requires CDN (Fastly) for Content-Encoding headers. See [clan-infra config](https://git.clan.lol/clan/clan-infra/src/branch/main/modules/terranix/cache-new.nix). |
+| **Hetzner Object Storage** | ❌ Poor | ✅ Native | ⚠️ Doesn't help | €4.99/mo (1TB) | 1TB included, then €1.00/TB | **Not recommended**: 10s+ response times for `.narinfo` lookups persist even with CDN. |
+| **AWS S3** | ✅ Excellent | ✅ Native | ❌ Optional | $0.023/GB | $0.09/GB | Enterprise-grade, extensive features. Higher egress costs make it expensive for binary caches. Can use CloudFront CDN. |
+
+### Pricing Analysis for Binary Cache Workloads
+
+Binary caches are **read-heavy** with significant download traffic. For a typical scenario (1TB storage + 10TB downloads/month):
+
+- **Cloudflare R2**: $15/month (storage only, zero egress fees)
+- **Backblaze B2**: $76/month ($6 storage + $70 egress beyond 3TB free allowance)
+- **AWS S3 (direct)**: $923/month ($23 storage + $900 egress to internet)
+- **AWS S3 + CloudFront**: $873/month ($23 storage + $0 S3→CloudFront transfer + $850 CloudFront egress)
+- **Hetzner**: €14/month (~$15/month, but poor performance makes it unsuitable)
+
+**Note**: AWS S3 transfers to CloudFront (and other AWS services in the same region) are free, but CloudFront still charges $0.085/GB for egress to the internet, only marginally cheaper than direct S3 egress.
+
+**Winner**: Cloudflare R2 and Hetzner offer ~98% cost savings vs AWS S3. However, Hetzner's poor performance (10s+ latency) makes Cloudflare R2 the clear choice, combining excellent performance with the lowest viable cost.
+
+### Content-Encoding Requirements
+
+Nix binary caches compress files with zstd (`.narinfo`, `.nar.zst`, `.ls`, build logs, realisations). HTTP clients need the `Content-Encoding: zstd` header to automatically decompress these files.
+
+**Providers that don't set this header** (like Backblaze B2) require a CDN or reverse proxy to inject the header. See the [clan-infra Fastly configuration](https://git.clan.lol/clan/clan-infra/src/branch/main/modules/terranix/cache-new.nix) for a complete working example with Backblaze B2 + Fastly.
+
+### Recommendations
+
+1. **Cloudflare R2** (best for most users): Zero egress fees, built-in CDN, excellent performance, works out of the box
+1. **Backblaze B2** (budget alternative): Very cheap storage if you keep downloads under 3× storage, but requires Fastly/CDN setup
+1. **AWS S3** (enterprise only): Only if you need AWS ecosystem integration and can afford high egress costs
+1. **Hetzner** (avoid): Poor performance makes it unsuitable for binary caches regardless of cost
+
+**Pricing Sources**: [Cloudflare R2](https://developers.cloudflare.com/r2/pricing/), [Backblaze B2](https://www.backblaze.com/cloud-storage/pricing), [AWS S3](https://aws.amazon.com/s3/pricing/), [AWS CloudFront](https://aws.amazon.com/cloudfront/pricing/), [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/)
+
+### Other (untested) S3-Compatible Providers
+
+Additional providers with pricing for the same scenario (1TB storage + 10TB egress/month):
+
+| Provider | Monthly Cost | Notes |
+|----------|--------------|-------|
+| **OVH Standard 3-AZ** | €14 (~$15) | Zero egress fees, multi-AZ resiliency. European provider. Untested for binary cache performance. |
+| **Wasabi** | $7\* | **Not suitable**: "Free egress" only if egress ≤ storage. Binary caches violate this (10TB egress > 1TB storage). Would likely be rejected or charged penalty fees. |
+| **Vultr Object Storage** | $108 | $18 base (1TB+1TB) + $90 egress overage. Includes 2TB free egress account-wide. |
+| **DigitalOcean Spaces** | $110 | $5 base (250GB+1TB) + $15 storage + $90 egress. Built-in CDN included. |
+| **Linode Object Storage** | $110 | $5 base (250GB+1TB) + $15 storage + $90 egress. Now owned by Akamai. |
+| **Scaleway Object Storage** | €114 (~$120) | €15 storage + €99 egress (75GB free). Multi-AZ available. European provider. |
+| **OVH High Performance** | $189 | $39 storage + $150 egress. High-performance tier with better IOPS. |
+
+**Performance notes**: Only Cloudflare R2, AWS S3, and Backblaze B2 (with Fastly) have been tested in production for binary cache workloads. Other providers are untested and may have performance issues similar to Hetzner.
+
+**Help wanted!** If you test niks3 with any of these providers, please open a PR or issue with your performance results (`.narinfo` lookup latency, download speeds, reliability). Your real-world experience helps the community make informed decisions.
+
+**Pricing Sources**: [Wasabi](https://wasabi.com/pricing), [DigitalOcean Spaces](https://docs.digitalocean.com/products/spaces/details/pricing/), [Linode Object Storage](https://www.linode.com/pricing/), [Vultr Object Storage](https://www.vultr.com/pricing/), [OVHcloud](https://www.ovhcloud.com/en/public-cloud/prices/), [Scaleway Storage](https://www.scaleway.com/en/pricing/storage/)
+
 ## Setup
 
 ### Prerequisites
 
 - NixOS system (or Nix with flakes enabled)
-- S3-compatible storage (AWS S3, Backblaze B2, Hetzner Object Storage, etc.)
+- S3-compatible storage (see comparison above)
 - PostgreSQL database (automatically configured on NixOS)
 - Nix signing keys
 
