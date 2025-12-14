@@ -2,10 +2,14 @@ package server
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"html/template"
 	"strings"
 )
+
+//go:embed niks3.svg
+var logoSVG string
 
 const landingPageTemplate = `<!DOCTYPE html>
 <html lang="en">
@@ -58,6 +62,16 @@ const landingPageTemplate = `<!DOCTYPE html>
             text-align: center;
             padding: 40px 0;
             border-bottom: 1px solid var(--border);
+        }
+
+        .logo {
+            max-width: 400px;
+            margin: 0 auto 20px auto;
+        }
+
+        .logo svg {
+            width: 100%;
+            height: auto;
         }
 
         h1 {
@@ -155,7 +169,7 @@ const landingPageTemplate = `<!DOCTYPE html>
 <body>
     <div class="container">
         <header>
-            <h1>Nix Binary Cache</h1>
+            <div class="logo">{{ .Logo }}</div>
             <p class="subtitle">Fast and reliable binary cache for Nix packages</p>
         </header>
 
@@ -242,6 +256,7 @@ extra-trusted-public-keys = {{ .PublicKeysJoined }}</code></pre>
 `
 
 type landingPageData struct {
+	Logo             template.HTML
 	PublicKeys       []string
 	PublicKeysJoined string
 	CacheURL         string
@@ -260,6 +275,7 @@ func (s *Service) GenerateLandingPage(cacheURL string) (string, error) {
 	}
 
 	data := landingPageData{
+		Logo:             template.HTML(logoSVG),
 		PublicKeys:       publicKeys,
 		PublicKeysJoined: strings.Join(publicKeys, " "),
 		CacheURL:         cacheURL,
