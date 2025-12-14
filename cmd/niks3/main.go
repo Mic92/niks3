@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -37,12 +38,33 @@ func main() {
 	}
 }
 
-// getAuthToken reads the auth token from NIKS3_AUTH_TOKEN_FILE.
+// defaultAuthTokenPath returns the default XDG-compliant path for the auth token.
+func defaultAuthTokenPath() string {
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configDir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configDir, "niks3", "auth-token")
+}
+
+// getAuthToken reads the auth token from NIKS3_AUTH_TOKEN_FILE or the default XDG path.
 // The file should contain the token as a single line (trailing whitespace is trimmed).
 func getAuthToken() (string, error) {
 	tokenFile := os.Getenv("NIKS3_AUTH_TOKEN_FILE")
 	if tokenFile == "" {
-		return "", nil
+		// Try default XDG path
+		tokenFile = defaultAuthTokenPath()
+		if tokenFile == "" {
+			return "", nil
+		}
+		// Only use default path if file exists
+		if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
+			return "", nil
+		}
 	}
 
 	data, err := os.ReadFile(tokenFile)
@@ -70,7 +92,7 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, "  --auth-token string")
-	fmt.Fprintln(os.Stderr, "        Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
@@ -88,7 +110,7 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, "  --auth-token string")
-	fmt.Fprintln(os.Stderr, "        Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
+	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
 	fmt.Fprintln(os.Stderr, "  --auth-token-path string")
 	fmt.Fprintln(os.Stderr, "        Path to auth token file")
 	fmt.Fprintln(os.Stderr, "  --older-than string")
@@ -171,7 +193,7 @@ func run() error {
 		}
 
 		if *pushAuthToken == "" {
-			return errors.New("auth token is required (use --auth-token or NIKS3_AUTH_TOKEN_FILE env var)")
+			return errors.New("auth token is required (use --auth-token, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
 		}
 
 		paths := pushCmd.Args()
@@ -215,7 +237,7 @@ func run() error {
 		}
 
 		if token == "" {
-			return errors.New("auth token is required (use --auth-token, --auth-token-path, or NIKS3_AUTH_TOKEN_FILE env var)")
+			return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
 		}
 
 		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
