@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="server/niks3.svg" alt="niks3 logo" width="400">
+</p>
+
 # S3-backed Nix binary cache with GC
 
 The idea is to have all reads be handled by the s3 cache (which itself can be high-available)
