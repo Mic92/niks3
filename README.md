@@ -2,10 +2,10 @@
   <img src="server/niks3.svg" alt="niks3 logo" width="400">
 </p>
 
-# S3-backed Nix binary cache with GC
+# S3-backed Nix binary cache with garbage collection
 
 The idea is to have all reads be handled by the s3 cache (which itself can be high-available)
-and have a gc server that tracks all uploads to the cache and runs periodic GC on s3 cache.
+and have a gc server that tracks all uploads to the cache and runs periodic garbage collection on s3 cache.
 Since writes to a binary cache are often not as critical as reads,
 we can vastly simplify the operational complexity of the GC server, i.e. only
 running one instance next to the CI infrastructure.
