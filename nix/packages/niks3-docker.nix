@@ -1,16 +1,15 @@
 {
+  pkgs,
   niks3,
-  coreutils,
-  bashInteractive,
   dockerTools,
 }:
 dockerTools.buildLayeredImage {
-  name = "niks3-server";
-  tag = niks3.version;
+  name = "niks3";
+  tag = "latest";
   contents = [
     niks3
-    coreutils
-    bashInteractive
+    pkgs.busybox
+    pkgs.busybox-sandbox-shell
   ];
   config = {
     Entrypoint = [ "/bin/niks3-server" ];
