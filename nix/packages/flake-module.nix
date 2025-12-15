@@ -11,7 +11,9 @@
       packages.niks3 = pkgs.callPackage ./niks3.nix {
         inherit (pkgs) go;
       };
-      packages.niks3-docker = pkgs.callPackage ./niks3-docker.nix { };
+      packages.niks3-docker = pkgs.callPackage ./niks3-docker.nix {
+        inherit (config.packages) niks3;
+      };
       packages.default = config.packages.niks3;
     };
 }

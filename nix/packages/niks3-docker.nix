@@ -1,28 +1,46 @@
 {
   lib,
   pkgs,
-  imageName ? "niks3:latest",
+  niks3,
+  imageName ? "${niks3.pname}:latest",
 }:
 let
-  supportedPlatforms = [
-    "x86_64-linux"
-    "aarch64-linux"
-  ];
-  platforms = lib.genAttrs supportedPlatforms (
+  supportedPlatforms = {
+    "x86_64-linux" = {
+      GOOS = "linux";
+      GOARCH = "amd64";
+    };
+    "aarch64-linux" = {
+      GOOS = "linux";
+      GOARCH = "arm64";
+    };
+  };
+  platforms = lib.mapAttrs (
     crossSystem:
+    { GOOS, GOARCH }:
     let
       inherit (pkgs.stdenv.hostPlatform) system;
       crossPkgs =
         if system == crossSystem then pkgs else (import pkgs.path { inherit system crossSystem; });
-      niks3 = crossPkgs.callPackage ./niks3.nix { };
     in
     crossPkgs.dockerTools.buildLayeredImage {
       name = niks3.pname;
       tag = "${niks3.version}-${crossSystem}";
       contents = [
-        niks3
+        (niks3.overrideAttrs (old: {
+          env = old.env // {
+            inherit GOOS GOARCH;
+            CGO_ENABLED = 0;
+          };
+          postInstall = (old.postInstall or "") + ''
+            if [ -d $out/bin/${GOOS}_${GOARCH} ]; then
+              mv $out/bin/${GOOS}_${GOARCH}/* $out/bin/
+              rmdir $out/bin/${GOOS}_${GOARCH}
+            fi
+          '';
+        }))
       ]
-      ++ (with crossPkgs; [
+      ++ (with crossPkgs.pkgsStatic; [
         busybox
         busybox-sandbox-shell
       ]);
@@ -33,10 +51,11 @@ let
         };
       };
     }
-  );
+  ) supportedPlatforms;
 in
 pkgs.stdenvNoCC.mkDerivation {
-  name = "niks3-docker";
+  name = "${niks3.pname}-docker";
+  inherit (niks3) version;
   phases = [ "installPhase" ];
   src = pkgs.linkFarm "images" (lib.mapAttrsToList (name: path: { inherit name path; }) platforms);
   nativeBuildInputs = [ pkgs.regctl ];
