@@ -1,0 +1,82 @@
+name: Build Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        system:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    runs-on: ${{ matrix.system }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v31
+      - name: Build Docker image
+        run: |
+          nix build .#niks3-docker
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: docker-image-${{ matrix.system }}
+          path: result
+  push:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Create Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=sha,format=short
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: ${{ runner.temp }}/artifacts
+          pattern: docker-image-*
+      - name: Merge and Push
+        run: |
+          set -xve
+          sources=()
+          for image in ${{ runner.temp }}/artifacts/docker-image-*/result; do
+            image_tag=$(docker load < $image | grep "Loaded image" | awk '{print $3}')
+            source="${REGISTRY}/${IMAGE_NAME}:sha256-$(docker inspect --format='{{.Id}}' "$image_tag" | cut -d':' -f2)"
+            docker tag "$image_tag" "$source"
+            docker push "$source"
+            sources+=("$source")
+          done
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            ${sources[@]}
