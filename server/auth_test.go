@@ -186,5 +186,4 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 			},
 		})
 	})
-
 }
