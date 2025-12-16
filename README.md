@@ -82,68 +82,10 @@ For complete setup instructions, see the [Setup Guide](https://github.com/Mic92/
 
 ## OIDC Authentication (CI/CD)
 
-niks3 supports OIDC authentication for CI/CD systems like GitHub Actions and GitLab CI.
+niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:
 
-### OIDC Configuration File
-
-Create a JSON configuration file:
-
-```json
-{
-  "providers": {
-    "github": {
-      "issuer": "https://token.actions.githubusercontent.com",
-      "audience": "https://niks3.example.com",
-      "bound_claims": {
-        "repository_owner": ["myorg"]
-      },
-      "bound_subject": ["repo:myorg/*:*"]
-    }
-  }
-}
-```
-
-**Configuration options:**
-
-- `issuer`: OIDC provider URL (required)
-- `audience`: Expected audience claim - should be your niks3 server URL (required)
-- `bound_claims`: Claims that must match (optional, supports glob patterns with `*` and `?`)
-- `bound_subject`: Subject patterns that must match (optional, supports glob patterns)
-
-### Server Configuration
-
-```bash
-niks3-server --api-token-path /path/to/token --oidc-config /path/to/oidc.json
-```
-
-OIDC is used alongside the static API token. The API token is always required for GC and admin operations.
-
-### NixOS Module Configuration
-
-```nix
-{
-  services.niks3 = {
-    enable = true;
-    # ... other configuration ...
-
-    # OIDC providers (optional, for CI/CD authentication)
-    oidc.providers = {
-      github = {
-        issuer = "https://token.actions.githubusercontent.com";
-        audience = "https://niks3.example.com";  # Your niks3 server URL
-        boundClaims = {
-          repository_owner = [ "myorg" ];
-        };
-        boundSubject = [ "repo:myorg/*:*" ];
-      };
-    };
-  };
-}
-```
-
-### GitHub Actions Example
-
-For a complete GitHub Actions workflow with binary downloads, see the [GitHub Actions wiki page](https://github.com/Mic92/niks3/wiki/GitHub-Actions).
+- [OIDC Configuration](https://github.com/Mic92/niks3/wiki/OIDC)
+- [GitHub Actions](https://github.com/Mic92/niks3/wiki/GitHub-Actions)
 
 ## Development
 
