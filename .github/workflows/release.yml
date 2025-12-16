@@ -23,6 +23,6 @@ jobs:
             extra-substituters = https://cache.thalheim.io
             extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
       - name: Run GoReleaser
-        run: nix develop --inputs-from . nixpkgs#goreleaser --command goreleaser release --clean
+        run: nix shell --inputs-from . nixpkgs#goreleaser --command goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
