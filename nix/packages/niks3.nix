@@ -9,7 +9,7 @@ let
 in
 pkgs.buildGoModule {
   pname = "niks3";
-  version = "v1.0.0";
+  version = "v1.1.0";
   src = lib.fileset.toSource {
     fileset = lib.fileset.unions [
       ../../api
