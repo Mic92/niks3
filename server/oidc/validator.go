@@ -75,7 +75,7 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 		// Create the OIDC provider (handles discovery and JWKS)
 		provider, err := gooidc.NewProvider(ctx, providerCfg.Issuer)
 		if err != nil {
-			return nil, errors.New("failed to initialize OIDC provider")
+			return nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", providerCfg.Issuer, err)
 		}
 
 		// Create the verifier with our expected audience
