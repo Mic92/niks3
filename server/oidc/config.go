@@ -87,10 +87,13 @@ func (c *Config) validate() error {
 		// Validate issuer URL format and require HTTPS (unless AllowInsecure)
 		issuerURL, err := url.Parse(provider.Issuer)
 		if err != nil {
-			return fmt.Errorf("provider %q: invalid issuer URL", name)
+			return fmt.Errorf("provider %q: invalid issuer URL %q: %w", name, provider.Issuer, err)
+		}
+		if issuerURL.Scheme == "" || issuerURL.Host == "" {
+			return fmt.Errorf("provider %q: issuer URL %q must be absolute with scheme and host", name, provider.Issuer)
 		}
 		if issuerURL.Scheme != "https" && !c.AllowInsecure {
-			return fmt.Errorf("provider %q: issuer must use HTTPS", name)
+			return fmt.Errorf("provider %q: issuer URL %q must use HTTPS (scheme is %q)", name, provider.Issuer, issuerURL.Scheme)
 		}
 
 		if provider.Audience == "" {
