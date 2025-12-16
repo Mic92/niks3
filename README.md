@@ -68,6 +68,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 ### Operational Features
 
 - Authentication via API tokens (Bearer auth)
+- OIDC authentication for CI/CD systems (GitHub Actions, GitLab CI)
 
 ## Choosing an S3 Provider
 
@@ -78,6 +79,89 @@ For detailed pricing comparison and alternative providers, see the [S3 Provider 
 ## Setup
 
 For complete setup instructions, see the [Setup Guide](https://github.com/Mic92/niks3/wiki/Setup-Guide) in the wiki.
+
+## OIDC Authentication (CI/CD)
+
+niks3 supports OIDC authentication for CI/CD systems like GitHub Actions and GitLab CI.
+
+### OIDC Configuration File
+
+Create a JSON configuration file:
+
+```json
+{
+  "providers": {
+    "github": {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "audience": "https://niks3.example.com",
+      "bound_claims": {
+        "repository_owner": ["myorg"]
+      },
+      "bound_subject": ["repo:myorg/*:*"]
+    }
+  }
+}
+```
+
+**Configuration options:**
+
+- `issuer`: OIDC provider URL (required)
+- `audience`: Expected audience claim - should be your niks3 server URL (required)
+- `bound_claims`: Claims that must match (optional, supports glob patterns with `*` and `?`)
+- `bound_subject`: Subject patterns that must match (optional, supports glob patterns)
+
+### Server Configuration
+
+```bash
+niks3-server --api-token-path /path/to/token --oidc-config /path/to/oidc.json
+```
+
+OIDC is used alongside the static API token. The API token is always required for GC and admin operations.
+
+### NixOS Module Configuration
+
+```nix
+{
+  services.niks3 = {
+    enable = true;
+    # ... other configuration ...
+
+    # OIDC providers (optional, for CI/CD authentication)
+    oidc.providers = {
+      github = {
+        issuer = "https://token.actions.githubusercontent.com";
+        audience = "https://niks3.example.com";  # Your niks3 server URL
+        boundClaims = {
+          repository_owner = [ "myorg" ];
+        };
+        boundSubject = [ "repo:myorg/*:*" ];
+      };
+    };
+  };
+}
+```
+
+### GitHub Actions Example
+
+```yaml
+jobs:
+  build:
+    permissions:
+      id-token: write  # Required for OIDC
+    steps:
+      - name: Get OIDC token
+        id: oidc
+        run: |
+          # Audience must match the niks3 server URL configured in OIDC config
+          TOKEN=$(curl -sLS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://niks3.example.com" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Push to cache
+        env:
+          NIKS3_SERVER_URL: https://niks3.example.com
+        run: niks3 push --auth-token '${{ steps.oidc.outputs.token }}' ./result
+```
 
 ## Development
 
