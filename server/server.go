@@ -75,7 +75,14 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		token := strings.TrimPrefix(authHeader, bearerPrefix)
 
-		// Try OIDC validation first if configured
+		// Try static API token first (faster, no network calls)
+		if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		// Fall back to OIDC validation if configured
 		var oidcErr *oidc.ValidationError
 		if s.OIDCValidator != nil {
 			claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
@@ -86,21 +93,14 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 				return
 			}
-			// Store the OIDC error for later logging if static token also fails
+			// Store the OIDC error for later logging
 			if validationErr, ok := err.(*oidc.ValidationError); ok {
 				oidcErr = validationErr
 			}
-			slog.Debug("OIDC validation failed, trying static token")
+			slog.Debug("OIDC validation failed")
 		}
 
-		// Fall back to static API token
-		if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
-			next.ServeHTTP(w, r)
-
-			return
-		}
-
-		// Both OIDC and static token failed - log details for debugging
+		// Both static token and OIDC failed - log details for debugging
 		s.logAuthFailure(token, oidcErr)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
