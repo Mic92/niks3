@@ -42,11 +42,13 @@ pkgs.buildGoModule {
     # Compile test binaries (one per package)
     go test -c ./client -o client.test
     go test -c ./server -o server.test
+    go test -c ./server/oidc -o server-oidc.test
 
     # Install test binaries to unittest output
     mkdir -p $unittest/bin
     install -D client.test $unittest/bin/niks3-client.test
     install -D server.test $unittest/bin/niks3-server.test
+    install -D server-oidc.test $unittest/bin/niks3-server-oidc.test
 
     # Remove Go compiler reference to reduce closure size
     if command -v remove-references-to >/dev/null; then

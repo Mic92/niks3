@@ -70,6 +70,8 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
 	flag.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
+	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
+		"Path to OIDC configuration file (JSON format)")
 
 	// Parse signing key paths from environment variable (space-separated for backward compatibility)
 	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
@@ -127,6 +129,7 @@ func parseArgs() (*options, error) {
 		return nil, errors.New("missing required flag: --s3-bucket")
 	}
 
+	// API token is always required (for GC and admin operations)
 	if opts.APIToken == "" {
 		return nil, errors.New("missing required flag: --api-token or --api-token-path")
 	}
