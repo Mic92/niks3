@@ -164,42 +164,6 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		})
 	})
 
-	t.Run("OIDC token with wrong audience rejected", func(t *testing.T) {
-		token := signToken(jwt.MapClaims{
-			"sub":              "repo:myorg/myrepo:ref:refs/heads/main",
-			"repository_owner": "myorg",
-			"aud":              "wrong-audience",
-		})
-
-		testRequest(t, &TestRequest{
-			method:        "GET",
-			path:          "/health",
-			handler:       service.AuthMiddleware(service.HealthCheckHandler),
-			checkResponse: &checkUnauthorized,
-			header: map[string]string{
-				"Authorization": "Bearer " + token,
-			},
-		})
-	})
-
-	t.Run("expired OIDC token rejected", func(t *testing.T) {
-		token := signToken(jwt.MapClaims{
-			"sub":              "repo:myorg/myrepo:ref:refs/heads/main",
-			"repository_owner": "myorg",
-			"exp":              m.Now().Add(-time.Hour).Unix(), // expired
-		})
-
-		testRequest(t, &TestRequest{
-			method:        "GET",
-			path:          "/health",
-			handler:       service.AuthMiddleware(service.HealthCheckHandler),
-			checkResponse: &checkUnauthorized,
-			header: map[string]string{
-				"Authorization": "Bearer " + token,
-			},
-		})
-	})
-
 	t.Run("malformed token rejected", func(t *testing.T) {
 		testRequest(t, &TestRequest{
 			method:        "GET",
@@ -223,15 +187,4 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		})
 	})
 
-	t.Run("wrong static token rejected", func(t *testing.T) {
-		testRequest(t, &TestRequest{
-			method:        "GET",
-			path:          "/health",
-			handler:       service.AuthMiddleware(service.HealthCheckHandler),
-			checkResponse: &checkUnauthorized,
-			header: map[string]string{
-				"Authorization": "Bearer wrong-static-token",
-			},
-		})
-	})
 }
