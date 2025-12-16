@@ -66,3 +66,16 @@ jobs:
             docker tag "$image_tag" "$tag"
             docker push "$tag"
           done
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old untagged images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: niks3
+          package-type: container
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: true
