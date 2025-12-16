@@ -143,25 +143,7 @@ OIDC is used alongside the static API token. The API token is always required fo
 
 ### GitHub Actions Example
 
-```yaml
-jobs:
-  build:
-    permissions:
-      id-token: write  # Required for OIDC
-    steps:
-      - name: Get OIDC token
-        id: oidc
-        run: |
-          # Audience must match the niks3 server URL configured in OIDC config
-          TOKEN=$(curl -sLS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://niks3.example.com" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')
-          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-
-      - name: Push to cache
-        env:
-          NIKS3_SERVER_URL: https://niks3.example.com
-        run: niks3 push --auth-token '${{ steps.oidc.outputs.token }}' ./result
-```
+For a complete GitHub Actions workflow with binary downloads, see the [GitHub Actions wiki page](https://github.com/Mic92/niks3/wiki/GitHub-Actions).
 
 ## Development
 
