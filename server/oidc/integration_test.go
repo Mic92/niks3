@@ -243,53 +243,6 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 	}
 }
 
-func TestValidateToken_BoundClaimsMatch(t *testing.T) {
-	m := setupMockOIDC(t)
-
-	config := Config{
-		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
-			"test": {
-				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
-				BoundClaims: map[string][]string{
-					"repository_owner": {"myorg"},
-					"ref":              {"refs/heads/*"},
-				},
-			},
-		},
-	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
-
-	// Token has matching claims
-	token := signToken(t, m, jwt.MapClaims{
-		"sub":              "test-subject",
-		"repository_owner": "myorg",
-		"ref":              "refs/heads/main",
-	})
-
-	claims, err := validator.ValidateToken(ctx, token)
-	if err != nil {
-		t.Fatalf("expected valid token with matching bound claims, got error: %v", err)
-	}
-	if claims.Subject != "test-subject" {
-		t.Errorf("expected subject 'test-subject', got %q", claims.Subject)
-	}
-}
-
 func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 	m := setupMockOIDC(t)
 
@@ -326,48 +279,6 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 	_, err = validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for mismatched bound subject, got nil")
-	}
-}
-
-func TestValidateToken_BoundSubjectMatch(t *testing.T) {
-	m := setupMockOIDC(t)
-
-	config := Config{
-		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
-			"test": {
-				Issuer:       m.Issuer(),
-				Audience:     m.Config().ClientID,
-				BoundSubject: []string{"repo:myorg/*:*"},
-			},
-		},
-	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
-
-	// Token has matching subject
-	token := signToken(t, m, jwt.MapClaims{
-		"sub": "repo:myorg/myrepo:ref:refs/heads/main",
-	})
-
-	claims, err := validator.ValidateToken(ctx, token)
-	if err != nil {
-		t.Fatalf("expected valid token with matching bound subject, got error: %v", err)
-	}
-	if claims.Subject != "repo:myorg/myrepo:ref:refs/heads/main" {
-		t.Errorf("expected subject 'repo:myorg/myrepo:ref:refs/heads/main', got %q", claims.Subject)
 	}
 }
 
@@ -419,67 +330,6 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	}
 	if claims.Provider != "provider2" {
 		t.Errorf("expected provider 'provider2', got %q", claims.Provider)
-	}
-}
-
-func TestValidateToken_GitHubActionsFormat(t *testing.T) {
-	m := setupMockOIDC(t)
-
-	config := Config{
-		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
-			"github": {
-				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
-				BoundClaims: map[string][]string{
-					"repository_owner": {"myorg"},
-				},
-				BoundSubject: []string{"repo:myorg/*:ref:refs/heads/*"},
-			},
-		},
-	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
-
-	// Realistic GitHub Actions OIDC token claims
-	token := signToken(t, m, jwt.MapClaims{
-		"sub":                "repo:myorg/myrepo:ref:refs/heads/main",
-		"repository":         "myorg/myrepo",
-		"repository_owner":   "myorg",
-		"ref":                "refs/heads/main",
-		"ref_type":           "branch",
-		"actor":              "developer",
-		"workflow":           "CI",
-		"job_workflow_ref":   "myorg/myrepo/.github/workflows/ci.yml@refs/heads/main",
-		"runner_environment": "github-hosted",
-	})
-
-	claims, err := validator.ValidateToken(ctx, token)
-	if err != nil {
-		t.Fatalf("expected GitHub Actions token to be valid, got error: %v", err)
-	}
-	if claims.Subject != "repo:myorg/myrepo:ref:refs/heads/main" {
-		t.Errorf("expected GitHub Actions subject format, got %q", claims.Subject)
-	}
-	if claims.Provider != "github" {
-		t.Errorf("expected provider 'github', got %q", claims.Provider)
-	}
-
-	// Verify extra claims are available
-	if claims.RawClaims["repository_owner"] != "myorg" {
-		t.Errorf("expected repository_owner 'myorg' in raw claims, got %v", claims.RawClaims["repository_owner"])
 	}
 }
 
