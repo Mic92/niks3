@@ -86,6 +86,7 @@ niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:
 
 - [OIDC Configuration](https://github.com/Mic92/niks3/wiki/OIDC)
 - [GitHub Actions](https://github.com/Mic92/niks3/wiki/GitHub-Actions)
+- [GitLab CI](https://github.com/Mic92/niks3/wiki/GitLab-CI)
 
 ## Development
 
