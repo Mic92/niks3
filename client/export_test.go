@@ -41,3 +41,8 @@ func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts Token
 		ServerRateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "server-test"),
 	}
 }
+
+// NewTestClientWithStoreDir creates a Client with only storeDir set, for path resolution tests.
+func NewTestClientWithStoreDir(storeDir string) *Client {
+	return &Client{storeDir: storeDir}
+}

@@ -205,7 +205,13 @@ func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter)
 
 // doWithRetry executes an HTTP request with adaptive rate limiting and exponential backoff retry.
 // The request body will be read and stored for retries if necessary.
+// If the request is to the API server (matches baseURL host), the Authorization header is automatically added.
 func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
+	// Add auth header for API requests (same host as baseURL)
+	if c.authToken != "" && req.URL.Host == c.baseURL.Host {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
 	// If retries are disabled, just do the request once
 	if c.Retry.MaxRetries <= 0 {
 		return c.doOnce(ctx, req, limiter)

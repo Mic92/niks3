@@ -77,6 +77,18 @@ func resolveSymlinks(paths []string, storeDir string) ([]string, error) {
 	return resolved, nil
 }
 
+// ResolveStorePath resolves symlinks (e.g. a nix-build ./result link) until
+// the path points into the Nix store. Needed wherever a raw user-supplied
+// path is sent to the server, which only accepts store paths.
+func (c *Client) ResolveStorePath(path string) (string, error) {
+	resolved, err := resolveSymlinks([]string{path}, c.storeDir)
+	if err != nil {
+		return "", err
+	}
+
+	return resolved[0], nil
+}
+
 // ClosureInfo represents a closure with its associated objects.
 type ClosureInfo struct {
 	NarinfoKey string

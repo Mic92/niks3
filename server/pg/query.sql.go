@@ -71,9 +71,11 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 
 const deleteClosures = `-- name: DeleteClosures :execrows
 DELETE FROM closures
-WHERE updated_at < $1
+WHERE closures.updated_at < $1
+  AND closures.key NOT IN (SELECT narinfo_key FROM pins)
 `
 
+// Delete old closures, but exclude any that are pinned
 func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteClosures, updatedAt)
 	if err != nil {
@@ -99,6 +101,16 @@ WHERE key = any($1::varchar [])
 
 func (q *Queries) DeleteObjects(ctx context.Context, dollar_1 []string) error {
 	_, err := q.db.Exec(ctx, deleteObjects, dollar_1)
+	return err
+}
+
+const deletePin = `-- name: DeletePin :exec
+DELETE FROM pins
+WHERE name = $1
+`
+
+func (q *Queries) DeletePin(ctx context.Context, name string) error {
+	_, err := q.db.Exec(ctx, deletePin, name)
 	return err
 }
 
@@ -300,6 +312,24 @@ func (q *Queries) GetPendingObjectKeys(ctx context.Context, pendingClosureID int
 	return items, nil
 }
 
+const getPin = `-- name: GetPin :one
+SELECT name, narinfo_key, created_at, updated_at
+FROM pins
+WHERE name = $1
+`
+
+func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
+	row := q.db.QueryRow(ctx, getPin, name)
+	var i Pin
+	err := row.Scan(
+		&i.Name,
+		&i.NarinfoKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3)
@@ -333,6 +363,37 @@ type InsertPendingObjectsParams struct {
 	PendingClosureID int64    `json:"pending_closure_id"`
 	Key              string   `json:"key"`
 	Refs             []string `json:"refs"`
+}
+
+const listPins = `-- name: ListPins :many
+SELECT name, narinfo_key, created_at, updated_at
+FROM pins
+ORDER BY name
+`
+
+func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
+	rows, err := q.db.Query(ctx, listPins)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Pin
+	for rows.Next() {
+		var i Pin
+		if err := rows.Scan(
+			&i.Name,
+			&i.NarinfoKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markObjectsAsActive = `-- name: MarkObjectsAsActive :exec
@@ -395,4 +456,25 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertPin = `-- name: UpsertPin :exec
+
+INSERT INTO pins (name, narinfo_key, created_at, updated_at)
+VALUES ($1, $2, timezone('UTC', now()), timezone('UTC', now()))
+ON CONFLICT (name) DO UPDATE SET
+    narinfo_key = EXCLUDED.narinfo_key,
+    updated_at = timezone('UTC', now())
+`
+
+type UpsertPinParams struct {
+	Name       string `json:"name"`
+	NarinfoKey string `json:"narinfo_key"`
+}
+
+// Pin queries
+// Create or update a pin. Updates the narinfo_key and updated_at if the pin already exists.
+func (q *Queries) UpsertPin(ctx context.Context, arg UpsertPinParams) error {
+	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey)
+	return err
 }
