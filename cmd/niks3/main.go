@@ -46,8 +46,10 @@ func defaultAuthTokenPath() string {
 		if err != nil {
 			return ""
 		}
+
 		configDir = filepath.Join(home, ".config")
 	}
+
 	return filepath.Join(configDir, "niks3", "auth-token")
 }
 
@@ -80,6 +82,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "\nCommands:")
 	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
 	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
+	fmt.Fprintln(os.Stderr, "  pins    Manage pins (list, delete)")
 	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
 	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
@@ -97,8 +100,31 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --pin string")
+	fmt.Fprintln(os.Stderr, "        Create a named pin for the store path (requires exactly one path)")
+	fmt.Fprintln(os.Stderr, "        Pins protect closures from garbage collection and make them")
+	fmt.Fprintln(os.Stderr, "        retrievable via: curl cache.domain.tld/pins/<name>")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
+	fmt.Fprintln(os.Stderr, "  -h, --help")
+	fmt.Fprintln(os.Stderr, "        Show this help message")
+}
+
+func printPinsHelp() {
+	fmt.Fprintln(os.Stderr, "Usage: niks3 pins <subcommand> [flags]")
+	fmt.Fprintln(os.Stderr, "\nManage pins that protect closures from garbage collection.")
+	fmt.Fprintln(os.Stderr, "\nSubcommands:")
+	fmt.Fprintln(os.Stderr, "  list              List all pins")
+	fmt.Fprintln(os.Stderr, "  delete <name>     Delete a pin by name")
+	fmt.Fprintln(os.Stderr, "\nFlags:")
+	fmt.Fprintln(os.Stderr, "  --server-url string")
+	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
+	fmt.Fprintln(os.Stderr, "  --auth-token string")
+	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
+	fmt.Fprintln(os.Stderr, "  --names-only")
+	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting)")
+	fmt.Fprintln(os.Stderr, "  --debug")
+	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
@@ -130,6 +156,7 @@ func run() error {
 	// Check for global help flag
 	if len(os.Args) < 2 {
 		printUsage()
+
 		return errors.New("no command provided")
 	}
 
@@ -152,6 +179,7 @@ func run() error {
 	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
 	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify that objects in database actually exist in S3 before skipping upload")
+	pinName := pushCmd.String("pin", "", "Create a named pin for the store path (requires exactly one path)")
 	pushDebug := pushCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
 	pushHelp := pushCmd.Bool("help", false, "Show help")
 	pushCmd.BoolVar(pushHelp, "h", false, "Show help")
@@ -173,10 +201,11 @@ func run() error {
 	switch os.Args[1] {
 	case "push":
 		if err := pushCmd.Parse(os.Args[2:]); err != nil {
-			if err == flag.ErrHelp {
+			if errors.Is(err, flag.ErrHelp) {
 				printPushHelp()
 				os.Exit(0)
 			}
+
 			return fmt.Errorf("parsing flags: %w", err)
 		}
 
@@ -201,14 +230,20 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pushDebug)
+		// Validate --pin flag: requires exactly one path
+		if *pinName != "" && len(paths) != 1 {
+			return errors.New("--pin requires exactly one store path")
+		}
+
+		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *pushDebug)
 
 	case "gc":
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
-			if err == flag.ErrHelp {
+			if errors.Is(err, flag.ErrHelp) {
 				printGcHelp()
 				os.Exit(0)
 			}
+
 			return fmt.Errorf("parsing flags: %w", err)
 		}
 
@@ -242,12 +277,67 @@ func run() error {
 
 		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
 
+	case "pins":
+		// Define flags for pins command
+		pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
+		pinsCmd.Usage = func() {} // Suppress default usage
+		pinsServerURL := pinsCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL")
+		pinsAuthToken := pinsCmd.String("auth-token", defaultAuthToken, "Auth token")
+		pinsNamesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (for scripting)")
+		pinsDebug := pinsCmd.Bool("debug", false, "Enable debug logging")
+		pinsHelp := pinsCmd.Bool("help", false, "Show help")
+		pinsCmd.BoolVar(pinsHelp, "h", false, "Show help")
+
+		if err := pinsCmd.Parse(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				printPinsHelp()
+				os.Exit(0)
+			}
+
+			return fmt.Errorf("parsing flags: %w", err)
+		}
+
+		if *pinsHelp {
+			printPinsHelp()
+			os.Exit(0)
+		}
+
+		setupLogger(*pinsDebug)
+
+		if *pinsServerURL == "" {
+			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+		}
+
+		if *pinsAuthToken == "" {
+			return errors.New("auth token is required")
+		}
+
+		args := pinsCmd.Args()
+		if len(args) == 0 {
+			printPinsHelp()
+
+			return errors.New("missing subcommand (list or delete)")
+		}
+
+		switch args[0] {
+		case "list":
+			return pinsListCommand(*pinsServerURL, *pinsAuthToken, *pinsNamesOnly, *pinsDebug)
+		case "delete":
+			if len(args) < 2 {
+				return errors.New("delete requires a pin name")
+			}
+
+			return pinsDeleteCommand(*pinsServerURL, *pinsAuthToken, args[1], *pinsDebug)
+		default:
+			return fmt.Errorf("unknown pins subcommand: %s", args[0])
+		}
+
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
 }
 
-func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, debug bool) error {
+func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, pinName string, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -273,6 +363,15 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	// Use the high-level PushPaths method
 	if err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
+	}
+
+	// Create pin if requested
+	if pinName != "" {
+		if err := c.CreatePin(ctx, pinName, paths[0]); err != nil {
+			return fmt.Errorf("creating pin %q: %w", pinName, err)
+		}
+
+		slog.Info("Created pin", "name", pinName, "store_path", paths[0])
 	}
 
 	return nil
@@ -313,6 +412,71 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 		"objects-deleted-after-grace-period", stats.ObjectsDeletedAfterGracePeriod,
 		"objects-failed-to-delete", stats.ObjectsFailedToDelete,
 	)
+
+	return nil
+}
+
+func pinsListCommand(serverURL, authToken string, namesOnly, debug bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClient(ctx, serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	pins, err := c.ListPins(ctx)
+	if err != nil {
+		return fmt.Errorf("listing pins: %w", err)
+	}
+
+	if namesOnly {
+		for _, pin := range pins {
+			fmt.Println(pin.Name)
+		}
+
+		return nil
+	}
+
+	if len(pins) == 0 {
+		fmt.Println("No pins found")
+
+		return nil
+	}
+
+	// Print pins in a table format
+	fmt.Printf("%-30s %-40s %-20s\n", "NAME", "NARINFO KEY", "UPDATED AT")
+	fmt.Printf("%-30s %-40s %-20s\n", "----", "-----------", "----------")
+
+	for _, pin := range pins {
+		fmt.Printf("%-30s %-40s %-20s\n", pin.Name, pin.NarinfoKey, pin.UpdatedAt)
+	}
+
+	return nil
+}
+
+func pinsDeleteCommand(serverURL, authToken, name string, debug bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClient(ctx, serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	if err := c.DeletePin(ctx, name); err != nil {
+		return fmt.Errorf("deleting pin: %w", err)
+	}
+
+	slog.Info("Deleted pin", "name", name)
 
 	return nil
 }
