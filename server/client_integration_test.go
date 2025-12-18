@@ -605,10 +605,13 @@ func TestPinProtectsFromGC(t *testing.T) {
 
 	// Create test server with auth
 	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
+		Pool:            service.Pool,
+		MinioClient:     service.MinioClient,
+		Bucket:          service.Bucket,
+		APIToken:        testAuthToken,
+		S3RateLimiter:   service.S3RateLimiter,
+		S3Concurrency:   service.S3Concurrency,
+		GCTasks:         server.NewGCTaskStore(),
 	}
 
 	// Initialize the bucket with nix-cache-info
@@ -619,6 +622,7 @@ func TestPinProtectsFromGC(t *testing.T) {
 	registerTestHandlers(mux, testService)
 	mux.HandleFunc("POST /api/pins/{name}", testService.AuthMiddleware(testService.CreatePinHandler))
 	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", testService.AuthMiddleware(testService.GCStatusHandler))
 
 	ts := httptest.NewServer(mux)
 
