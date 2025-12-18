@@ -1,4 +1,4 @@
-package oidc
+package oidc_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/server/oidc"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/oauth2-proxy/mockoidc"
 )
@@ -16,15 +17,18 @@ import (
 // setupMockOIDC starts a mock OIDC server and returns it along with a cleanup function.
 func setupMockOIDC(t *testing.T) *mockoidc.MockOIDC {
 	t.Helper()
+
 	m, err := mockoidc.Run()
 	if err != nil {
 		t.Fatalf("failed to start mock OIDC server: %v", err)
 	}
+
 	t.Cleanup(func() {
 		if err := m.Shutdown(); err != nil {
 			t.Errorf("failed to shutdown mock OIDC server: %v", err)
 		}
 	})
+
 	return m
 }
 
@@ -36,15 +40,19 @@ func signToken(t *testing.T, m *mockoidc.MockOIDC, claims jwt.MapClaims) string 
 	if _, ok := claims["iss"]; !ok {
 		claims["iss"] = m.Issuer()
 	}
+
 	if _, ok := claims["aud"]; !ok {
 		claims["aud"] = m.Config().ClientID
 	}
+
 	if _, ok := claims["sub"]; !ok {
 		claims["sub"] = "test-subject"
 	}
+
 	if _, ok := claims["iat"]; !ok {
 		claims["iat"] = m.Now().Unix()
 	}
+
 	if _, ok := claims["exp"]; !ok {
 		claims["exp"] = m.Now().Add(time.Hour).Unix()
 	}
@@ -53,30 +61,36 @@ func signToken(t *testing.T, m *mockoidc.MockOIDC, claims jwt.MapClaims) string 
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}
+
 	return token
 }
 
 // writeTestConfig writes an OIDC config file and returns its path.
-func writeTestConfig(t *testing.T, config Config) string {
+func writeTestConfig(t *testing.T, config oidc.Config) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "oidc.json")
+
 	data, err := json.Marshal(config)
 	if err != nil {
 		t.Fatalf("failed to marshal config: %v", err)
 	}
+
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
+
 	return configPath
 }
 
 func TestValidateToken_ValidToken(t *testing.T) {
+	t.Parallel()
+
 	m := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true, // Allow HTTP for test mock server
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
 				Audience: m.Config().ClientID,
@@ -85,7 +99,7 @@ func TestValidateToken_ValidToken(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -93,7 +107,7 @@ func TestValidateToken_ValidToken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -110,17 +124,20 @@ func TestValidateToken_ValidToken(t *testing.T) {
 	if claims.Subject != "repo:myorg/myrepo:ref:refs/heads/main" {
 		t.Errorf("expected subject 'repo:myorg/myrepo:ref:refs/heads/main', got %q", claims.Subject)
 	}
+
 	if claims.Provider != "test" {
 		t.Errorf("expected provider 'test', got %q", claims.Provider)
 	}
 }
 
 func TestValidateToken_WrongAudience(t *testing.T) {
+	t.Parallel()
+
 	m := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
 				Audience: "https://different-audience.example.com",
@@ -129,7 +146,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -137,7 +154,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -155,11 +172,13 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 }
 
 func TestValidateToken_Expired(t *testing.T) {
+	t.Parallel()
+
 	m := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
 				Audience: m.Config().ClientID,
@@ -168,7 +187,7 @@ func TestValidateToken_Expired(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -176,7 +195,7 @@ func TestValidateToken_Expired(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -194,11 +213,13 @@ func TestValidateToken_Expired(t *testing.T) {
 }
 
 func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
+	t.Parallel()
+
 	m := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
 				Audience: m.Config().ClientID,
@@ -210,7 +231,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -218,7 +239,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -234,21 +255,24 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 		t.Fatal("expected error for mismatched bound claims, got nil")
 	}
 
-	var validationErr *ValidationError
+	var validationErr *oidc.ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("expected ValidationError, got %T", err)
 	}
+
 	if validationErr.Provider != "test" {
 		t.Errorf("expected provider 'test', got %q", validationErr.Provider)
 	}
 }
 
 func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
+	t.Parallel()
+
 	m := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:       m.Issuer(),
 				Audience:     m.Config().ClientID,
@@ -258,7 +282,7 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -266,7 +290,7 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -283,12 +307,14 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 }
 
 func TestValidateToken_MultipleProviders(t *testing.T) {
+	t.Parallel()
+
 	m1 := setupMockOIDC(t)
 	m2 := setupMockOIDC(t)
 
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
 				Issuer:   m1.Issuer(),
 				Audience: m1.Config().ClientID,
@@ -301,7 +327,7 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -309,7 +335,7 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -325,22 +351,26 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected token from second provider to be valid, got error: %v", err)
 	}
+
 	if claims.Subject != "test-subject-from-provider2" {
 		t.Errorf("expected subject 'test-subject-from-provider2', got %q", claims.Subject)
 	}
+
 	if claims.Provider != "provider2" {
 		t.Errorf("expected provider 'provider2', got %q", claims.Provider)
 	}
 }
 
 func TestValidateToken_NoMatchingProvider(t *testing.T) {
+	t.Parallel()
+
 	m1 := setupMockOIDC(t)
 	m2 := setupMockOIDC(t)
 
 	// Configure only m1
-	config := Config{
+	config := oidc.Config{
 		AllowInsecure: true,
-		Providers: map[string]*ProviderConfig{
+		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
 				Issuer:   m1.Issuer(),
 				Audience: m1.Config().ClientID,
@@ -349,7 +379,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 	}
 	configPath := writeTestConfig(t, config)
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := oidc.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -357,7 +387,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	validator, err := NewValidator(ctx, cfg)
+	validator, err := oidc.NewValidator(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -374,10 +404,11 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 		t.Fatal("expected error for token from unconfigured provider, got nil")
 	}
 
-	var validationErr *ValidationError
+	var validationErr *oidc.ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("expected ValidationError, got %T", err)
 	}
+
 	if len(validationErr.TriedProviders) != 1 {
 		t.Errorf("expected 1 tried provider, got %d", len(validationErr.TriedProviders))
 	}

@@ -35,9 +35,6 @@ func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, fai
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	// Add authentication
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
-
 	// Execute request
 	resp, err := c.DoWithRetry(ctx, req)
 	if err != nil {
