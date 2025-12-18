@@ -172,7 +172,20 @@ func run() error {
 		return err
 	}
 
-	// Define flags for push command
+	// Parse command
+	switch os.Args[1] {
+	case "push":
+		return runPush(defaultAuthToken)
+	case "gc":
+		return runGc(defaultAuthToken)
+	case "pins":
+		return runPins(defaultAuthToken)
+	default:
+		return fmt.Errorf("unknown command: %s", os.Args[1])
+	}
+}
+
+func runPush(defaultAuthToken string) error {
 	pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
 	pushCmd.Usage = func() {} // Suppress default usage, we'll handle it
 	pushServerURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
@@ -184,7 +197,44 @@ func run() error {
 	pushHelp := pushCmd.Bool("help", false, "Show help")
 	pushCmd.BoolVar(pushHelp, "h", false, "Show help")
 
-	// Define flags for gc command
+	if err := pushCmd.Parse(os.Args[2:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printPushHelp()
+			os.Exit(0)
+		}
+
+		return fmt.Errorf("parsing flags: %w", err)
+	}
+
+	if *pushHelp {
+		printPushHelp()
+		os.Exit(0)
+	}
+
+	setupLogger(*pushDebug)
+
+	if *pushServerURL == "" {
+		return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	}
+
+	if *pushAuthToken == "" {
+		return errors.New("auth token is required (use --auth-token, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
+	}
+
+	paths := pushCmd.Args()
+	if len(paths) == 0 {
+		return errors.New("at least one store path is required")
+	}
+
+	// Validate --pin flag: requires exactly one path
+	if *pinName != "" && len(paths) != 1 {
+		return errors.New("--pin requires exactly one store path")
+	}
+
+	return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *pushDebug)
+}
+
+func runGc(defaultAuthToken string) error {
 	gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
 	gcCmd.Usage = func() {} // Suppress default usage, we'll handle it
 	gcServerURL := gcCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
@@ -197,143 +247,97 @@ func run() error {
 	gcHelp := gcCmd.Bool("help", false, "Show help")
 	gcCmd.BoolVar(gcHelp, "h", false, "Show help")
 
-	// Parse command
-	switch os.Args[1] {
-	case "push":
-		if err := pushCmd.Parse(os.Args[2:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printPushHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		if *pushHelp {
-			printPushHelp()
-			os.Exit(0)
-		}
-
-		// Setup logger with debug level if requested
-		setupLogger(*pushDebug)
-
-		if *pushServerURL == "" {
-			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
-		}
-
-		if *pushAuthToken == "" {
-			return errors.New("auth token is required (use --auth-token, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
-		}
-
-		paths := pushCmd.Args()
-		if len(paths) == 0 {
-			return errors.New("at least one store path is required")
-		}
-
-		// Validate --pin flag: requires exactly one path
-		if *pinName != "" && len(paths) != 1 {
-			return errors.New("--pin requires exactly one store path")
-		}
-
-		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *pushDebug)
-
-	case "gc":
-		if err := gcCmd.Parse(os.Args[2:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printGcHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		if *gcHelp {
+	if err := gcCmd.Parse(os.Args[2:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
 			printGcHelp()
 			os.Exit(0)
 		}
 
-		// Setup logger with debug level if requested
-		setupLogger(*gcDebug)
+		return fmt.Errorf("parsing flags: %w", err)
+	}
 
-		if *gcServerURL == "" {
-			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	if *gcHelp {
+		printGcHelp()
+		os.Exit(0)
+	}
+
+	setupLogger(*gcDebug)
+
+	if *gcServerURL == "" {
+		return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	}
+
+	// Handle auth token from file if specified
+	token := *gcAuthToken
+
+	if *gcAuthTokenPath != "" {
+		tokenData, err := os.ReadFile(*gcAuthTokenPath)
+		if err != nil {
+			return fmt.Errorf("reading auth token file: %w", err)
 		}
 
-		// Handle auth token from file if specified
-		token := *gcAuthToken
+		token = strings.TrimSpace(string(tokenData))
+	}
 
-		if *gcAuthTokenPath != "" {
-			tokenData, err := os.ReadFile(*gcAuthTokenPath)
-			if err != nil {
-				return fmt.Errorf("reading auth token file: %w", err)
-			}
+	if token == "" {
+		return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
+	}
 
-			token = strings.TrimSpace(string(tokenData))
-		}
+	return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
+}
 
-		if token == "" {
-			return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
-		}
+func runPins(defaultAuthToken string) error {
+	pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
+	pinsCmd.Usage = func() {} // Suppress default usage
+	pinsServerURL := pinsCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL")
+	pinsAuthToken := pinsCmd.String("auth-token", defaultAuthToken, "Auth token")
+	pinsNamesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (for scripting)")
+	pinsDebug := pinsCmd.Bool("debug", false, "Enable debug logging")
+	pinsHelp := pinsCmd.Bool("help", false, "Show help")
+	pinsCmd.BoolVar(pinsHelp, "h", false, "Show help")
 
-		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
-
-	case "pins":
-		// Define flags for pins command
-		pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
-		pinsCmd.Usage = func() {} // Suppress default usage
-		pinsServerURL := pinsCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL")
-		pinsAuthToken := pinsCmd.String("auth-token", defaultAuthToken, "Auth token")
-		pinsNamesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (for scripting)")
-		pinsDebug := pinsCmd.Bool("debug", false, "Enable debug logging")
-		pinsHelp := pinsCmd.Bool("help", false, "Show help")
-		pinsCmd.BoolVar(pinsHelp, "h", false, "Show help")
-
-		if err := pinsCmd.Parse(os.Args[2:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printPinsHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		if *pinsHelp {
+	if err := pinsCmd.Parse(os.Args[2:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
 			printPinsHelp()
 			os.Exit(0)
 		}
 
-		setupLogger(*pinsDebug)
+		return fmt.Errorf("parsing flags: %w", err)
+	}
 
-		if *pinsServerURL == "" {
-			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	if *pinsHelp {
+		printPinsHelp()
+		os.Exit(0)
+	}
+
+	setupLogger(*pinsDebug)
+
+	if *pinsServerURL == "" {
+		return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	}
+
+	if *pinsAuthToken == "" {
+		return errors.New("auth token is required")
+	}
+
+	args := pinsCmd.Args()
+	if len(args) == 0 {
+		printPinsHelp()
+
+		return errors.New("missing subcommand (list or delete)")
+	}
+
+	switch args[0] {
+	case "list":
+		return pinsListCommand(*pinsServerURL, *pinsAuthToken, *pinsNamesOnly, *pinsDebug)
+	case "delete":
+		if len(args) < 2 {
+			return errors.New("delete requires a pin name")
 		}
 
-		if *pinsAuthToken == "" {
-			return errors.New("auth token is required")
-		}
-
-		args := pinsCmd.Args()
-		if len(args) == 0 {
-			printPinsHelp()
-
-			return errors.New("missing subcommand (list or delete)")
-		}
-
-		switch args[0] {
-		case "list":
-			return pinsListCommand(*pinsServerURL, *pinsAuthToken, *pinsNamesOnly, *pinsDebug)
-		case "delete":
-			if len(args) < 2 {
-				return errors.New("delete requires a pin name")
-			}
-
-			return pinsDeleteCommand(*pinsServerURL, *pinsAuthToken, args[1], *pinsDebug)
-		default:
-			return fmt.Errorf("unknown pins subcommand: %s", args[0])
-		}
-
+		return pinsDeleteCommand(*pinsServerURL, *pinsAuthToken, args[1], *pinsDebug)
 	default:
-		return fmt.Errorf("unknown command: %s", os.Args[1])
+		return fmt.Errorf("unknown pins subcommand: %s", args[0])
 	}
 }
 
@@ -436,24 +440,24 @@ func pinsListCommand(serverURL, authToken string, namesOnly, debug bool) error {
 
 	if namesOnly {
 		for _, pin := range pins {
-			fmt.Println(pin.Name)
+			_, _ = fmt.Fprintln(os.Stdout, pin.Name)
 		}
 
 		return nil
 	}
 
 	if len(pins) == 0 {
-		fmt.Println("No pins found")
+		_, _ = fmt.Fprintln(os.Stdout, "No pins found")
 
 		return nil
 	}
 
 	// Print pins in a table format
-	fmt.Printf("%-30s %-40s %-20s\n", "NAME", "NARINFO KEY", "UPDATED AT")
-	fmt.Printf("%-30s %-40s %-20s\n", "----", "-----------", "----------")
+	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", "NAME", "NARINFO KEY", "UPDATED AT")
+	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", "----", "-----------", "----------")
 
 	for _, pin := range pins {
-		fmt.Printf("%-30s %-40s %-20s\n", pin.Name, pin.NarinfoKey, pin.UpdatedAt)
+		_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", pin.Name, pin.NarinfoKey, pin.UpdatedAt)
 	}
 
 	return nil

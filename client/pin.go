@@ -41,7 +41,6 @@ func (c *Client) CreatePin(ctx context.Context, name, storePath string) error {
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)
@@ -68,8 +67,6 @@ func (c *Client) ListPins(ctx context.Context) ([]PinInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 
 	resp, err := c.DoWithRetry(ctx, req)
 	if err != nil {
@@ -100,8 +97,6 @@ func (c *Client) DeletePin(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 
 	resp, err := c.DoWithRetry(ctx, req)
 	if err != nil {
