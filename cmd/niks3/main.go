@@ -164,6 +164,61 @@ func run() error {
 
 		return gcCommand(*cf.ServerURL, ts, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
 
+	case "pins":
+		if len(os.Args) < 3 {
+			printPinsHelp()
+
+			return errors.New("missing subcommand (create, list, or delete)")
+		}
+
+		pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
+		cf := cmdutil.AddCommonFlags(pinsCmd)
+		namesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (list only)")
+		tf := cmdutil.AddTLSFlags(pinsCmd)
+
+		subcommand := os.Args[2]
+
+		if err := pinsCmd.Parse(os.Args[3:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				printPinsHelp()
+				os.Exit(0)
+			}
+
+			return fmt.Errorf("parsing flags: %w", err)
+		}
+
+		cmdutil.SetupLogger(*cf.Debug)
+
+		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
+		}
+
+		ts, err := cf.TokenSource(pinsCmd, tf)
+		if err != nil {
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
+		}
+
+		switch subcommand {
+		case "create":
+			args := pinsCmd.Args()
+			if len(args) < 2 {
+				return errors.New("create requires a pin name and store path")
+			}
+
+			return pinsCreateCommandNew(*cf.ServerURL, ts, args[0], args[1], *cf.Debug, tf)
+		case "list":
+			return pinsListCommandNew(*cf.ServerURL, ts, *namesOnly, *cf.Debug, tf)
+		case "delete":
+			args := pinsCmd.Args()
+			if len(args) < 1 {
+				return errors.New("delete requires a pin name")
+			}
+
+			return pinsDeleteCommandNew(*cf.ServerURL, ts, args[0], *cf.Debug, tf)
+		default:
+			return fmt.Errorf("unknown pins subcommand: %s", subcommand)
+		}
+
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
@@ -253,15 +308,16 @@ func printPinsHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3 pins <subcommand> [flags]")
 	fmt.Fprintln(os.Stderr, "\nManage pins that protect closures from garbage collection.")
 	fmt.Fprintln(os.Stderr, "\nSubcommands:")
-	fmt.Fprintln(os.Stderr, "  list              List all pins")
-	fmt.Fprintln(os.Stderr, "  delete <name>     Delete a pin by name")
+	fmt.Fprintln(os.Stderr, "  create <name> <store-path>  Create a pin for an existing store path")
+	fmt.Fprintln(os.Stderr, "  list                        List all pins")
+	fmt.Fprintln(os.Stderr, "  delete <name>               Delete a pin by name")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, "  --auth-token string")
 	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
 	fmt.Fprintln(os.Stderr, "  --names-only")
-	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting)")
+	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting, list only)")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -411,6 +467,125 @@ func pinsDeleteCommand(serverURL, authToken, name string, debug bool) error {
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	if err := c.DeletePin(ctx, name); err != nil {
+		return fmt.Errorf("deleting pin: %w", err)
+	}
+
+	slog.Info("Deleted pin", "name", name)
+
+	return nil
+}
+
+func pinsCreateCommand(serverURL, authToken, name, storePath string, debug bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClient(ctx, serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	if err := c.CreatePin(ctx, name, storePath); err != nil {
+		return fmt.Errorf("creating pin: %w", err)
+	}
+
+	slog.Info("Created pin", "name", name, "store_path", storePath)
+
+	return nil
+}
+
+func pinsCreateCommandNew(serverURL string, ts client.TokenSource, name, storePath string, debug bool, tf cmdutil.TLSFlags) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if err := tf.Configure(c); err != nil {
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	if err := c.CreatePin(ctx, name, storePath); err != nil {
+		return fmt.Errorf("creating pin: %w", err)
+	}
+
+	slog.Info("Created pin", "name", name, "store_path", storePath)
+
+	return nil
+}
+
+func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, debug bool, tf cmdutil.TLSFlags) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if err := tf.Configure(c); err != nil {
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	pins, err := c.ListPins(ctx)
+	if err != nil {
+		return fmt.Errorf("listing pins: %w", err)
+	}
+
+	if namesOnly {
+		for _, pin := range pins {
+			fmt.Println(pin.Name)
+		}
+
+		return nil
+	}
+
+	if len(pins) == 0 {
+		_, _ = fmt.Fprintln(os.Stdout, "No pins found")
+
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-25s %s\n", "NAME", "CREATED", "STORE PATH")
+
+	for _, pin := range pins {
+		_, _ = fmt.Fprintf(os.Stdout, "%-30s %-25s %s\n", pin.Name, pin.CreatedAt.Format("2006-01-02 15:04:05 MST"), pin.StorePath)
+	}
+
+	return nil
+}
+
+func pinsDeleteCommandNew(serverURL string, ts client.TokenSource, name string, debug bool, tf cmdutil.TLSFlags) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if err := tf.Configure(c); err != nil {
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	if debug {
