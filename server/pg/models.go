@@ -37,3 +37,10 @@ type PendingObject struct {
 	Key              string   `json:"key"`
 	Refs             []string `json:"refs"`
 }
+
+type Pin struct {
+	Name       string             `json:"name"`
+	NarinfoKey string             `json:"narinfo_key"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}

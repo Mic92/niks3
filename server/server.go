@@ -93,6 +93,7 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Fall back to OIDC validation if configured
 		var oidcErr *oidc.ValidationError
+
 		if s.OIDCValidator != nil {
 			claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
 			if err == nil {
@@ -103,9 +104,11 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			// Store the OIDC error for later logging
-			if validationErr, ok := err.(*oidc.ValidationError); ok {
+			validationErr := &oidc.ValidationError{}
+			if errors.As(err, &validationErr) {
 				oidcErr = validationErr
 			}
+
 			slog.Debug("OIDC validation failed")
 		}
 
@@ -198,6 +201,7 @@ func runServer(opts *options) error {
 
 		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		validator, err := oidc.NewValidator(initCtx, oidcCfg)
+
 		initCancel()
 
 		if err != nil {
@@ -205,6 +209,7 @@ func runServer(opts *options) error {
 		}
 
 		service.OIDCValidator = validator
+
 		slog.Info("OIDC authentication enabled", "config", opts.OIDCConfigPath)
 	}
 
@@ -245,6 +250,10 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
+
+	mux.HandleFunc("GET /api/pins", service.AuthMiddleware(service.ListPinsHandler))
+	mux.HandleFunc("POST /api/pins/{name}", service.AuthMiddleware(service.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/pins/{name}", service.AuthMiddleware(service.DeletePinHandler))
 
 	if opts.EnableReadProxy {
 		service.EnableReadProxy = true
