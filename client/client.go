@@ -53,7 +53,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Perform request
 	resp, err := t.transport.RoundTrip(req)
 	if err != nil {
-		return nil, err //nolint:wrapcheck // RoundTripper contract: pass error through unwrapped
+		return nil, fmt.Errorf("round trip: %w", err) //nolint:wrapcheck // RoundTripper contract: pass error through unwrapped
 	}
 
 	// Log response
