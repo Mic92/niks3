@@ -114,15 +114,16 @@ func printPinsHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3 pins <subcommand> [flags]")
 	fmt.Fprintln(os.Stderr, "\nManage pins that protect closures from garbage collection.")
 	fmt.Fprintln(os.Stderr, "\nSubcommands:")
-	fmt.Fprintln(os.Stderr, "  list              List all pins")
-	fmt.Fprintln(os.Stderr, "  delete <name>     Delete a pin by name")
+	fmt.Fprintln(os.Stderr, "  create <name> <store-path>  Create a pin for an existing store path")
+	fmt.Fprintln(os.Stderr, "  list                        List all pins")
+	fmt.Fprintln(os.Stderr, "  delete <name>               Delete a pin by name")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, "  --auth-token string")
 	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
 	fmt.Fprintln(os.Stderr, "  --names-only")
-	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting)")
+	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting, list only)")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -324,10 +325,16 @@ func runPins(defaultAuthToken string) error {
 	if len(args) == 0 {
 		printPinsHelp()
 
-		return errors.New("missing subcommand (list or delete)")
+		return errors.New("missing subcommand (create, list, or delete)")
 	}
 
 	switch args[0] {
+	case "create":
+		if len(args) < 3 {
+			return errors.New("create requires a pin name and store path")
+		}
+
+		return pinsCreateCommand(*pinsServerURL, *pinsAuthToken, args[1], args[2], *pinsDebug)
 	case "list":
 		return pinsListCommand(*pinsServerURL, *pinsAuthToken, *pinsNamesOnly, *pinsDebug)
 	case "delete":
@@ -481,6 +488,28 @@ func pinsDeleteCommand(serverURL, authToken, name string, debug bool) error {
 	}
 
 	slog.Info("Deleted pin", "name", name)
+
+	return nil
+}
+
+func pinsCreateCommand(serverURL, authToken, name, storePath string, debug bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := client.NewClient(ctx, serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	if err := c.CreatePin(ctx, name, storePath); err != nil {
+		return fmt.Errorf("creating pin: %w", err)
+	}
+
+	slog.Info("Created pin", "name", name, "store_path", storePath)
 
 	return nil
 }
