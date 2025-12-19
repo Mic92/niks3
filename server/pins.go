@@ -87,6 +87,7 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	err = queries.UpsertPin(r.Context(), pg.UpsertPinParams{
 		Name:       name,
 		NarinfoKey: narinfoKey,
+		StorePath:  req.StorePath,
 	})
 	if err != nil {
 		slog.Error("Failed to upsert pin", "name", name, "narinfo_key", narinfoKey, "error", err)
@@ -115,10 +116,10 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 
 // PinInfo represents a pin's information for API responses.
 type PinInfo struct {
-	Name       string `json:"name"`
-	NarinfoKey string `json:"narinfo_key"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	Name      string `json:"name"`
+	StorePath string `json:"store_path"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // ListPinsHandler handles GET /api/pins endpoint.
@@ -140,10 +141,10 @@ func (s *Service) ListPinsHandler(w http.ResponseWriter, r *http.Request) {
 	result := make([]PinInfo, 0, len(pins))
 	for _, p := range pins {
 		result = append(result, PinInfo{
-			Name:       p.Name,
-			NarinfoKey: p.NarinfoKey,
-			CreatedAt:  p.CreatedAt.Time.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:  p.UpdatedAt.Time.Format("2006-01-02T15:04:05Z"),
+			Name:      p.Name,
+			StorePath: p.StorePath,
+			CreatedAt: p.CreatedAt.Time.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: p.UpdatedAt.Time.Format("2006-01-02T15:04:05Z"),
 		})
 	}
 

@@ -41,6 +41,7 @@ type PendingObject struct {
 type Pin struct {
 	Name       string             `json:"name"`
 	NarinfoKey string             `json:"narinfo_key"`
+	StorePath  string             `json:"store_path"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
