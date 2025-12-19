@@ -174,15 +174,16 @@ LIMIT sqlc.arg(limit_count);
 -- Pin queries
 
 -- name: UpsertPin :exec
--- Create or update a pin. Updates the narinfo_key and updated_at if the pin already exists.
-INSERT INTO pins (name, narinfo_key, created_at, updated_at)
-VALUES ($1, $2, timezone('UTC', now()), timezone('UTC', now()))
+-- Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
+VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
+    store_path = EXCLUDED.store_path,
     updated_at = timezone('UTC', now());
 
 -- name: GetPin :one
-SELECT name, narinfo_key, created_at, updated_at
+SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 WHERE name = $1;
 
@@ -191,6 +192,6 @@ DELETE FROM pins
 WHERE name = $1;
 
 -- name: ListPins :many
-SELECT name, narinfo_key, created_at, updated_at
+SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name;

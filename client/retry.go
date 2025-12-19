@@ -208,8 +208,15 @@ func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter)
 // If the request is to the API server (matches baseURL host), the Authorization header is automatically added.
 func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
 	// Add auth header for API requests (same host as baseURL)
-	if c.authToken != "" && req.URL.Host == c.baseURL.Host {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	if req.URL.Host == c.baseURL.Host {
+		token, err := c.tokenSource(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("obtaining auth token: %w", err)
+		}
+
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 
 	// If retries are disabled, just do the request once

@@ -313,7 +313,7 @@ func (q *Queries) GetPendingObjectKeys(ctx context.Context, pendingClosureID int
 }
 
 const getPin = `-- name: GetPin :one
-SELECT name, narinfo_key, created_at, updated_at
+SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 WHERE name = $1
 `
@@ -324,6 +324,7 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 	err := row.Scan(
 		&i.Name,
 		&i.NarinfoKey,
+		&i.StorePath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -366,7 +367,7 @@ type InsertPendingObjectsParams struct {
 }
 
 const listPins = `-- name: ListPins :many
-SELECT name, narinfo_key, created_at, updated_at
+SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name
 `
@@ -383,6 +384,7 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 		if err := rows.Scan(
 			&i.Name,
 			&i.NarinfoKey,
+			&i.StorePath,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -460,21 +462,23 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 
 const upsertPin = `-- name: UpsertPin :exec
 
-INSERT INTO pins (name, narinfo_key, created_at, updated_at)
-VALUES ($1, $2, timezone('UTC', now()), timezone('UTC', now()))
+INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
+VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
+    store_path = EXCLUDED.store_path,
     updated_at = timezone('UTC', now())
 `
 
 type UpsertPinParams struct {
 	Name       string `json:"name"`
 	NarinfoKey string `json:"narinfo_key"`
+	StorePath  string `json:"store_path"`
 }
 
 // Pin queries
-// Create or update a pin. Updates the narinfo_key and updated_at if the pin already exists.
+// Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
 func (q *Queries) UpsertPin(ctx context.Context, arg UpsertPinParams) error {
-	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey)
+	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey, arg.StorePath)
 	return err
 }
