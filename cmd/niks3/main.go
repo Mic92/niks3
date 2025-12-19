@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/cmdutil"
@@ -165,7 +167,8 @@ func run() error {
 		return gcCommand(*cf.ServerURL, ts, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
 
 	case "pins":
-		if len(os.Args) < 3 {
+		
+	if len(os.Args) < 3 {
 			printPinsHelp()
 
 			return errors.New("missing subcommand (create, list, or delete)")
@@ -174,6 +177,7 @@ func run() error {
 		pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
 		cf := cmdutil.AddCommonFlags(pinsCmd)
 		namesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (list only)")
+		jsonOutput := pinsCmd.Bool("json", false, "Output as JSON (list only)")
 		tf := cmdutil.AddTLSFlags(pinsCmd)
 
 		subcommand := os.Args[2]
@@ -207,7 +211,7 @@ func run() error {
 
 			return pinsCreateCommandNew(*cf.ServerURL, ts, args[0], args[1], *cf.Debug, tf)
 		case "list":
-			return pinsListCommandNew(*cf.ServerURL, ts, *namesOnly, *cf.Debug, tf)
+			return pinsListCommandNew(*cf.ServerURL, ts, namesOnly, jsonOutput, *cf.Debug, tf)
 		case "delete":
 			args := pinsCmd.Args()
 			if len(args) < 1 {
@@ -318,191 +322,17 @@ func printPinsHelp() {
 	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
 	fmt.Fprintln(os.Stderr, "  --names-only")
 	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting, list only)")
+	fmt.Fprintln(os.Stderr, "  --json")
+	fmt.Fprintln(os.Stderr, "        Output as JSON (list only)")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
 
-func runPush(defaultAuthToken string) error {
-	pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
-	cf := cmdutil.AddCommonFlags(pushCmd)
-	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
-	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
-	pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
-	tf := cmdutil.AddTLSFlags(pushCmd)
 
-	if err := pushCmd.Parse(os.Args[2:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printPushHelp()
-			os.Exit(0)
-		}
 
-		return fmt.Errorf("parsing flags: %w", err)
-	}
 
-	if *cf.Help {
-		printPushHelp()
-		os.Exit(0)
-	}
-
-	cmdutil.SetupLogger(*cf.Debug)
-
-	if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	ts, err := cf.TokenSource(pushCmd, tf)
-	if err != nil {
-		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	paths := pushCmd.Args()
-	if len(paths) == 0 {
-		return errors.New("at least one store path is required")
-	}
-
-	return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *cf.Debug, tf)
-}
-
-func runGc(defaultAuthToken string) error {
-	gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
-	gcCmd.Usage = func() {} // Suppress default usage, we'll handle it
-	gcServerURL := gcCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
-	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
-	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
-	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
-	pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration (e.g., '6h' for 6 hours)")
-	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
-	gcDebug := gcCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
-	gcHelp := gcCmd.Bool("help", false, "Show help")
-	gcCmd.BoolVar(gcHelp, "h", false, "Show help")
-
-	if err := gcCmd.Parse(os.Args[2:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printGcHelp()
-			os.Exit(0)
-		}
-
-		return fmt.Errorf("parsing flags: %w", err)
-	}
-
-	if *gcHelp {
-		printGcHelp()
-		os.Exit(0)
-	}
-
-	setupLogger(*gcDebug)
-
-	if *gcServerURL == "" {
-		return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
-	}
-
-	// Handle auth token from file if specified
-	token := *gcAuthToken
-
-	if *gcAuthTokenPath != "" {
-		tokenData, err := os.ReadFile(*gcAuthTokenPath)
-		if err != nil {
-			return fmt.Errorf("reading auth token file: %w", err)
-		}
-
-		token = strings.TrimSpace(string(tokenData))
-	}
-
-	if token == "" {
-		return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
-	}
-
-	return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
-}
-
-func pinsListCommand(serverURL, authToken string, namesOnly, debug bool) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	c, err := client.NewClient(ctx, serverURL, authToken)
-	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
-	}
-
-	pins, err := c.ListPins(ctx)
-	if err != nil {
-		return fmt.Errorf("listing pins: %w", err)
-	}
-
-	if namesOnly {
-		for _, pin := range pins {
-			_, _ = fmt.Fprintln(os.Stdout, pin.Name)
-		}
-
-		return nil
-	}
-
-	if len(pins) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, "No pins found")
-
-		return nil
-	}
-
-	// Print pins in a table format
-	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", "NAME", "NARINFO KEY", "UPDATED AT")
-	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", "----", "-----------", "----------")
-
-	for _, pin := range pins {
-		_, _ = fmt.Fprintf(os.Stdout, "%-30s %-40s %-20s\n", pin.Name, pin.NarinfoKey, pin.UpdatedAt)
-	}
-
-	return nil
-}
-
-func pinsDeleteCommand(serverURL, authToken, name string, debug bool) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	c, err := client.NewClient(ctx, serverURL, authToken)
-	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
-	}
-
-	if err := c.DeletePin(ctx, name); err != nil {
-		return fmt.Errorf("deleting pin: %w", err)
-	}
-
-	slog.Info("Deleted pin", "name", name)
-
-	return nil
-}
-
-func pinsCreateCommand(serverURL, authToken, name, storePath string, debug bool) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	c, err := client.NewClient(ctx, serverURL, authToken)
-	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
-	}
-
-	if err := c.CreatePin(ctx, name, storePath); err != nil {
-		return fmt.Errorf("creating pin: %w", err)
-	}
-
-	slog.Info("Created pin", "name", name, "store_path", storePath)
-
-	return nil
-}
 
 func pinsCreateCommandNew(serverURL string, ts client.TokenSource, name, storePath string, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -530,7 +360,7 @@ func pinsCreateCommandNew(serverURL string, ts client.TokenSource, name, storePa
 	return nil
 }
 
-func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, debug bool, tf cmdutil.TLSFlags) error {
+func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, jsonOutput *bool, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -552,7 +382,14 @@ func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, debu
 		return fmt.Errorf("listing pins: %w", err)
 	}
 
-	if namesOnly {
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+
+		return enc.Encode(pins) //nolint:wrapcheck // direct output
+	}
+
+	if *namesOnly {
 		for _, pin := range pins {
 			fmt.Println(pin.Name)
 		}
@@ -566,11 +403,14 @@ func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, debu
 		return nil
 	}
 
-	_, _ = fmt.Fprintf(os.Stdout, "%-30s %-25s %s\n", "NAME", "CREATED", "STORE PATH")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "NAME\tSTORE PATH\tUPDATED AT")
 
 	for _, pin := range pins {
-		_, _ = fmt.Fprintf(os.Stdout, "%-30s %-25s %s\n", pin.Name, pin.CreatedAt.Format("2006-01-02 15:04:05 MST"), pin.StorePath)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", pin.Name, pin.StorePath, pin.UpdatedAt)
 	}
+
+	_ = w.Flush()
 
 	return nil
 }
@@ -600,3 +440,5 @@ func pinsDeleteCommandNew(serverURL string, ts client.TokenSource, name string, 
 
 	return nil
 }
+
+

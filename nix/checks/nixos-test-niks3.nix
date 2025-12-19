@@ -51,7 +51,7 @@ testers.nixosTest {
           "flakes"
         ]
         ++ lib.optional ca-derivations-supported "ca-derivations";
-        nix.settings.substituters = [ ];
+        nix.settings.substituters = lib.mkForce [ ];
         # Trust the signing key
         nix.settings.trusted-public-keys = [ signingPublicKey ];
 
@@ -511,6 +511,18 @@ testers.nixosTest {
       ${niks3}/bin/niks3 pins list --names-only
     """).strip()
     assert "hello-pin" in pins_names, f"Pin 'hello-pin' not found in names-only list: {pins_names}"
+
+    # Test 3b: List pins with --json
+    import json
+    pins_json = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list --json
+    """).strip()
+    pins_data = json.loads(pins_json)
+    assert len(pins_data) == 1, f"Expected 1 pin in JSON output, got {len(pins_data)}"
+    assert pins_data[0]["name"] == "hello-pin", f"Expected pin name 'hello-pin', got {pins_data[0]['name']}"
+    assert pins_data[0]["store_path"] == test_path, f"Expected store_path {test_path}, got {pins_data[0]['store_path']}"
 
     # Test 4: Verify pin is accessible via S3 (using s5cmd with credentials)
     pin_content = server.succeed("""

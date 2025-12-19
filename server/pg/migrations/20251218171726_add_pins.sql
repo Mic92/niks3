@@ -9,6 +9,7 @@ CREATE TABLE pins
 (
     name varchar(256) PRIMARY KEY,
     narinfo_key varchar(1024) NOT NULL REFERENCES closures (key),
+    store_path text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT timezone('UTC', now()),
     updated_at timestamptz NOT NULL DEFAULT timezone('UTC', now())
 );
