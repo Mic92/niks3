@@ -15,10 +15,10 @@ type createPinRequest struct {
 
 // PinInfo represents a pin's information.
 type PinInfo struct {
-	Name       string `json:"name"`
-	NarinfoKey string `json:"narinfo_key"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	Name      string `json:"name"`
+	StorePath string `json:"store_path"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // CreatePin creates or updates a pin that maps a name to a store path.
