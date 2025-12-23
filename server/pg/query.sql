@@ -87,8 +87,10 @@ WITH RECURSIVE closure_reach AS (
 SELECT DISTINCT key FROM closure_reach;
 
 -- name: DeleteClosures :execrows
+-- Delete old closures, but exclude any that are pinned
 DELETE FROM closures
-WHERE updated_at < $1;
+WHERE closures.updated_at < $1
+  AND closures.key NOT IN (SELECT narinfo_key FROM pins);
 
 -- name: MarkObjectsAsActive :exec
 UPDATE objects SET deleted_at = NULL
@@ -168,3 +170,28 @@ WHERE first_deleted_at IS NOT NULL
   AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
 LIMIT sqlc.arg(limit_count);
+
+-- Pin queries
+
+-- name: UpsertPin :exec
+-- Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
+VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
+ON CONFLICT (name) DO UPDATE SET
+    narinfo_key = EXCLUDED.narinfo_key,
+    store_path = EXCLUDED.store_path,
+    updated_at = timezone('UTC', now());
+
+-- name: GetPin :one
+SELECT name, narinfo_key, store_path, created_at, updated_at
+FROM pins
+WHERE name = $1;
+
+-- name: DeletePin :exec
+DELETE FROM pins
+WHERE name = $1;
+
+-- name: ListPins :many
+SELECT name, narinfo_key, store_path, created_at, updated_at
+FROM pins
+ORDER BY name;
