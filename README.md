@@ -98,6 +98,9 @@ For development setup, database migrations, benchmarks, and contribution guideli
   [Configuration](https://git.clan.lol/clan/clan-infra/src/branch/main/modules/web01/niks3.nix)
   | [Instance](https://cache.clan.lol/)
 - **Numtide**: [Instance](https://cache.numtide.com/)
+- **TUM-DSE**:
+  [Configuration](https://github.com/TUM-DSE/doctor-cluster-config)
+  | [Instance](https://cache.dos.cit.tum.de/)
 
 ## Need commercial support or customization?
 
