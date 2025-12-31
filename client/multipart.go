@@ -96,7 +96,6 @@ func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID strin
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)
@@ -155,7 +154,6 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)

@@ -100,6 +100,7 @@ func TestPathInfoHashCompatibility(t *testing.T) {
 			t.Parallel()
 
 			var pathInfo client.PathInfo
+
 			err := json.Unmarshal([]byte(tt.jsonInput), &pathInfo)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("json.Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
@@ -168,6 +169,7 @@ func TestPathInfoCACompatibility(t *testing.T) {
 			t.Parallel()
 
 			var pathInfo client.PathInfo
+
 			err := json.Unmarshal([]byte(tt.jsonInput), &pathInfo)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("json.Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
@@ -175,23 +177,26 @@ func TestPathInfoCACompatibility(t *testing.T) {
 				return
 			}
 
-			if !tt.wantErr {
-				if tt.expectNil {
-					if pathInfo.CA != nil {
-						t.Errorf("Expected CA to be nil, but got: %v", pathInfo.CA)
-					}
-				} else {
-					if pathInfo.CA == nil {
-						t.Errorf("Expected CA to be non-nil")
+			if tt.wantErr {
+				return
+			}
 
-						return
-					}
-
-					caStr := pathInfo.CA.String()
-					if caStr != tt.expectedCAStr {
-						t.Errorf("CA.String() = %q, want %q", caStr, tt.expectedCAStr)
-					}
+			if tt.expectNil {
+				if pathInfo.CA != nil {
+					t.Errorf("Expected CA to be nil, but got: %v", pathInfo.CA)
 				}
+
+				return
+			}
+
+			if pathInfo.CA == nil {
+				t.Errorf("Expected CA to be non-nil")
+
+				return
+			}
+
+			if caStr := pathInfo.CA.String(); caStr != tt.expectedCAStr {
+				t.Errorf("CA.String() = %q, want %q", caStr, tt.expectedCAStr)
 			}
 		})
 	}

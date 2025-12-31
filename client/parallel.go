@@ -209,6 +209,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 
 		// Convert CA to string if present
 		var caStr *string
+
 		if pathInfo.CA != nil {
 			s := pathInfo.CA.String()
 			caStr = &s
