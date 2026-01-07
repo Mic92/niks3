@@ -126,27 +126,18 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 	missingObjects := make(map[string]bool)
 
 	for result := range resultChan {
-		// Check for errors first
-		select {
-		case err := <-errChan:
-			return missingObjects, err
-		default:
-		}
-
-		if result.missing {
+		if result.err == nil && result.missing {
 			missingObjects[result.key] = true
 			slog.Info("Object in database but missing from S3", "key", result.key)
 		}
 	}
 
-	// Final error check
 	select {
 	case err := <-errChan:
 		return missingObjects, err
 	default:
+		return missingObjects, nil
 	}
-
-	return missingObjects, nil
 }
 
 func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
@@ -368,26 +359,17 @@ func (s *Service) createPendingObjects(
 
 	// Collect results
 	for res := range resultChan {
-		// Check for errors first
-		select {
-		case err := <-errChan:
-			return err
-		default:
-		}
-
 		if res.err == nil {
 			result[res.key] = res.po
 		}
 	}
 
-	// Final error check
 	select {
 	case err := <-errChan:
 		return err
 	default:
+		return nil
 	}
-
-	return nil
 }
 
 func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, objectType string, narSize uint64) (PendingObject, error) {
