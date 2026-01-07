@@ -35,6 +35,8 @@ type options struct {
 	SignKeyPaths   []string
 	CacheURL       string
 	OIDCConfigPath string
+
+	Debug bool
 }
 
 type Service struct {
