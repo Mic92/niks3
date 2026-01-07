@@ -11,6 +11,9 @@ if [[ -z $version ]]; then
   exit 1
 fi
 
+# Strip "v" prefix if provided
+version="${version#v}"
+
 if [[ "$(git symbolic-ref --short HEAD)" != "main" ]]; then
   echo "must be on main branch" >&2
   exit 1
@@ -40,8 +43,8 @@ if [[ $unpushed_commits != "" ]]; then
   exit 1
 fi
 # make sure tag does not exist
-if git tag -l | grep -q "^${version}\$"; then
-  echo "Tag ${version} already exists, exiting" >&2
+if git tag -l | grep -q "^v${version}\$"; then
+  echo "Tag v${version} already exists, exiting" >&2
   exit 1
 fi
 
@@ -68,4 +71,4 @@ git checkout main
 
 waitForPr "release-${version}"
 git pull git@github.com:Mic92/niks3 main
-gh release create "${version}" --draft --title "${version}" --notes ""
+gh release create "v${version}" --draft --title "v${version}" --notes ""
