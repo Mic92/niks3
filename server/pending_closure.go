@@ -19,7 +19,7 @@ import (
 
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
-	s3CheckBatchSize     = 100
+	s3Concurrency        = 100
 )
 
 type PendingObject struct {
@@ -69,17 +69,14 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 		err     error
 	}
 
-	// Task channel for S3 checks
-	taskChan := make(chan string, len(objectKeys))
-	resultChan := make(chan checkResult, len(objectKeys))
+	numWorkers := min(s3Concurrency, len(objectKeys))
 
-	// Track errors
+	taskChan := make(chan string, numWorkers)
+	resultChan := make(chan checkResult, numWorkers)
+
 	errChan := make(chan error, 1)
 
 	var errOnce sync.Once
-
-	// Create worker pool (use s3CheckBatchSize as concurrency limit)
-	numWorkers := min(s3CheckBatchSize, len(objectKeys))
 
 	var wg sync.WaitGroup
 
@@ -296,6 +293,8 @@ func createPendingClosureInner(
 	}, nil
 }
 
+// createPendingObjects generates presigned URLs or multipart upload info for pending objects.
+// It uses a worker pool to parallelize S3 calls, improving performance for high-latency backends.
 func (s *Service) createPendingObjects(
 	ctx context.Context,
 	pendingClosureID int64,
@@ -303,20 +302,89 @@ func (s *Service) createPendingObjects(
 	objectsMap map[string]objectWithRefs,
 	result map[string]PendingObject,
 ) error {
+	if len(pendingObjectsParams) == 0 {
+		return nil
+	}
+
+	type createResult struct {
+		key string
+		po  PendingObject
+		err error
+	}
+
+	numWorkers := min(s3Concurrency, len(pendingObjectsParams))
+
+	taskChan := make(chan pg.InsertPendingObjectsParams, numWorkers)
+	resultChan := make(chan createResult, numWorkers)
+
+	errChan := make(chan error, 1)
+
+	var errOnce sync.Once
+
+	var wg sync.WaitGroup
+
+	for range numWorkers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for pendingObject := range taskChan {
+				obj := objectsMap[pendingObject.Key]
+
+				var narSize uint64
+				if obj.NarSize != nil {
+					narSize = *obj.NarSize
+				}
+
+				po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, obj.Type, narSize)
+				if err != nil {
+					errOnce.Do(func() {
+						errChan <- fmt.Errorf("failed to create pending object %q: %w", pendingObject.Key, err)
+					})
+
+					resultChan <- createResult{key: pendingObject.Key, err: err}
+
+					return
+				}
+
+				resultChan <- createResult{key: pendingObject.Key, po: po}
+			}
+		}()
+	}
+
+	// Queue all tasks
 	for _, pendingObject := range pendingObjectsParams {
-		obj := objectsMap[pendingObject.Key]
+		taskChan <- pendingObject
+	}
 
-		var narSize uint64
-		if obj.NarSize != nil {
-			narSize = *obj.NarSize
+	close(taskChan)
+
+	// Wait for workers to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	for res := range resultChan {
+		// Check for errors first
+		select {
+		case err := <-errChan:
+			return err
+		default:
 		}
 
-		po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, obj.Type, narSize)
-		if err != nil {
-			return fmt.Errorf("failed to create pending object: %w", err)
+		if res.err == nil {
+			result[res.key] = res.po
 		}
+	}
 
-		result[pendingObject.Key] = po
+	// Final error check
+	select {
+	case err := <-errChan:
+		return err
+	default:
 	}
 
 	return nil
