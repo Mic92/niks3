@@ -43,6 +43,7 @@ let
       ++ (with crossPkgs.pkgsStatic; [
         busybox
         busybox-sandbox-shell
+        cacert
       ]);
       config = {
         Entrypoint = [ "/bin/niks3-server" ];

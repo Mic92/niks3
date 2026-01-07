@@ -72,6 +72,14 @@ func parseArgs() (*options, error) {
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
 	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
 		"Path to OIDC configuration file (JSON format)")
+	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
+		"Enable debug logging (may leak sensitive information)")
+
+	if opts.Debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+	}
 
 	// Parse signing key paths from environment variable (space-separated for backward compatibility)
 	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
