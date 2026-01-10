@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type uploadTask struct {
@@ -99,14 +101,6 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 
 	compressedInfo := make(map[string]*CompressedFileInfo)
 
-	// Task channel for NAR, log, and realisation uploads
-	taskChan := make(chan genericUploadTask, len(pendingByHash)+len(logTasks)+len(realisationTasks))
-
-	// Track errors
-	errChan := make(chan error, 1)
-
-	var errOnce sync.Once
-
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
 	if numWorkers <= 0 {
@@ -114,71 +108,40 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	}
 
 	// Phase 1: Upload NARs (with listings), logs, and realisations in parallel
-	var phase1WG sync.WaitGroup
-	for range numWorkers {
-		phase1WG.Add(1)
-
-		go func() {
-			defer phase1WG.Done()
-
-			for task := range taskChan {
-				var err error
-
-				switch task.taskType {
-				case "nar":
-					err = c.uploadNARWithListing(ctx, task, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
-
-				case "metadata":
-					err = c.uploadMetadataOnly(ctx, task.hash, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
-
-				case "log":
-					err = c.uploadLog(ctx, task.task, uploadCtx.LogPathsByKey)
-
-				case "realisation":
-					err = c.uploadRealisation(ctx, task.task, uploadCtx.RealisationsByKey)
-				}
-
-				if err != nil {
-					errOnce.Do(func() {
-						errChan <- err
-					})
-				}
-			}
-		}()
-	}
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(numWorkers)
 
 	// Queue all log tasks
 	for _, task := range logTasks {
-		taskChan <- genericUploadTask{taskType: "log", task: task}
+		g.Go(func() error {
+			return c.uploadLog(ctx, task, uploadCtx.LogPathsByKey)
+		})
 	}
 
 	// Queue all realisation tasks
 	for _, task := range realisationTasks {
-		taskChan <- genericUploadTask{taskType: "realisation", task: task}
+		g.Go(func() error {
+			return c.uploadRealisation(ctx, task, uploadCtx.RealisationsByKey)
+		})
 	}
 
 	// Queue all NAR tasks and metadata-only tasks
 	for hash, entry := range pendingByHash {
 		if entry.narTask != nil {
-			taskChan <- genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}
+			g.Go(func() error {
+				return c.uploadNARWithListing(ctx, genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+			})
 		} else if entry.narinfoTask != nil {
 			// Deduplicated NAR - queue metadata-only task
-			taskChan <- genericUploadTask{taskType: "metadata", task: *entry.narinfoTask, hash: hash}
+			g.Go(func() error {
+				return c.uploadMetadataOnly(ctx, hash, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+			})
 		}
 	}
 
-	close(taskChan)
-
 	// Wait for phase 1 to complete
-	phase1WG.Wait()
-
-	// Check for errors from phase 1
-	select {
-	case err := <-errChan:
-		if err != nil {
-			return nil, err
-		}
-	default:
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	// Phase 2: Collect narinfo metadata for successfully uploaded NARs
