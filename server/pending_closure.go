@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -63,81 +64,39 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 		return make(map[string]bool), nil
 	}
 
-	type checkResult struct {
-		key     string
-		missing bool
-		err     error
-	}
-
-	numWorkers := min(s3Concurrency, len(objectKeys))
-
-	taskChan := make(chan string, numWorkers)
-	resultChan := make(chan checkResult, numWorkers)
-
-	errChan := make(chan error, 1)
-
-	var errOnce sync.Once
-
-	var wg sync.WaitGroup
-
-	for range numWorkers {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			for key := range taskChan {
-				_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
-				if err != nil {
-					errResp := minio.ToErrorResponse(err)
-					if errResp.Code == s3ErrorCodeNoSuchKey {
-						resultChan <- checkResult{key: key, missing: true}
-					} else {
-						// Report error and stop processing
-						errOnce.Do(func() {
-							errChan <- fmt.Errorf("failed to check S3 object %q: %w", key, err)
-						})
-
-						resultChan <- checkResult{key: key, err: err}
-
-						return
-					}
-				} else {
-					resultChan <- checkResult{key: key, missing: false}
-				}
-			}
-		}()
-	}
-
-	// Queue all check tasks
-	for _, key := range objectKeys {
-		taskChan <- key
-	}
-
-	close(taskChan)
-
-	// Wait for workers to complete
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
 	missingObjects := make(map[string]bool)
+	var mu sync.Mutex
 
-	for result := range resultChan {
-		if result.err == nil && result.missing {
-			missingObjects[result.key] = true
-			slog.Info("Object in database but missing from S3", "key", result.key)
-		}
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(s3Concurrency)
+
+	for _, key := range objectKeys {
+		g.Go(func() error {
+			_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
+			if err != nil {
+				errResp := minio.ToErrorResponse(err)
+				if errResp.Code == s3ErrorCodeNoSuchKey {
+					mu.Lock()
+					missingObjects[key] = true
+					mu.Unlock()
+					return nil
+				}
+				// Return error to cancel the group
+				return fmt.Errorf("failed to check S3 object %q: %w", key, err)
+			}
+			return nil
+		})
 	}
 
-	select {
-	case err := <-errChan:
+	if err := g.Wait(); err != nil {
 		return missingObjects, err
-	default:
-		return missingObjects, nil
 	}
+
+	for key := range missingObjects {
+		slog.Info("Object in database but missing from S3", "key", key)
+	}
+
+	return missingObjects, nil
 }
 
 func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
@@ -285,7 +244,8 @@ func createPendingClosureInner(
 }
 
 // createPendingObjects generates presigned URLs or multipart upload info for pending objects.
-// It uses a worker pool to parallelize S3 calls, improving performance for high-latency backends.
+// Presigned URLs are generated synchronously (no network call, just local signing).
+// Multipart uploads are parallelized since they require S3 network calls.
 func (s *Service) createPendingObjects(
 	ctx context.Context,
 	pendingClosureID int64,
@@ -297,112 +257,80 @@ func (s *Service) createPendingObjects(
 		return nil
 	}
 
-	type createResult struct {
-		key string
-		po  PendingObject
-		err error
+	// Collect NAR objects that need multipart uploads (require S3 calls)
+	type narTask struct {
+		key     string
+		narSize uint64
 	}
 
-	numWorkers := min(s3Concurrency, len(pendingObjectsParams))
+	var narTasks []narTask
 
-	taskChan := make(chan pg.InsertPendingObjectsParams, numWorkers)
-	resultChan := make(chan createResult, numWorkers)
-
-	errChan := make(chan error, 1)
-
-	var errOnce sync.Once
-
-	var wg sync.WaitGroup
-
-	for range numWorkers {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			for pendingObject := range taskChan {
-				obj := objectsMap[pendingObject.Key]
-
-				var narSize uint64
-				if obj.NarSize != nil {
-					narSize = *obj.NarSize
-				}
-
-				po, err := s.makePendingObject(ctx, pendingClosureID, pendingObject.Key, obj.Type, narSize)
-				if err != nil {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("failed to create pending object %q: %w", pendingObject.Key, err)
-					})
-
-					resultChan <- createResult{key: pendingObject.Key, err: err}
-
-					return
-				}
-
-				resultChan <- createResult{key: pendingObject.Key, po: po}
-			}
-		}()
-	}
-
-	// Queue all tasks
+	// Process non-NAR objects synchronously (presigned URLs are just local signing, no network)
 	for _, pendingObject := range pendingObjectsParams {
-		taskChan <- pendingObject
-	}
+		obj := objectsMap[pendingObject.Key]
 
-	close(taskChan)
+		if obj.Type == "nar" {
+			var narSize uint64
+			if obj.NarSize != nil {
+				narSize = *obj.NarSize
+			}
 
-	// Wait for workers to complete
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
+			narTasks = append(narTasks, narTask{key: pendingObject.Key, narSize: narSize})
 
-	// Collect results
-	for res := range resultChan {
-		if res.err == nil {
-			result[res.key] = res.po
+			continue
 		}
+
+		po, err := s.makePresignedURL(ctx, pendingObject.Key, obj.Type)
+		if err != nil {
+			return fmt.Errorf("failed to create presigned URL %q: %w", pendingObject.Key, err)
+		}
+
+		result[pendingObject.Key] = po
 	}
 
-	select {
-	case err := <-errChan:
-		return err
-	default:
+	// Process NAR objects in parallel (multipart uploads require S3 network calls)
+	if len(narTasks) == 0 {
 		return nil
 	}
+
+	var mu sync.Mutex
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(s3Concurrency)
+
+	for _, task := range narTasks {
+		g.Go(func() error {
+			po, err := s.createMultipartUpload(ctx, pendingClosureID, task.key, task.narSize)
+			if err != nil {
+				return fmt.Errorf("failed to create multipart upload %q: %w", task.key, err)
+			}
+
+			po.Type = "nar"
+
+			mu.Lock()
+			result[task.key] = po
+			mu.Unlock()
+
+			return nil
+		})
+	}
+
+	return g.Wait()
 }
 
-func (s *Service) makePendingObject(ctx context.Context, pendingClosureID int64, objectKey string, objectType string, narSize uint64) (PendingObject, error) {
-	// Small files use simple presigned URL
-	switch objectType {
-	case "narinfo", "listing", "build_log", "realisation":
-		presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
-			s.Bucket,
-			objectKey,
-			maxSignedURLDuration)
-		if err != nil {
-			return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
-		}
-
-		return PendingObject{
-			Type:         objectType,
-			PresignedURL: presignedURL.String(),
-		}, nil
-
-	case "nar":
-		// NAR files (large) use multipart upload
-		po, err := s.createMultipartUpload(ctx, pendingClosureID, objectKey, narSize)
-		if err != nil {
-			return PendingObject{}, err
-		}
-
-		po.Type = objectType
-
-		return po, nil
-
-	default:
-		return PendingObject{}, fmt.Errorf("unknown object type %q for key: %s", objectType, objectKey)
+func (s *Service) makePresignedURL(ctx context.Context, objectKey string, objectType string) (PendingObject, error) {
+	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
+		s.Bucket,
+		objectKey,
+		maxSignedURLDuration)
+	if err != nil {
+		return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
 	}
+
+	return PendingObject{
+		Type:         objectType,
+		PresignedURL: presignedURL.String(),
+	}, nil
 }
 
 func (s *Service) createPendingClosure(
