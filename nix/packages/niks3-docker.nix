@@ -32,6 +32,7 @@ let
             inherit GOOS GOARCH;
             CGO_ENABLED = 0;
           };
+          subPackages = [ "cmd/niks3-server" ];
           postInstall = (old.postInstall or "") + ''
             if [ -d $out/bin/${GOOS}_${GOARCH} ]; then
               mv $out/bin/${GOOS}_${GOARCH}/* $out/bin/
