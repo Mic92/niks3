@@ -6,6 +6,7 @@
   rustfs,
   mock-oidc-server,
   pkgs,
+  lib,
   ...
 }:
 
@@ -39,7 +40,7 @@ testers.nixosTest {
           "flakes"
           "ca-derivations"
         ];
-        nix.settings.substituters = [ ];
+        nix.settings.substituters = lib.mkForce [ ];
         # Trust the signing key
         nix.settings.trusted-public-keys = [ signingPublicKey ];
 
@@ -412,6 +413,94 @@ testers.nixosTest {
     print("OIDC push with malformed token: correctly rejected")
 
     print("All OIDC tests passed!")
+
+    # ============================================
+    # Pin Command Tests
+    # ============================================
+
+    # Test 1: Create a pin for an existing store path using 'pins create'
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins create hello-pin {test_path}
+    """)
+
+    # Test 2: List pins and verify our pin exists
+    pins_output = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list
+    """)
+    assert "hello-pin" in pins_output, f"Pin 'hello-pin' not found in list: {pins_output}"
+
+    # Test 3: List pins with --names-only for scripting
+    pins_names = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list --names-only
+    """).strip()
+    assert "hello-pin" in pins_names, f"Pin 'hello-pin' not found in names-only list: {pins_names}"
+
+    # Test 3b: List pins with --json
+    import json
+    pins_json = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list --json
+    """).strip()
+    pins_data = json.loads(pins_json)
+    assert len(pins_data) == 1, f"Expected 1 pin in JSON output, got {len(pins_data)}"
+    assert pins_data[0]["name"] == "hello-pin", f"Expected pin name 'hello-pin', got {pins_data[0]['name']}"
+    assert pins_data[0]["store_path"] == test_path, f"Expected store_path {test_path}, got {pins_data[0]['store_path']}"
+
+    # Test 4: Verify pin is accessible via S3 (using s5cmd with credentials)
+    pin_content = server.succeed("""
+      export S3_ENDPOINT_URL=http://localhost:9000
+      export AWS_ACCESS_KEY_ID=rustfsadmin
+      export AWS_SECRET_ACCESS_KEY=rustfsadmin
+      ${s5cmd}/bin/s5cmd cat s3://niks3-test/pins/hello-pin
+    """).strip()
+    assert pin_content == test_path, f"Pin content mismatch: expected {test_path}, got {pin_content}"
+
+    # Test 5: Create a pin during push using --pin flag
+    server.succeed(f"""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 push --pin ca-pin {ca_output}
+    """)
+
+    # Verify the new pin exists
+    pins_after_push = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list --names-only
+    """).strip()
+    assert "ca-pin" in pins_after_push, f"Pin 'ca-pin' not found after push: {pins_after_push}"
+
+    # Test 6: Delete a pin
+    server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins delete hello-pin
+    """)
+
+    # Verify pin is gone
+    pins_after_delete = server.succeed("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins list --names-only
+    """).strip()
+    assert "hello-pin" not in pins_after_delete, f"Pin 'hello-pin' still exists after delete: {pins_after_delete}"
+    assert "ca-pin" in pins_after_delete, f"Pin 'ca-pin' should still exist: {pins_after_delete}"
+
+    # Test 7: Try to create pin for non-existent store path (should fail)
+    server.fail("""
+      NIKS3_SERVER_URL=http://server:5751 \
+      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
+      ${niks3}/bin/niks3 pins create bad-pin /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nonexistent
+    """)
+
+    print("All pin tests passed!")
 
     # Test that GC systemd service runs successfully
     server.succeed("systemctl start niks3-gc.service")
