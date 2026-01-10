@@ -10,8 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // getNARKey generates the NAR object key based on content hash (NarHash) for deduplication.
@@ -355,110 +356,64 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 
 	slog.Info(fmt.Sprintf("Uploading %d narinfos", len(narinfos)))
 
-	errChan := make(chan error, 1)
-
-	var errOnce sync.Once
-
-	var wg sync.WaitGroup
-
-	// Determine number of workers (use same as NAR uploads for consistency)
+	// Determine concurrency limit
 	numWorkers := c.MaxConcurrentNARUploads
 	if numWorkers <= 0 || numWorkers > len(narinfos) {
 		numWorkers = len(narinfos)
 	}
 
-	taskChan := make(chan narinfoTask, len(narinfos))
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(numWorkers)
 
-	// Start workers
-	for range numWorkers {
-		wg.Add(1)
+	for _, task := range narinfos {
+		g.Go(func() error {
+			// Get signatures for this narinfo
+			signatures := signaturesByKey[task.key]
 
-		go func() {
-			defer wg.Done()
+			// Generate narinfo content with signatures
+			content := generateNarinfoContent(&task.meta, signatures)
 
-			for task := range taskChan {
-				// Get signatures for this narinfo
-				signatures := signaturesByKey[task.key]
-
-				// Generate narinfo content with signatures
-				content := generateNarinfoContent(&task.meta, signatures)
-
-				// Compress narinfo
-				compressed, err := CompressNarinfo(content)
-				if err != nil {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("compressing narinfo %s: %w", task.key, err)
-					})
-
-					return
-				}
-
-				// Get presigned URL from pending objects
-				pendingObj, ok := pendingObjects[task.key]
-				if !ok || pendingObj.PresignedURL == "" {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("no presigned URL for narinfo %s", task.key)
-					})
-
-					return
-				}
-
-				// Upload to S3
-				req, err := http.NewRequestWithContext(ctx, http.MethodPut, pendingObj.PresignedURL, bytes.NewReader(compressed))
-				if err != nil {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("creating upload request for %s: %w", task.key, err)
-					})
-
-					return
-				}
-
-				req.Header.Set("Content-Type", "text/x-nix-narinfo")
-				req.Header.Set("Content-Encoding", "zstd")
-
-				resp, err := c.DoWithRetry(ctx, req)
-				if err != nil {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("uploading narinfo %s: %w", task.key, err)
-					})
-
-					return
-				}
-
-				if err := resp.Body.Close(); err != nil {
-					slog.Warn("Failed to close response body", "error", err)
-				}
-
-				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-					errOnce.Do(func() {
-						errChan <- fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
-					})
-
-					return
-				}
-
-				slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
+			// Compress narinfo
+			compressed, err := CompressNarinfo(content)
+			if err != nil {
+				return fmt.Errorf("compressing narinfo %s: %w", task.key, err)
 			}
-		}()
+
+			// Get presigned URL from pending objects
+			pendingObj, ok := pendingObjects[task.key]
+			if !ok || pendingObj.PresignedURL == "" {
+				return fmt.Errorf("no presigned URL for narinfo %s", task.key)
+			}
+
+			// Upload to S3
+			req, err := http.NewRequestWithContext(ctx, http.MethodPut, pendingObj.PresignedURL, bytes.NewReader(compressed))
+			if err != nil {
+				return fmt.Errorf("creating upload request for %s: %w", task.key, err)
+			}
+
+			req.Header.Set("Content-Type", "text/x-nix-narinfo")
+			req.Header.Set("Content-Encoding", "zstd")
+
+			resp, err := c.DoWithRetry(ctx, req)
+			if err != nil {
+				return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
+			}
+
+			if err := resp.Body.Close(); err != nil {
+				slog.Warn("Failed to close response body", "error", err)
+			}
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
+			}
+
+			slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
+
+			return nil
+		})
 	}
 
-	// Queue all narinfo upload tasks
-	for _, narinfo := range narinfos {
-		taskChan <- narinfo
-	}
-
-	close(taskChan)
-
-	// Wait for all uploads to complete
-	wg.Wait()
-
-	// Check for errors
-	select {
-	case err := <-errChan:
-		return err
-	default:
-		return nil
-	}
+	return g.Wait()
 }
 
 // PushPaths uploads store paths and their closures to the server.
