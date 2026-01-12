@@ -10,7 +10,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.97
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
 	github.com/pressly/goose/v3 v3.26.0
-	golang.org/x/sync v0.17.0
+	golang.org/x/sync v0.19.0
 	golang.org/x/sys v0.40.0
 )
 
