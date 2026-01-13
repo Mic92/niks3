@@ -25,7 +25,7 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 
 	// 2. Abort them in S3
 	eg, egCtx := errgroup.WithContext(ctx)
-	eg.SetLimit(s3Concurrency)
+	eg.SetLimit(s.S3Concurrency)
 	for _, upload := range uploads {
 		eg.Go(func() error {
 			if err := coreClient.AbortMultipartUpload(egCtx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
