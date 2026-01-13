@@ -24,11 +24,12 @@ type options struct {
 	HTTPAddr           string
 
 	// TODO: Document how to use this with AWS.
-	S3Endpoint  string
-	S3AccessKey string
-	S3SecretKey string
-	S3UseSSL    bool
-	S3Bucket    string
+	S3Endpoint    string
+	S3AccessKey   string
+	S3SecretKey   string
+	S3UseSSL      bool
+	S3Bucket      string
+	S3Concurrency int
 
 	APIToken string
 
@@ -43,6 +44,7 @@ type Service struct {
 	Pool          *pgxpool.Pool
 	MinioClient   *minio.Client
 	Bucket        string
+	S3Concurrency int
 	APIToken      string
 	SigningKeys   []*signing.Key
 	CacheURL      string
@@ -164,11 +166,12 @@ func runServer(opts *options) error {
 	}
 
 	service := &Service{
-		Pool:        pool,
-		MinioClient: minioClient,
-		Bucket:      opts.S3Bucket,
-		APIToken:    opts.APIToken,
-		CacheURL:    opts.CacheURL,
+		Pool:          pool,
+		MinioClient:   minioClient,
+		Bucket:        opts.S3Bucket,
+		S3Concurrency: opts.S3Concurrency,
+		APIToken:      opts.APIToken,
+		CacheURL:      opts.CacheURL,
 	}
 
 	// Initialize OIDC validator if configured

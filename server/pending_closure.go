@@ -20,7 +20,6 @@ import (
 
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
-	s3Concurrency        = 100
 )
 
 type PendingObject struct {
@@ -68,7 +67,7 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(s3Concurrency)
+	g.SetLimit(s.S3Concurrency)
 
 	for _, key := range objectKeys {
 		g.Go(func() error {
@@ -296,7 +295,7 @@ func (s *Service) createPendingObjects(
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(s3Concurrency)
+	g.SetLimit(s.S3Concurrency)
 
 	for _, task := range narTasks {
 		g.Go(func() error {
