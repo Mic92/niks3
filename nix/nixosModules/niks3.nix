@@ -208,7 +208,7 @@ in
         Each file should contain an Ed25519 key in the format "name:base64-key".
         Multiple keys can be provided for key rotation.
       '';
-      example = lib.literalExpression ''[ /run/secrets/niks3-sign-key ]'';
+      example = lib.literalExpression "[ /run/secrets/niks3-sign-key ]";
     };
 
     cacheUrl = lib.mkOption {
