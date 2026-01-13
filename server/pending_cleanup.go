@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -29,7 +30,9 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 		eg.Go(func() error {
 			if err := coreClient.AbortMultipartUpload(egCtx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
 				if errResp := minio.ToErrorResponse(err); errResp.Code != minio.NoSuchUpload {
-					slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
+					slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err, "code", errResp.Code)
+				} else if errors.Is(err, context.Canceled) {
+					return err
 				}
 			}
 			return nil
