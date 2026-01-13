@@ -28,10 +28,11 @@ func TestNARDeduplicationMetadataUploadBug(t *testing.T) {
 	defer service.Close()
 
 	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
+		Pool:          service.Pool,
+		MinioClient:   service.MinioClient,
+		Bucket:        service.Bucket,
+		APIToken:      testAuthToken,
+		S3Concurrency: 100,
 	}
 
 	err := testService.InitializeBucket(t.Context())

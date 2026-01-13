@@ -69,10 +69,11 @@ func BenchmarkPythonClosure(b *testing.B) {
 
 		// Create test server with auth
 		testService := &server.Service{
-			Pool:        service.Pool,
-			MinioClient: service.MinioClient,
-			Bucket:      service.Bucket,
-			APIToken:    testAuthToken,
+			Pool:          service.Pool,
+			MinioClient:   service.MinioClient,
+			Bucket:        service.Bucket,
+			APIToken:      testAuthToken,
+			S3Concurrency: 100,
 		}
 
 		// Initialize the bucket with nix-cache-info
