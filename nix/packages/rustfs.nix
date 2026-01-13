@@ -5,20 +5,16 @@
 
 pkgs.rustPlatform.buildRustPackage rec {
   pname = "rustfs";
-  version = "1.0.0-alpha.72";
+  version = "1.0.0-alpha.79";
 
   src = pkgs.fetchFromGitHub {
     owner = "rustfs";
     repo = "rustfs";
     rev = version;
-    hash = "sha256-iWaZgvy40RW67oqyVttaWyrFrAVy17UJz5JydI51uDM=";
+    hash = "sha256-f9+khwUOy9qTufhRuZLGNddA9RCNCkE8XdhIpo5X/7U=";
   };
 
-  patches = [
-    ./rustfs-content-encoding.patch
-  ];
-
-  cargoHash = "sha256-ApVUUpeLXpMwqRnuNI/Q20/FTEvUyPTtDSpmPsDco2I=";
+  cargoHash = "sha256-L3g794CNVdWHJAPUBkULxJn8d6pOWOJ65YmgnX9d8p8=";
 
   nativeBuildInputs = with pkgs; [
     pkg-config
