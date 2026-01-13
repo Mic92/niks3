@@ -8,6 +8,7 @@ import (
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
+	"golang.org/x/sync/errgroup"
 )
 
 func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Duration) (int, error) {
@@ -22,10 +23,21 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	}
 
 	// 2. Abort them in S3
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(s3Concurrency)
 	for _, upload := range uploads {
-		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
-			slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
-		}
+		eg.Go(func() error {
+			if err := coreClient.AbortMultipartUpload(egCtx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
+				if errResp := minio.ToErrorResponse(err); errResp.Code != minio.NoSuchUpload {
+					slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err)
+				}
+			}
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return 0, fmt.Errorf("abort multipart uploads: %w", err)
 	}
 
 	slog.Info("Aborted multipart uploads", "count", len(uploads))
