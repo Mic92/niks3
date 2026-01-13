@@ -22,10 +22,11 @@ func TestClientErrorHandling(t *testing.T) {
 
 		// Create test server
 		testService := &server.Service{
-			Pool:        service.Pool,
-			MinioClient: service.MinioClient,
-			Bucket:      service.Bucket,
-			APIToken:    testAuthToken,
+			Pool:          service.Pool,
+			MinioClient:   service.MinioClient,
+			Bucket:        service.Bucket,
+			APIToken:      testAuthToken,
+			S3Concurrency: 100,
 		}
 		mux := http.NewServeMux()
 		registerTestHandlers(mux, testService)
@@ -55,10 +56,11 @@ func TestClientErrorHandling(t *testing.T) {
 		// Create test server with correct auth token
 		correctAuthToken := "correct-auth-token" //nolint:gosec // test credential
 		testService := &server.Service{
-			Pool:        service.Pool,
-			MinioClient: service.MinioClient,
-			Bucket:      service.Bucket,
-			APIToken:    correctAuthToken,
+			Pool:          service.Pool,
+			MinioClient:   service.MinioClient,
+			Bucket:        service.Bucket,
+			APIToken:      correctAuthToken,
+			S3Concurrency: 100,
 		}
 		mux := http.NewServeMux()
 		registerTestHandlers(mux, testService)

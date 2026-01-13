@@ -57,9 +57,10 @@ func createTestService(tb testing.TB) *server.Service {
 	ok(tb, err)
 
 	return &server.Service{
-		Pool:        pool,
-		Bucket:      bucketName,
-		MinioClient: minioClient,
+		Pool:          pool,
+		Bucket:        bucketName,
+		MinioClient:   minioClient,
+		S3Concurrency: 100,
 	}
 }
 
