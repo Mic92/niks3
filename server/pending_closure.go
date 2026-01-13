@@ -75,7 +75,7 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 			_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
 			if err != nil {
 				errResp := minio.ToErrorResponse(err)
-				if errResp.Code == s3ErrorCodeNoSuchKey {
+				if errResp.Code == minio.NoSuchKey {
 					mu.Lock()
 					missingObjects[key] = true
 					mu.Unlock()

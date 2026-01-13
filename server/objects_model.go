@@ -128,7 +128,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 		if result.Err != nil {
 			// If object doesn't exist in S3, treat it as successfully deleted
 			// to maintain consistency between S3 and database
-			if minio.ToErrorResponse(result.Err).Code == s3ErrorCodeNoSuchKey {
+			if minio.ToErrorResponse(result.Err).Code == minio.NoSuchKey {
 				var err error
 
 				deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)
