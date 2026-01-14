@@ -249,16 +249,8 @@ func TestClientIntegration(t *testing.T) {
 	t.Parallel()
 
 	// Start test service (includes Minio and PostgreSQL)
-	service := createTestService(t)
-	defer service.Close()
-
-	// Create test server with auth
-	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
-	}
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	defer testService.Close()
 
 	// Initialize the bucket with nix-cache-info
 	err := testService.InitializeBucket(t.Context())
@@ -307,23 +299,15 @@ func TestClientIntegration(t *testing.T) {
 	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
 
-	verifyGarbageCollection(ctx, t, service, c)
+	verifyGarbageCollection(ctx, t, testService, c)
 }
 
 func TestClientMultipleUploads(t *testing.T) {
 	t.Parallel()
 
 	// Start test service
-	service := createTestService(t)
-	defer service.Close()
-
-	// Create test server with auth
-	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
-	}
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	defer testService.Close()
 
 	// Initialize the bucket with nix-cache-info
 	err := testService.InitializeBucket(t.Context())
@@ -588,16 +572,8 @@ func TestClientWithDependencies(t *testing.T) {
 	t.Parallel()
 
 	// Start test service
-	service := createTestService(t)
-	t.Cleanup(func() { service.Close() })
-
-	// Create test server with auth
-	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
-	}
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
 
 	// Initialize the bucket with nix-cache-info
 	err := testService.InitializeBucket(t.Context())

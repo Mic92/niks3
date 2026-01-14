@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Mic92/niks3/server"
 )
 
 // TestNARDeduplicationMetadataUploadBug tests that when uploading a store path with
@@ -24,15 +22,8 @@ import (
 func TestNARDeduplicationMetadataUploadBug(t *testing.T) {
 	t.Parallel()
 
-	service := createTestService(t)
-	defer service.Close()
-
-	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
-	}
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	defer testService.Close()
 
 	err := testService.InitializeBucket(t.Context())
 	ok(t, err)

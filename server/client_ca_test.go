@@ -115,16 +115,8 @@ func TestClientCADerivations(t *testing.T) {
 	t.Parallel()
 
 	// Start test service
-	service := createTestService(t)
-	t.Cleanup(func() { service.Close() })
-
-	// Create test server with auth
-	testService := &server.Service{
-		Pool:        service.Pool,
-		MinioClient: service.MinioClient,
-		Bucket:      service.Bucket,
-		APIToken:    testAuthToken,
-	}
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
 
 	// Initialize the bucket
 	err := testService.InitializeBucket(t.Context())

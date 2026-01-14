@@ -20,7 +20,6 @@ import (
 
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
-	s3Concurrency        = 100
 )
 
 type PendingObject struct {
@@ -68,14 +67,14 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(s3Concurrency)
+	g.SetLimit(s.S3Concurrency)
 
 	for _, key := range objectKeys {
 		g.Go(func() error {
 			_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
 			if err != nil {
 				errResp := minio.ToErrorResponse(err)
-				if errResp.Code == s3ErrorCodeNoSuchKey {
+				if errResp.Code == minio.NoSuchKey {
 					mu.Lock()
 					missingObjects[key] = true
 					mu.Unlock()
@@ -296,7 +295,7 @@ func (s *Service) createPendingObjects(
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(s3Concurrency)
+	g.SetLimit(s.S3Concurrency)
 
 	for _, task := range narTasks {
 		g.Go(func() error {

@@ -24,11 +24,12 @@ type options struct {
 	HTTPAddr           string
 
 	// TODO: Document how to use this with AWS.
-	S3Endpoint  string
-	S3AccessKey string
-	S3SecretKey string
-	S3UseSSL    bool
-	S3Bucket    string
+	S3Endpoint    string
+	S3AccessKey   string
+	S3SecretKey   string
+	S3UseSSL      bool
+	S3Bucket      string
+	S3Concurrency int
 
 	APIToken string
 
@@ -43,6 +44,7 @@ type Service struct {
 	Pool          *pgxpool.Pool
 	MinioClient   *minio.Client
 	Bucket        string
+	S3Concurrency int
 	APIToken      string
 	SigningKeys   []*signing.Key
 	CacheURL      string
@@ -55,8 +57,7 @@ func (s *Service) Close() {
 }
 
 const (
-	dbConnectionTimeout  = 10 * time.Second
-	s3ErrorCodeNoSuchKey = "NoSuchKey"
+	dbConnectionTimeout = 10 * time.Second
 )
 
 func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -165,11 +166,12 @@ func runServer(opts *options) error {
 	}
 
 	service := &Service{
-		Pool:        pool,
-		MinioClient: minioClient,
-		Bucket:      opts.S3Bucket,
-		APIToken:    opts.APIToken,
-		CacheURL:    opts.CacheURL,
+		Pool:          pool,
+		MinioClient:   minioClient,
+		Bucket:        opts.S3Bucket,
+		S3Concurrency: opts.S3Concurrency,
+		APIToken:      opts.APIToken,
+		CacheURL:      opts.CacheURL,
 	}
 
 	// Initialize OIDC validator if configured
@@ -252,7 +254,7 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 	if err != nil {
 		// Check if this is a "not found" error vs other errors
 		errResp := minio.ToErrorResponse(err)
-		if errResp.Code != s3ErrorCodeNoSuchKey {
+		if errResp.Code != minio.NoSuchKey {
 			// This is not a "not found" error - could be network, permissions, etc.
 			return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
 		}
