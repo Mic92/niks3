@@ -57,10 +57,18 @@ func createTestService(tb testing.TB) *server.Service {
 	ok(tb, err)
 
 	return &server.Service{
-		Pool:        pool,
-		Bucket:      bucketName,
-		MinioClient: minioClient,
+		Pool:          pool,
+		Bucket:        bucketName,
+		MinioClient:   minioClient,
+		S3Concurrency: 100,
 	}
+}
+
+func createTestServiceWithAuth(tb testing.TB, token string) *server.Service {
+	tb.Helper()
+	service := createTestService(tb)
+	service.APIToken = token
+	return service
 }
 
 // setupIsolatedNixStore creates an isolated Nix store environment for a test.

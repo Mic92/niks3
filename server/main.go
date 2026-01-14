@@ -6,12 +6,23 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 )
 
 func getEnvOrDefault(key, defaultValue string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
+	}
+
+	return defaultValue
+}
+
+func getEnvOrDefaultInt(key string, defaultValue int) int {
+	if value, ok := os.LookupEnv(key); ok {
+		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
+		}
 	}
 
 	return defaultValue
@@ -31,7 +42,8 @@ func readSecretFile(path string) (string, error) {
 }
 
 const (
-	minAPITokenLength = 36
+	minAPITokenLength    = 36
+	defaultS3Concurrency = 100
 )
 
 // stringSliceFlag implements flag.Value for repeatable string flags.
@@ -72,6 +84,8 @@ func parseArgs() (*options, error) {
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
 	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
 		"Path to OIDC configuration file (JSON format)")
+	flag.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),
+		"Maximum concurrent S3 operations (default: 100)")
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 
