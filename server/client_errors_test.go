@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Mic92/niks3/server"
 )
 
 func TestClientErrorHandling(t *testing.T) {
@@ -17,17 +15,9 @@ func TestClientErrorHandling(t *testing.T) {
 	t.Run("InvalidStorePath", func(t *testing.T) {
 		t.Parallel()
 
-		service := createTestService(t)
-		defer service.Close()
+		testService := createTestServiceWithAuth(t, testAuthToken)
+		defer testService.Close()
 
-		// Create test server
-		testService := &server.Service{
-			Pool:          service.Pool,
-			MinioClient:   service.MinioClient,
-			Bucket:        service.Bucket,
-			APIToken:      testAuthToken,
-			S3Concurrency: 100,
-		}
 		mux := http.NewServeMux()
 		registerTestHandlers(mux, testService)
 
@@ -50,18 +40,10 @@ func TestClientErrorHandling(t *testing.T) {
 	t.Run("InvalidAuthToken", func(t *testing.T) {
 		t.Parallel()
 
-		service := createTestService(t)
-		defer service.Close()
-
-		// Create test server with correct auth token
 		correctAuthToken := "correct-auth-token" //nolint:gosec // test credential
-		testService := &server.Service{
-			Pool:          service.Pool,
-			MinioClient:   service.MinioClient,
-			Bucket:        service.Bucket,
-			APIToken:      correctAuthToken,
-			S3Concurrency: 100,
-		}
+		testService := createTestServiceWithAuth(t, correctAuthToken)
+		defer testService.Close()
+
 		mux := http.NewServeMux()
 		registerTestHandlers(mux, testService)
 
