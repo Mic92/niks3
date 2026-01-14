@@ -64,6 +64,13 @@ func createTestService(tb testing.TB) *server.Service {
 	}
 }
 
+func createTestServiceWithAuth(tb testing.TB, token string) *server.Service {
+	tb.Helper()
+	service := createTestService(tb)
+	service.APIToken = token
+	return service
+}
+
 // setupIsolatedNixStore creates an isolated Nix store environment for a test.
 // This prevents tests from interfering with each other when running in parallel.
 // Returns environment variables that should be used with exec.Command.

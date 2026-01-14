@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/Mic92/niks3/server"
 )
 
 // BenchmarkPythonClosure benchmarks building a Python closure with
@@ -65,16 +63,7 @@ func BenchmarkPythonClosure(b *testing.B) {
 	for b.Loop() {
 		// Start fresh services for each iteration (don't count setup time)
 		b.StopTimer()
-		service := createTestService(b)
-
-		// Create test server with auth
-		testService := &server.Service{
-			Pool:          service.Pool,
-			MinioClient:   service.MinioClient,
-			Bucket:        service.Bucket,
-			APIToken:      testAuthToken,
-			S3Concurrency: 100,
-		}
+		testService := createTestServiceWithAuth(b, testAuthToken)
 
 		// Initialize the bucket with nix-cache-info
 		err := testService.InitializeBucket(ctx)
@@ -98,7 +87,7 @@ func BenchmarkPythonClosure(b *testing.B) {
 		// Clean up (don't count cleanup time)
 		b.StopTimer()
 		ts.Close()
-		service.Close()
+		testService.Close()
 		b.StartTimer()
 	}
 }
