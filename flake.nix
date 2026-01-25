@@ -22,12 +22,14 @@
         "aarch64-darwin"
       ];
       imports = [
-        ./nix/devshells/flake-module.nix
         ./nix/packages/flake-module.nix
-        ./nix/formatter/flake-module.nix
         ./nix/checks/flake-module.nix
         ./nix/nixosModules/flake-module.nix
         ./nix/benchmark/flake-module.nix
-      ];
+      ]
+      ++ inputs.nixpkgs.lib.optional (
+        inputs.process-compose ? flakeModule
+      ) ./nix/devshells/flake-module.nix
+      ++ inputs.nixpkgs.lib.optional (inputs.treefmt-nix ? flakeModule) ./nix/formatter/flake-module.nix;
     };
 }
