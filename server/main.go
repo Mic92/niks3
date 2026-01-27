@@ -28,6 +28,16 @@ func getEnvOrDefaultInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+func getEnvOrDefaultFloat(key string, defaultValue float64) float64 {
+	if value, ok := os.LookupEnv(key); ok {
+		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatVal
+		}
+	}
+
+	return defaultValue
+}
+
 func readSecretFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -86,6 +96,8 @@ func parseArgs() (*options, error) {
 		"Path to OIDC configuration file (JSON format)")
 	flag.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),
 		"Maximum concurrent S3 operations (default: 100)")
+	flag.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
+		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 

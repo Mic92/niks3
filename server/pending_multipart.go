@@ -76,13 +76,24 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	// Create Core client for multipart operations
 	coreClient := minio.Core{Client: s.MinioClient}
 
+	// Wait for rate limiter
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return PendingObject{}, err
+	}
+
 	// Initiate multipart upload
 	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
 		return PendingObject{}, fmt.Errorf("failed to initiate multipart upload: %w", err)
 	}
+
+	s.S3RateLimiter.RecordSuccess()
 
 	// Store upload ID in database
 	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
@@ -119,6 +130,11 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 	for i := range numParts {
 		partNumber := startPartNumber + i
 
+		// Wait for rate limiter
+		if err := s.S3RateLimiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+
 		// Use Client.Presign with query parameters for multipart
 		reqParams := make(url.Values)
 		reqParams.Set("uploadId", uploadID)
@@ -131,9 +147,14 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 			maxSignedURLDuration,
 			reqParams)
 		if err != nil {
+			if isRateLimitError(err) {
+				s.S3RateLimiter.RecordThrottle()
+			}
+
 			return nil, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
 		}
 
+		s.S3RateLimiter.RecordSuccess()
 		partURLs[i] = presignedURL.String()
 	}
 

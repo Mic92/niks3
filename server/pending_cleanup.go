@@ -26,15 +26,27 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	// 2. Abort them in S3
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(s.S3Concurrency)
+
 	for _, upload := range uploads {
 		eg.Go(func() error {
+			if err := s.S3RateLimiter.Wait(egCtx); err != nil {
+				return err
+			}
+
 			if err := coreClient.AbortMultipartUpload(egCtx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
+				if isRateLimitError(err) {
+					s.S3RateLimiter.RecordThrottle()
+				}
+
 				if errResp := minio.ToErrorResponse(err); errResp.Code != minio.NoSuchUpload {
 					slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err, "code", errResp.Code)
 				} else if errors.Is(err, context.Canceled) {
 					return err
 				}
+			} else {
+				s.S3RateLimiter.RecordSuccess()
 			}
+
 			return nil
 		})
 	}
