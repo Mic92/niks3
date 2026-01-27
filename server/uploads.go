@@ -280,14 +280,27 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// Create Core client for multipart operations
 	coreClient := minio.Core{Client: s.MinioClient}
 
+	// Wait for rate limiter
+	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
+		http.Error(w, fmt.Sprintf("rate limiter context canceled: %v", err), http.StatusServiceUnavailable)
+
+		return
+	}
+
 	// Complete multipart upload
 	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
 	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
 		slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
 		http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
 
 		return
 	}
+
+	s.S3RateLimiter.RecordSuccess()
 
 	// Delete the multipart upload tracking row
 	queries := pg.New(s.Pool)

@@ -61,6 +61,7 @@ func createTestService(tb testing.TB) *server.Service {
 		Bucket:        bucketName,
 		MinioClient:   minioClient,
 		S3Concurrency: 100,
+		S3RateLimiter: server.NewAdaptiveRateLimiter(0), // Start unlimited for tests
 	}
 }
 
