@@ -91,6 +91,10 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 
 	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap, req.VerifyS3)
 	if err != nil {
+		if s.handleS3Error(w, err, "create pending closure") {
+			return
+		}
+
 		http.Error(w, "failed to start upload: "+err.Error(), http.StatusInternalServerError)
 
 		return
@@ -203,6 +207,10 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 	// Generate presigned URLs for the requested parts
 	partURLs, err := s.generatePartURLs(r.Context(), req.ObjectKey, req.UploadID, req.StartPartNumber, req.NumParts)
 	if err != nil {
+		if s.handleS3Error(w, err, "generate part URLs") {
+			return
+		}
+
 		slog.Error("Failed to generate part URLs", "error", err)
 		http.Error(w, fmt.Sprintf("failed to generate part URLs: %v", err), http.StatusInternalServerError)
 
@@ -290,8 +298,8 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// Complete multipart upload
 	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
 	if err != nil {
-		if isRateLimitError(err) {
-			s.S3RateLimiter.RecordThrottle()
+		if s.handleS3Error(w, err, "complete multipart upload") {
+			return
 		}
 
 		slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
