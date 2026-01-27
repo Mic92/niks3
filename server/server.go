@@ -30,6 +30,7 @@ type options struct {
 	S3UseSSL      bool
 	S3Bucket      string
 	S3Concurrency int
+	S3RateLimit   float64
 
 	APIToken string
 
@@ -45,6 +46,7 @@ type Service struct {
 	MinioClient   *minio.Client
 	Bucket        string
 	S3Concurrency int
+	S3RateLimiter *AdaptiveRateLimiter
 	APIToken      string
 	SigningKeys   []*signing.Key
 	CacheURL      string
@@ -170,6 +172,7 @@ func runServer(opts *options) error {
 		MinioClient:   minioClient,
 		Bucket:        opts.S3Bucket,
 		S3Concurrency: opts.S3Concurrency,
+		S3RateLimiter: NewAdaptiveRateLimiter(opts.S3RateLimit),
 		APIToken:      opts.APIToken,
 		CacheURL:      opts.CacheURL,
 	}
@@ -249,9 +252,18 @@ func runServer(opts *options) error {
 
 // InitializeBucket ensures the bucket has the required nix-cache-info file.
 func (s *Service) InitializeBucket(ctx context.Context) error {
+	// Wait for rate limiter
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return err
+	}
+
 	// Check if nix-cache-info already exists
 	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
 	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
 		// Check if this is a "not found" error vs other errors
 		errResp := minio.ToErrorResponse(err)
 		if errResp.Code != minio.NoSuchKey {
@@ -272,15 +284,27 @@ WantMassQuery: 1
 Priority: 30
 `, storeDir)
 
+		// Wait for rate limiter before PutObject
+		if err := s.S3RateLimiter.Wait(ctx); err != nil {
+			return err
+		}
+
 		// Upload nix-cache-info to the bucket
 		_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
 			bytes.NewReader([]byte(cacheInfo)), int64(len(cacheInfo)),
 			minio.PutObjectOptions{ContentType: "text/plain"})
 		if err != nil {
+			if isRateLimitError(err) {
+				s.S3RateLimiter.RecordThrottle()
+			}
+
 			return fmt.Errorf("failed to create nix-cache-info: %w", err)
 		}
 
+		s.S3RateLimiter.RecordSuccess()
 		slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
+	} else {
+		s.S3RateLimiter.RecordSuccess()
 	}
 
 	// Generate and upload landing page if we have a cache URL
@@ -301,14 +325,26 @@ func (s *Service) uploadLandingPage(ctx context.Context) {
 		return
 	}
 
+	// Wait for rate limiter
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		slog.Warn("Rate limiter context canceled for landing page upload", "error", err)
+
+		return
+	}
+
 	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "index.html",
 		bytes.NewReader([]byte(landingHTML)), int64(len(landingHTML)),
 		minio.PutObjectOptions{ContentType: "text/html; charset=utf-8"})
 	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
 		slog.Warn("Failed to upload landing page", "error", err)
 
 		return
 	}
 
+	s.S3RateLimiter.RecordSuccess()
 	slog.Info("Uploaded landing page to bucket", "bucket", s.Bucket)
 }

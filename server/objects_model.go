@@ -126,6 +126,11 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
 		if result.Err != nil {
+			// Track rate limit errors to enable adaptive rate limiting
+			if isRateLimitError(result.Err) {
+				s.S3RateLimiter.RecordThrottle()
+			}
+
 			// If object doesn't exist in S3, treat it as successfully deleted
 			// to maintain consistency between S3 and database
 			if minio.ToErrorResponse(result.Err).Code == minio.NoSuchKey {
@@ -157,6 +162,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 			continue
 		}
+
+		s.S3RateLimiter.RecordSuccess()
 
 		var err error
 

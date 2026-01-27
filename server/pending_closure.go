@@ -71,18 +71,31 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 
 	for _, key := range objectKeys {
 		g.Go(func() error {
+			if err := s.S3RateLimiter.Wait(ctx); err != nil {
+				return err
+			}
+
 			_, err := s.MinioClient.StatObject(ctx, s.Bucket, key, minio.StatObjectOptions{})
 			if err != nil {
+				if isRateLimitError(err) {
+					s.S3RateLimiter.RecordThrottle()
+				}
+
 				errResp := minio.ToErrorResponse(err)
 				if errResp.Code == minio.NoSuchKey {
 					mu.Lock()
 					missingObjects[key] = true
 					mu.Unlock()
+					s.S3RateLimiter.RecordSuccess()
+
 					return nil
 				}
 				// Return error to cancel the group
 				return fmt.Errorf("failed to check S3 object %q: %w", key, err)
 			}
+
+			s.S3RateLimiter.RecordSuccess()
+
 			return nil
 		})
 	}
@@ -318,13 +331,23 @@ func (s *Service) createPendingObjects(
 }
 
 func (s *Service) makePresignedURL(ctx context.Context, objectKey string, objectType string) (PendingObject, error) {
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return PendingObject{}, err
+	}
+
 	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
 		s.Bucket,
 		objectKey,
 		maxSignedURLDuration)
 	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
 		return PendingObject{}, fmt.Errorf("failed to create presigned URL: %w", err)
 	}
+
+	s.S3RateLimiter.RecordSuccess()
 
 	return PendingObject{
 		Type:         objectType,
