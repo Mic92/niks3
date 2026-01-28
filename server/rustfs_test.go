@@ -66,6 +66,15 @@ func (s *rustfsServer) Client(tb testing.TB) *minio.Client {
 	tb.Helper()
 
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
+
+	return s.ClientWithEndpoint(tb, endpoint)
+}
+
+// ClientWithEndpoint creates a minio client pointing to a custom endpoint.
+// This is useful for testing with proxies.
+func (s *rustfsServer) ClientWithEndpoint(tb testing.TB, endpoint string) *minio.Client {
+	tb.Helper()
+
 	// minio-go client works with any S3-compatible storage including RustFS
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4("rustfsadmin", s.secret, ""),
