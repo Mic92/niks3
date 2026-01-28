@@ -162,6 +162,9 @@ func (s *Service) handleS3Error(w http.ResponseWriter, err error, operation stri
 
 	// Check if any error in the chain is a rate limit error
 	if isRateLimitError(err) {
+		// Record throttle to adapt the rate limiter
+		s.S3RateLimiter.RecordThrottle()
+
 		slog.Warn("S3 rate limit hit", "operation", operation, "error", err)
 		w.Header().Set("Retry-After", "2")
 		http.Error(w, "S3 rate limit exceeded, please retry", http.StatusTooManyRequests)
