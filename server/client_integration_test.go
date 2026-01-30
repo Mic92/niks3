@@ -594,3 +594,114 @@ func TestClientWithDependencies(t *testing.T) {
 
 	testRetrieveWithNixCopy(ctx, t, testService, storePath, nixEnv)
 }
+
+func TestPinProtectsFromGC(t *testing.T) {
+	t.Parallel()
+
+	// Start test service
+	service := createTestService(t)
+	t.Cleanup(func() { service.Close() })
+
+	// Create test server with auth
+	testService := &server.Service{
+		Pool:        service.Pool,
+		MinioClient: service.MinioClient,
+		Bucket:      service.Bucket,
+		APIToken:    testAuthToken,
+	}
+
+	// Initialize the bucket with nix-cache-info
+	err := testService.InitializeBucket(t.Context())
+	ok(t, err)
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+	mux.HandleFunc("POST /api/pins/{name}", testService.AuthMiddleware(testService.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
+
+	ts := httptest.NewServer(mux)
+
+	t.Cleanup(func() { ts.Close() })
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	// Create two store paths - one will be pinned, one won't
+	pinnedFile := filepath.Join(t.TempDir(), "pinned-file.txt")
+	err = os.WriteFile(pinnedFile, []byte("pinned content"), 0o600)
+	ok(t, err)
+
+	unpinnedFile := filepath.Join(t.TempDir(), "unpinned-file.txt")
+	err = os.WriteFile(unpinnedFile, []byte("unpinned content"), 0o600)
+	ok(t, err)
+
+	pinnedStorePath := nixStoreAdd(t, nixEnv, pinnedFile)
+	unpinnedStorePath := nixStoreAdd(t, nixEnv, unpinnedFile)
+
+	t.Logf("Pinned store path: %s", pinnedStorePath)
+	t.Logf("Unpinned store path: %s", unpinnedStorePath)
+
+	// Push both paths
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{pinnedStorePath}, nixEnv)
+	ok(t, err)
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{unpinnedStorePath}, nixEnv)
+	ok(t, err)
+
+	// Create a pin for the first path
+	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
+	ok(t, err)
+
+	err = c.CreatePin(ctx, "myapp", pinnedStorePath)
+	ok(t, err)
+
+	// Verify pin exists in S3
+	pinObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, "pins/myapp", minio.GetObjectOptions{})
+	ok(t, err)
+
+	pinContent, err := io.ReadAll(pinObj)
+	ok(t, err)
+
+	if err := pinObj.Close(); err != nil {
+		t.Logf("Failed to close pin object: %v", err)
+	}
+
+	if string(pinContent) != pinnedStorePath {
+		t.Errorf("Pin content mismatch: got %q, want %q", string(pinContent), pinnedStorePath)
+	}
+
+	// Extract hashes for verification
+	pinnedHash := strings.Split(filepath.Base(pinnedStorePath), "-")[0]
+	unpinnedHash := strings.Split(filepath.Base(unpinnedStorePath), "-")[0]
+
+	// Run garbage collection with force mode (immediate deletion)
+	_, err = c.RunGarbageCollection(ctx, "0s", "0s", true)
+	ok(t, err)
+
+	// Verify pinned closure still exists
+	var pinnedClosureCount int
+
+	err = testService.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM closures WHERE key = $1", pinnedHash+".narinfo").Scan(&pinnedClosureCount)
+	ok(t, err)
+
+	if pinnedClosureCount != 1 {
+		t.Errorf("Expected pinned closure to exist, but got count=%d", pinnedClosureCount)
+	}
+
+	// Verify unpinned closure was deleted
+	var unpinnedClosureCount int
+
+	err = testService.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM closures WHERE key = $1", unpinnedHash+".narinfo").Scan(&unpinnedClosureCount)
+	ok(t, err)
+
+	if unpinnedClosureCount != 0 {
+		t.Errorf("Expected unpinned closure to be deleted, but got count=%d", unpinnedClosureCount)
+	}
+
+	// Verify pinned narinfo still exists in S3
+	_, err = testService.MinioClient.StatObject(ctx, testService.Bucket, pinnedHash+".narinfo", minio.StatObjectOptions{})
+	if err != nil {
+		t.Errorf("Pinned narinfo should still exist in S3: %v", err)
+	}
+
+	t.Log("Pin successfully protected closure from garbage collection")
+}

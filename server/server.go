@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -89,6 +90,7 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Fall back to OIDC validation if configured
 		var oidcErr *oidc.ValidationError
+
 		if s.OIDCValidator != nil {
 			claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
 			if err == nil {
@@ -99,53 +101,17 @@ func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			// Store the OIDC error for later logging
-			if validationErr, ok := err.(*oidc.ValidationError); ok {
+			validationErr := &oidc.ValidationError{}
+			if errors.As(err, &validationErr) {
 				oidcErr = validationErr
 			}
+
 			slog.Debug("OIDC validation failed")
 		}
 
 		// Both static token and OIDC failed - log details for debugging
 		s.logAuthFailure(token, oidcErr)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	}
-}
-
-// logAuthFailure logs detailed information about an authentication failure.
-func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
-	// Truncate token for logging (show first and last 10 chars)
-	tokenPreview := token
-	if len(token) > 25 {
-		tokenPreview = token[:10] + "..." + token[len(token)-10:]
-	}
-
-	if oidcErr != nil {
-		// Log OIDC-specific failure details
-		slog.Warn("Authentication failed",
-			"token_preview", tokenPreview,
-			"token_length", len(token),
-			"oidc_error", oidcErr.Reason,
-			"oidc_provider", oidcErr.Provider,
-			"tried_providers", oidcErr.TriedProviders,
-		)
-		// Log claims if available (helps debug bound_claims/bound_subject mismatches)
-		if oidcErr.Claims != nil {
-			slog.Debug("OIDC token claims", "claims", oidcErr.Claims)
-		}
-	} else if s.OIDCValidator != nil {
-		// OIDC configured but we didn't get a ValidationError (shouldn't happen normally)
-		slog.Warn("Authentication failed",
-			"token_preview", tokenPreview,
-			"token_length", len(token),
-			"reason", "token did not match OIDC or static API token",
-		)
-	} else {
-		// No OIDC configured, just static token mismatch
-		slog.Warn("Authentication failed",
-			"token_preview", tokenPreview,
-			"token_length", len(token),
-			"reason", "static API token mismatch",
-		)
 	}
 }
 
@@ -186,6 +152,7 @@ func runServer(opts *options) error {
 
 		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		validator, err := oidc.NewValidator(initCtx, oidcCfg)
+
 		initCancel()
 
 		if err != nil {
@@ -193,6 +160,7 @@ func runServer(opts *options) error {
 		}
 
 		service.OIDCValidator = validator
+
 		slog.Info("OIDC authentication enabled", "config", opts.OIDCConfigPath)
 	}
 
@@ -234,6 +202,9 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/pins", service.AuthMiddleware(service.ListPinsHandler))
+	mux.HandleFunc("POST /api/pins/{name}", service.AuthMiddleware(service.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/pins/{name}", service.AuthMiddleware(service.DeletePinHandler))
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,
@@ -314,6 +285,45 @@ Priority: 30
 	}
 
 	return nil
+}
+
+// logAuthFailure logs detailed information about an authentication failure.
+func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
+	// Truncate token for logging (show first and last 10 chars)
+	tokenPreview := token
+	if len(token) > 25 {
+		tokenPreview = token[:10] + "..." + token[len(token)-10:]
+	}
+
+	switch {
+	case oidcErr != nil:
+		// Log OIDC-specific failure details
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"oidc_error", oidcErr.Reason,
+			"oidc_provider", oidcErr.Provider,
+			"tried_providers", oidcErr.TriedProviders,
+		)
+		// Log claims if available (helps debug bound_claims/bound_subject mismatches)
+		if oidcErr.Claims != nil {
+			slog.Debug("OIDC token claims", "claims", oidcErr.Claims)
+		}
+	case s.OIDCValidator != nil:
+		// OIDC configured but we didn't get a ValidationError (shouldn't happen normally)
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"reason", "token did not match OIDC or static API token",
+		)
+	default:
+		// No OIDC configured, just static token mismatch
+		slog.Warn("Authentication failed",
+			"token_preview", tokenPreview,
+			"token_length", len(token),
+			"reason", "static API token mismatch",
+		)
+	}
 }
 
 // uploadLandingPage generates and uploads the landing page to S3.

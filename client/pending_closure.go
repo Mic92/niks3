@@ -50,7 +50,6 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)
@@ -98,7 +97,6 @@ func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) e
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)
@@ -143,7 +141,6 @@ func (c *Client) SignPendingClosure(ctx context.Context, closureID string, narin
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.DoWithRetry(ctx, req)
