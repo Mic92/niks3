@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
-	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/klauspost/compress v1.18.3
 	github.com/minio/minio-go/v7 v7.0.98
@@ -12,6 +12,7 @@ require (
 	github.com/pressly/goose/v3 v3.26.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/sys v0.40.0
+	golang.org/x/time v0.14.0
 )
 
 require (
@@ -39,5 +40,4 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 )
