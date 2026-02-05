@@ -72,6 +72,7 @@ func (h *Hash) UnmarshalJSON(data []byte) error {
 		} else if strings.HasPrefix(hashStr, "sha512:") || strings.HasPrefix(hashStr, "sha512-") {
 			h.algorithm = "sha512"
 		}
+
 		return nil
 	}
 
@@ -88,6 +89,7 @@ func (h *Hash) UnmarshalJSON(data []byte) error {
 	h.algorithm = hashObj.Algorithm
 	h.format = hashObj.Format
 	h.hash = hashObj.Hash
+
 	return nil
 }
 
@@ -145,6 +147,7 @@ func (ca *ContentAddress) UnmarshalJSON(data []byte) error {
 
 	ca.method = caObj.Method
 	ca.hash = caObj.Hash
+
 	return nil
 }
 
@@ -171,17 +174,19 @@ func (ca *ContentAddress) String() string {
 	if ca.method != "" {
 		// Convert hash from SRI format to nix32 format for narinfo
 		hashStr := ca.hash.String()
+
 		nix32Hash, err := ConvertHashToNix32(hashStr)
 		if err != nil {
 			// Fall back to original format if conversion fails
 			nix32Hash = hashStr
 		}
+
 		switch ca.method {
 		case "text":
 			return "text:" + nix32Hash
 		case "flat":
 			return "fixed:" + nix32Hash
-		case "nar":
+		case string(ObjectTypeNAR):
 			return "fixed:r:" + nix32Hash
 		case "git":
 			return "fixed:git:" + nix32Hash

@@ -147,7 +147,13 @@ func retryAfterDuration(resp *http.Response) time.Duration {
 
 // DoWithRetry executes an HTTP request with exponential backoff retry logic.
 // The request body will be read and stored for retries if necessary.
+// If the request is to the API server (matches baseURL host), the Authorization header is automatically added.
 func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Add auth header for API requests (same host as baseURL)
+	if c.authToken != "" && req.URL.Host == c.baseURL.Host {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
 	// If retries are disabled, just do the request once
 	if c.Retry.MaxRetries <= 0 {
 		resp, err := c.httpClient.Do(req)

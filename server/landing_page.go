@@ -275,7 +275,7 @@ func (s *Service) GenerateLandingPage(cacheURL string) (string, error) {
 	}
 
 	data := landingPageData{
-		Logo:             template.HTML(logoSVG),
+		Logo:             template.HTML(logoSVG), //nolint:gosec // logoSVG is a constant, not user input
 		PublicKeys:       publicKeys,
 		PublicKeysJoined: strings.Join(publicKeys, " "),
 		CacheURL:         cacheURL,
