@@ -394,7 +394,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 			req.Header.Set("Content-Type", "text/x-nix-narinfo")
 			req.Header.Set("Content-Encoding", "zstd")
 
-			resp, err := c.DoWithRetry(ctx, req)
+			resp, err := c.DoS3Request(ctx, req)
 			if err != nil {
 				return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
 			}

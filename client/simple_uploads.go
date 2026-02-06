@@ -31,7 +31,7 @@ func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presi
 		req.Header.Set(key, value)
 	}
 
-	resp, err := c.DoWithRetry(ctx, req)
+	resp, err := c.DoS3Request(ctx, req)
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}
@@ -121,7 +121,7 @@ func (c *Client) UploadBuildLogToPresignedURL(ctx context.Context, presignedURL 
 	req.Header.Set("Content-Encoding", "zstd")
 
 	// Upload
-	resp, err := c.DoWithRetry(ctx, req)
+	resp, err := c.DoS3Request(ctx, req)
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}

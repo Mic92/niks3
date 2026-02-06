@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server/oidc"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
@@ -46,7 +47,7 @@ type Service struct {
 	MinioClient   *minio.Client
 	Bucket        string
 	S3Concurrency int
-	S3RateLimiter *AdaptiveRateLimiter
+	S3RateLimiter *ratelimit.AdaptiveRateLimiter
 	APIToken      string
 	SigningKeys   []*signing.Key
 	CacheURL      string
@@ -172,7 +173,7 @@ func runServer(opts *options) error {
 		MinioClient:   minioClient,
 		Bucket:        opts.S3Bucket,
 		S3Concurrency: opts.S3Concurrency,
-		S3RateLimiter: NewAdaptiveRateLimiter(opts.S3RateLimit),
+		S3RateLimiter: ratelimit.NewAdaptiveRateLimiter(opts.S3RateLimit, "s3"),
 		APIToken:      opts.APIToken,
 		CacheURL:      opts.CacheURL,
 	}

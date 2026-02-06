@@ -10,6 +10,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+
+	"github.com/Mic92/niks3/ratelimit"
 )
 
 // Client handles uploads to the niks3 server.
@@ -17,12 +19,14 @@ type Client struct {
 	baseURL                 *url.URL
 	authToken               string
 	httpClient              *http.Client
-	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
-	NixEnv                  []string    // Optional environment variables for nix commands (for testing)
-	Retry                   RetryConfig // Retry configuration for HTTP requests
-	storeDir                string      // Cached Nix store directory (e.g., "/nix/store")
-	VerifyS3Integrity       bool        // Enable S3 integrity checking when creating pending closures
-	DebugHTTP               bool        // Enable HTTP request/response debug logging
+	MaxConcurrentNARUploads int                            // Maximum number of concurrent uploads (0 = unlimited)
+	NixEnv                  []string                       // Optional environment variables for nix commands (for testing)
+	Retry                   RetryConfig                    // Retry configuration for HTTP requests
+	storeDir                string                         // Cached Nix store directory (e.g., "/nix/store")
+	VerifyS3Integrity       bool                           // Enable S3 integrity checking when creating pending closures
+	DebugHTTP               bool                           // Enable HTTP request/response debug logging
+	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
+	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 }
 
 // loggingTransport wraps an http.RoundTripper to log requests and responses.
@@ -102,6 +106,8 @@ func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
 		storeDir:                storeDir,
+		S3RateLimiter:           ratelimit.NewAdaptiveRateLimiter(0, "s3"),
+		ServerRateLimiter:       ratelimit.NewAdaptiveRateLimiter(0, "server"),
 	}, nil
 }
 
@@ -152,7 +158,7 @@ func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.R
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := c.DoWithRetry(ctx, req)
+	resp, err := c.DoS3Request(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("uploading: %w", err)
 	}
