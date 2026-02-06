@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
 	minio "github.com/minio/minio-go/v7"
@@ -61,7 +62,7 @@ func createTestService(tb testing.TB) *server.Service {
 		Bucket:        bucketName,
 		MinioClient:   minioClient,
 		S3Concurrency: 100,
-		S3RateLimiter: server.NewAdaptiveRateLimiter(0), // Start unlimited for tests
+		S3RateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "s3-test"), // Start unlimited for tests
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Mic92/niks3/ratelimit"
 )
 
 // RetryConfig holds retry configuration for HTTP requests.
@@ -145,17 +147,56 @@ func retryAfterDuration(resp *http.Response) time.Duration {
 	return 0
 }
 
+// DoServerRequest executes an HTTP request to the niks3 server with rate limiting and retry.
+func (c *Client) DoServerRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.ServerRateLimiter)
+}
+
+// DoS3Request executes an HTTP request to S3 (presigned URL) with rate limiting and retry.
+func (c *Client) DoS3Request(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.S3RateLimiter)
+}
+
 // DoWithRetry executes an HTTP request with exponential backoff retry logic.
-// The request body will be read and stored for retries if necessary.
+//
+// Deprecated: Use DoServerRequest or DoS3Request instead to get proper rate limiting.
 func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.ServerRateLimiter)
+}
+
+// recordLimiterFeedback updates the rate limiter based on the HTTP response status.
+func recordLimiterFeedback(limiter *ratelimit.AdaptiveRateLimiter, statusCode int) {
+	if limiter == nil {
+		return
+	}
+
+	switch {
+	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
+		limiter.RecordThrottle()
+	case statusCode >= 200 && statusCode < 300:
+		limiter.RecordSuccess()
+	}
+}
+
+// waitForLimiter blocks until the rate limiter allows a request.
+func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter) error {
+	if limiter == nil {
+		return nil
+	}
+
+	if err := limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limiter: %w", err)
+	}
+
+	return nil
+}
+
+// doWithRetry executes an HTTP request with adaptive rate limiting and exponential backoff retry.
+// The request body will be read and stored for retries if necessary.
+func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
 	// If retries are disabled, just do the request once
 	if c.Retry.MaxRetries <= 0 {
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("executing request: %w", err)
-		}
-
-		return resp, nil
+		return c.doOnce(ctx, req, limiter)
 	}
 
 	// Require GetBody for retries so we can replay the body without
@@ -171,6 +212,10 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	var lastResp *http.Response
 
 	for attempt := 0; attempt <= c.Retry.MaxRetries; attempt++ {
+		if err := waitForLimiter(ctx, limiter); err != nil {
+			return nil, err
+		}
+
 		// Reset body for retry attempts using GetBody
 		if req.GetBody != nil {
 			body, err := req.GetBody()
@@ -186,7 +231,14 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 
 		// Success case
 		if err == nil && !isRetryableStatus(resp.StatusCode) {
+			recordLimiterFeedback(limiter, resp.StatusCode)
+
 			return resp, nil
+		}
+
+		// Record throttle on 429 or 503
+		if err == nil {
+			recordLimiterFeedback(limiter, resp.StatusCode)
 		}
 
 		// Store error/response for potential final return
@@ -259,4 +311,20 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	}
 
 	return lastResp, nil
+}
+
+// doOnce executes a single HTTP request without retries, with rate limiting feedback.
+func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
+	if err := waitForLimiter(ctx, limiter); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing request: %w", err)
+	}
+
+	recordLimiterFeedback(limiter, resp.StatusCode)
+
+	return resp, nil
 }
