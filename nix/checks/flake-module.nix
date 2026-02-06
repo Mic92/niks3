@@ -67,6 +67,10 @@
             niks3 = config.packages.niks3;
             rustfs = config.packages.rustfs;
           };
+          nixos-test-read-proxy = pkgs.callPackage ./nixos-test-read-proxy.nix {
+            niks3 = config.packages.niks3;
+            rustfs = config.packages.rustfs;
+          };
         };
     };
 }
