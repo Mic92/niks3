@@ -16,6 +16,7 @@ pkgs.buildGoModule {
       ../../api
       ../../cmd
       ../../client
+      ../../ratelimit
       ../../server
       ../../go.mod
       ../../go.sum

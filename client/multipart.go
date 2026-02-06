@@ -99,7 +99,7 @@ func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID strin
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.DoWithRetry(ctx, req)
+	resp, err := c.DoServerRequest(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
@@ -158,7 +158,7 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.DoWithRetry(ctx, req)
+	resp, err := c.DoServerRequest(ctx, req)
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
