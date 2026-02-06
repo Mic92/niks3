@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Mic92/niks3/ratelimit"
 )
 
 // RetryConfig holds retry configuration for HTTP requests.
@@ -145,33 +147,64 @@ func retryAfterDuration(resp *http.Response) time.Duration {
 	return 0
 }
 
-// DoWithRetry executes an HTTP request with exponential backoff retry logic.
-// The request body will be read and stored for retries if necessary.
-func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// If retries are disabled, just do the request once
-	if c.Retry.MaxRetries <= 0 {
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("executing request: %w", err)
-		}
+// DoServerRequest executes an HTTP request to the niks3 server with rate limiting and retry.
+func (c *Client) DoServerRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.ServerRateLimiter)
+}
 
-		return resp, nil
+// DoS3Request executes an HTTP request to S3 (presigned URL) with rate limiting and retry.
+func (c *Client) DoS3Request(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.S3RateLimiter)
+}
+
+// DoWithRetry executes an HTTP request with exponential backoff retry logic.
+//
+// Deprecated: Use DoServerRequest or DoS3Request instead to get proper rate limiting.
+func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(ctx, req, c.ServerRateLimiter)
+}
+
+// recordLimiterFeedback updates the rate limiter based on the HTTP response status.
+func recordLimiterFeedback(limiter *ratelimit.AdaptiveRateLimiter, statusCode int) {
+	if limiter == nil {
+		return
 	}
 
-	// Store request body for retries (if it exists and is seekable)
-	var bodyBytes []byte
+	switch {
+	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
+		limiter.RecordThrottle()
+	case statusCode >= 200 && statusCode < 300:
+		limiter.RecordSuccess()
+	}
+}
 
-	if req.Body != nil && req.Body != http.NoBody {
-		var err error
+// waitForLimiter blocks until the rate limiter allows a request.
+func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter) error {
+	if limiter == nil {
+		return nil
+	}
 
-		bodyBytes, err = io.ReadAll(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("reading request body for retry: %w", err)
-		}
+	if err := limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limiter: %w", err)
+	}
 
-		if err := req.Body.Close(); err != nil {
-			slog.Warn("Failed to close request body", "error", err)
-		}
+	return nil
+}
+
+// doWithRetry executes an HTTP request with adaptive rate limiting and exponential backoff retry.
+// The request body will be read and stored for retries if necessary.
+func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
+	// If retries are disabled, just do the request once
+	if c.Retry.MaxRetries <= 0 {
+		return c.doOnce(ctx, req, limiter)
+	}
+
+	// Require GetBody for retries so we can replay the body without
+	// copying it to the heap. http.NewRequest sets GetBody automatically
+	// for *bytes.Reader and *strings.Reader, which all callers use.
+	// This avoids copying mmap'd data to the heap on retries.
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		return nil, errors.New("request with body must have GetBody set for retry support")
 	}
 
 	var lastErr error
@@ -179,14 +212,27 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	var lastResp *http.Response
 
 	for attempt := 0; attempt <= c.Retry.MaxRetries; attempt++ {
-		// Recreate request body for retry attempts
-		if bodyBytes != nil {
-			req.Body = io.NopCloser(newBytesReader(bodyBytes))
-			req.ContentLength = int64(len(bodyBytes))
+		if err := waitForLimiter(ctx, limiter); err != nil {
+			return nil, err
+		}
+
+		// Reset body for retry attempts using GetBody
+		if req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("getting request body for retry: %w", err)
+			}
+
+			req.Body = body
 		}
 
 		// Execute request
 		resp, err := c.httpClient.Do(req)
+
+		// Update rate limiter regardless of whether we retry
+		if err == nil {
+			recordLimiterFeedback(limiter, resp.StatusCode)
+		}
 
 		// Success case
 		if err == nil && !isRetryableStatus(resp.StatusCode) {
@@ -198,10 +244,10 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 		lastResp = resp
 
 		// Determine if we should retry
-		shouldRetry := false
+		var shouldRetry bool
 		if err != nil {
 			shouldRetry = isRetryableError(err)
-		} else if isRetryableStatus(resp.StatusCode) {
+		} else {
 			shouldRetry = true
 			// Close the response body before retrying
 			closeResponseBody(resp.Body)
@@ -216,13 +262,31 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 			return resp, nil
 		}
 
-		// Calculate backoff
-		backoff := c.Retry.calculateBackoff(attempt)
+		// For throttle responses (429/503), the rate limiter already
+		// recorded the backoff. Skip the exponential delay and let
+		// Wait() at the top of the next iteration pace the retry.
+		// Still honour Retry-After, since the server may request a
+		// longer delay than the rate limiter would impose.
+		isThrottle := err == nil &&
+			(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable)
+		limiterActive := limiter != nil && limiter.IsEnabled()
 
-		// Honor server-provided Retry-After header if present
-		if resp != nil {
-			if ra := retryAfterDuration(resp); ra > backoff {
-				backoff = ra
+		var backoff time.Duration
+
+		switch {
+		case isThrottle && limiterActive:
+			// Rate limiter handles pacing; only honour explicit Retry-After
+			if resp != nil {
+				backoff = retryAfterDuration(resp)
+			}
+		default:
+			// Network errors, 500s, etc: exponential backoff
+			backoff = c.Retry.calculateBackoff(attempt)
+
+			if resp != nil {
+				if ra := retryAfterDuration(resp); ra > backoff {
+					backoff = ra
+				}
 			}
 		}
 
@@ -244,16 +308,16 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 		}
 
 		// Wait before retry (check context cancellation)
-		select {
-		case <-ctx.Done():
-			// Context canceled, return immediately
-			if lastResp != nil {
-				closeResponseBody(lastResp.Body)
-			}
+		if backoff > 0 {
+			select {
+			case <-ctx.Done():
+				if lastResp != nil {
+					closeResponseBody(lastResp.Body)
+				}
 
-			return nil, fmt.Errorf("context canceled during retry: %w", ctx.Err())
-		case <-time.After(backoff):
-			// Continue to next retry
+				return nil, fmt.Errorf("context canceled during retry: %w", ctx.Err())
+			case <-time.After(backoff):
+			}
 		}
 	}
 
@@ -265,27 +329,18 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	return lastResp, nil
 }
 
-// bytesReader is a wrapper to make []byte seekable for request retries.
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func newBytesReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
+// doOnce executes a single HTTP request without retries, with rate limiting feedback.
+func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
+	if err := waitForLimiter(ctx, limiter); err != nil {
+		return nil, err
 	}
 
-	n := copy(p, r.data[r.pos:])
-	r.pos += n
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing request: %w", err)
+	}
 
-	return n, nil
-}
+	recordLimiterFeedback(limiter, resp.StatusCode)
 
-func (r *bytesReader) Close() error {
-	return nil
+	return resp, nil
 }
