@@ -158,20 +158,12 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 		return resp, nil
 	}
 
-	// Store request body for retries (if it exists and is seekable)
-	var bodyBytes []byte
-
-	if req.Body != nil && req.Body != http.NoBody {
-		var err error
-
-		bodyBytes, err = io.ReadAll(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("reading request body for retry: %w", err)
-		}
-
-		if err := req.Body.Close(); err != nil {
-			slog.Warn("Failed to close request body", "error", err)
-		}
+	// Require GetBody for retries so we can replay the body without
+	// copying it to the heap. http.NewRequest sets GetBody automatically
+	// for *bytes.Reader and *strings.Reader, which all callers use.
+	// This avoids copying mmap'd data to the heap on retries.
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		return nil, errors.New("request with body must have GetBody set for retry support")
 	}
 
 	var lastErr error
@@ -179,10 +171,14 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	var lastResp *http.Response
 
 	for attempt := 0; attempt <= c.Retry.MaxRetries; attempt++ {
-		// Recreate request body for retry attempts
-		if bodyBytes != nil {
-			req.Body = io.NopCloser(newBytesReader(bodyBytes))
-			req.ContentLength = int64(len(bodyBytes))
+		// Reset body for retry attempts using GetBody
+		if req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("getting request body for retry: %w", err)
+			}
+
+			req.Body = body
 		}
 
 		// Execute request
@@ -263,29 +259,4 @@ func (c *Client) DoWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 	}
 
 	return lastResp, nil
-}
-
-// bytesReader is a wrapper to make []byte seekable for request retries.
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func newBytesReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-
-	n := copy(p, r.data[r.pos:])
-	r.pos += n
-
-	return n, nil
-}
-
-func (r *bytesReader) Close() error {
-	return nil
 }
