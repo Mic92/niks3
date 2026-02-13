@@ -94,7 +94,7 @@ func terminateProcess(cmd *exec.Cmd) {
 	}
 
 	time.AfterFunc(10*time.Second, func() {
-		err = syscall.Kill(pgid, syscall.SIGKILL)
+		err = syscall.Kill(-pgid, syscall.SIGKILL)
 		if err != nil {
 			slog.Error("failed to kill rustfs", "error", err)
 
@@ -104,7 +104,7 @@ func terminateProcess(cmd *exec.Cmd) {
 		slog.Info("killed rustfs")
 	})
 
-	err = syscall.Kill(pgid, syscall.SIGTERM)
+	err = syscall.Kill(-pgid, syscall.SIGTERM)
 	if err != nil {
 		slog.Error("failed to kill rustfs", "error", err)
 	}

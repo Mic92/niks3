@@ -35,23 +35,25 @@ type options struct {
 
 	APIToken string
 
-	SignKeyPaths   []string
-	CacheURL       string
-	OIDCConfigPath string
+	SignKeyPaths    []string
+	CacheURL        string
+	OIDCConfigPath  string
+	EnableReadProxy bool
 
 	Debug bool
 }
 
 type Service struct {
-	Pool          *pgxpool.Pool
-	MinioClient   *minio.Client
-	Bucket        string
-	S3Concurrency int
-	S3RateLimiter *ratelimit.AdaptiveRateLimiter
-	APIToken      string
-	SigningKeys   []*signing.Key
-	CacheURL      string
-	OIDCValidator *oidc.Validator
+	Pool            *pgxpool.Pool
+	MinioClient     *minio.Client
+	Bucket          string
+	S3Concurrency   int
+	S3RateLimiter   *ratelimit.AdaptiveRateLimiter
+	APIToken        string
+	SigningKeys     []*signing.Key
+	CacheURL        string
+	OIDCValidator   *oidc.Validator
+	EnableReadProxy bool
 }
 
 // Close closes the database connection pool.
@@ -224,7 +226,6 @@ func runServer(opts *options) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", service.RootRedirectHandler)
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
 
 	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
@@ -235,6 +236,16 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
+
+	if opts.EnableReadProxy {
+		service.EnableReadProxy = true
+		// Register without method prefix to avoid ServeMux conflicts with
+		// auto-generated HEAD routes. The handler rejects non-GET/HEAD itself.
+		mux.HandleFunc("/{path...}", service.ReadProxyHandler)
+		slog.Info("Read proxy enabled — serving cache objects from S3")
+	} else {
+		mux.HandleFunc("GET /", service.RootRedirectHandler)
+	}
 
 	server := &http.Server{
 		Addr:              opts.HTTPAddr,

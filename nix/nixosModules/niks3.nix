@@ -235,6 +235,10 @@ in
       description = "Group under which the niks3 server runs.";
     };
 
+    readProxy = {
+      enable = lib.mkEnableOption "built-in read proxy for serving the cache from a private S3 bucket";
+    };
+
     nginx = {
       enable = lib.mkEnableOption "nginx reverse proxy for niks3";
 
@@ -379,7 +383,9 @@ in
               lib.optionalString (cfg.oidc.providers != { }) ''
                 \
                             --oidc-config "${oidcConfigJson}"''
-            }${
+            }${lib.optionalString cfg.readProxy.enable ''
+              \
+                          --enable-read-proxy''}${
               lib.optionalString (cfg.cacheUrl != null) ''
                 \
                             --cache-url "${cfg.cacheUrl}"''
