@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Mic92/niks3/client"
 )
@@ -56,12 +57,10 @@ func defaultAuthTokenPath() string {
 func getAuthToken() (string, error) {
 	tokenFile := os.Getenv("NIKS3_AUTH_TOKEN_FILE")
 	if tokenFile == "" {
-		// Try default XDG path
 		tokenFile = defaultAuthTokenPath()
 		if tokenFile == "" {
 			return "", nil
 		}
-		// Only use default path if file exists
 		if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
 			return "", nil
 		}
@@ -75,15 +74,73 @@ func getAuthToken() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// resolveAuthToken returns the token from the file at flagTokenPath if set,
+// otherwise falls back to flagToken (from --auth-token or the env/XDG default).
+func resolveAuthToken(flagToken, flagTokenPath string) (string, error) {
+	if flagTokenPath != "" {
+		data, err := os.ReadFile(flagTokenPath)
+		if err != nil {
+			return "", fmt.Errorf("reading auth token file: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return flagToken, nil
+}
+
+// commonFlags holds pointers to flags shared across all subcommands.
+type commonFlags struct {
+	serverURL *string
+	authToken *string
+	debug     *bool
+	help      *bool
+}
+
+// addCommonFlags registers --server-url, --auth-token, --debug, and -h/--help
+// on the given FlagSet and returns pointers to them.
+func addCommonFlags(fs *flag.FlagSet, defaultAuthToken string) commonFlags {
+	fs.Usage = func() {} // Suppress default usage; each command prints its own.
+	cf := commonFlags{
+		serverURL: fs.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL"),
+		authToken: fs.String("auth-token", defaultAuthToken, "Auth token"),
+		debug:     fs.Bool("debug", false, "Enable debug logging"),
+		help:      fs.Bool("help", false, "Show help"),
+	}
+	fs.BoolVar(cf.help, "h", false, "Show help")
+	return cf
+}
+
+func requireServerURL(url string) error {
+	if url == "" {
+		return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+	}
+	return nil
+}
+
+func requireAuthToken(token string) error {
+	if token == "" {
+		return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE, or $XDG_CONFIG_HOME/niks3/auth-token)")
+	}
+	return nil
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3 <command> [flags]")
 	fmt.Fprintln(os.Stderr, "\nCommands:")
 	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
+	fmt.Fprintln(os.Stderr, "  listen  Listen on a socket for paths to upload (for post-build-hook)")
 	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
 	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
 	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
 }
+
+const authTokenHelp = `  --auth-token string
+        Auth token (default: reads from $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)
+        WARNING: tokens passed on the command line are visible in /proc and shell history;
+        prefer --auth-token-path or NIKS3_AUTH_TOKEN_FILE`
+
+const authTokenPathHelp = `  --auth-token-path string
+        Path to file containing the auth token (preferred over --auth-token)`
 
 func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3 push [flags] <store-paths...>")
@@ -91,8 +148,7 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
-	fmt.Fprintln(os.Stderr, "  --auth-token string")
-	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
+	fmt.Fprintln(os.Stderr, authTokenHelp)
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
@@ -109,10 +165,8 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
-	fmt.Fprintln(os.Stderr, "  --auth-token string")
-	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
-	fmt.Fprintln(os.Stderr, "  --auth-token-path string")
-	fmt.Fprintln(os.Stderr, "        Path to auth token file")
+	fmt.Fprintln(os.Stderr, authTokenHelp)
+	fmt.Fprintln(os.Stderr, authTokenPathHelp)
 	fmt.Fprintln(os.Stderr, "  --older-than string")
 	fmt.Fprintln(os.Stderr, "        Delete closures older than this duration (default: '720h' for 30 days)")
 	fmt.Fprintln(os.Stderr, "  --failed-uploads-older-than string")
@@ -126,52 +180,63 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
 
+func printListenHelp() {
+	fmt.Fprintln(os.Stderr, "Usage: niks3 listen [flags]")
+	fmt.Fprintln(os.Stderr, "\nListen on a unix datagram socket for store paths to upload.")
+	fmt.Fprintln(os.Stderr, "Designed to work with niks3-post-build-hook and systemd socket activation.")
+	fmt.Fprintln(os.Stderr, "\nWhen running standalone (without socket activation), the process must have")
+	fmt.Fprintln(os.Stderr, "write access to the socket directory to create and remove the socket file.")
+	fmt.Fprintln(os.Stderr, "\nFlags:")
+	fmt.Fprintln(os.Stderr, "  --server-url string")
+	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
+	fmt.Fprintln(os.Stderr, authTokenHelp)
+	fmt.Fprintln(os.Stderr, authTokenPathHelp)
+	fmt.Fprintln(os.Stderr, "  --socket string")
+	fmt.Fprintf(os.Stderr, "        Socket path (default: %s)\n", client.DefaultSocketPath)
+	fmt.Fprintln(os.Stderr, "  --batch-size int")
+	fmt.Fprintln(os.Stderr, "        Number of paths per push batch (default: 50)")
+	fmt.Fprintln(os.Stderr, "  --batch-timeout string")
+	fmt.Fprintln(os.Stderr, "        Max wait before pushing a partial batch (default: \"10s\")")
+	fmt.Fprintln(os.Stderr, "  --idle-exit-timeout string")
+	fmt.Fprintln(os.Stderr, "        Exit after this duration with no paths received; \"0\" to disable (default: \"60s\")")
+	fmt.Fprintln(os.Stderr, "  --max-errors int")
+	fmt.Fprintln(os.Stderr, "        Exit after this many consecutive push errors (default: 5)")
+	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
+	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
+	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
+	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --debug")
+	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
+	fmt.Fprintln(os.Stderr, "  -h, --help")
+	fmt.Fprintln(os.Stderr, "        Show this help message")
+}
+
 func run() error {
-	// Check for global help flag
 	if len(os.Args) < 2 {
 		printUsage()
 		return errors.New("no command provided")
 	}
 
-	// Handle global --help or -h
+	// Handle global --help or -h before reading auth files.
 	if os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
 		printUsage()
 		os.Exit(0)
 	}
 
-	// Get default auth token from environment (file or var)
+	// Get default auth token from environment/XDG (after help check so
+	// --help never reads auth files or produces auth errors).
 	defaultAuthToken, err := getAuthToken()
 	if err != nil {
 		return err
 	}
 
-	// Define flags for push command
-	pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
-	pushCmd.Usage = func() {} // Suppress default usage, we'll handle it
-	pushServerURL := pushCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
-	pushAuthToken := pushCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
-	maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
-	verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify that objects in database actually exist in S3 before skipping upload")
-	pushDebug := pushCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
-	pushHelp := pushCmd.Bool("help", false, "Show help")
-	pushCmd.BoolVar(pushHelp, "h", false, "Show help")
-
-	// Define flags for gc command
-	gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
-	gcCmd.Usage = func() {} // Suppress default usage, we'll handle it
-	gcServerURL := gcCmd.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL (can also use NIKS3_SERVER_URL env var)")
-	gcAuthToken := gcCmd.String("auth-token", defaultAuthToken, "Auth token (can also use NIKS3_AUTH_TOKEN_FILE env var)")
-	gcAuthTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
-	olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration (e.g., '720h' for 30 days)")
-	pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration (e.g., '6h' for 6 hours)")
-	force := gcCmd.Bool("force", false, "Force immediate deletion without grace period (WARNING: may delete objects still being uploaded)")
-	gcDebug := gcCmd.Bool("debug", false, "Enable debug logging (includes HTTP requests/responses)")
-	gcHelp := gcCmd.Bool("help", false, "Show help")
-	gcCmd.BoolVar(gcHelp, "h", false, "Show help")
-
-	// Parse command
 	switch os.Args[1] {
 	case "push":
+		pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
+		cf := addCommonFlags(pushCmd, defaultAuthToken)
+		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
+		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+
 		if err := pushCmd.Parse(os.Args[2:]); err != nil {
 			if err == flag.ErrHelp {
 				printPushHelp()
@@ -179,21 +244,18 @@ func run() error {
 			}
 			return fmt.Errorf("parsing flags: %w", err)
 		}
-
-		if *pushHelp {
+		if *cf.help {
 			printPushHelp()
 			os.Exit(0)
 		}
 
-		// Setup logger with debug level if requested
-		setupLogger(*pushDebug)
+		setupLogger(*cf.debug)
 
-		if *pushServerURL == "" {
-			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+		if err := requireServerURL(*cf.serverURL); err != nil {
+			return err
 		}
-
-		if *pushAuthToken == "" {
-			return errors.New("auth token is required (use --auth-token, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
+		if err := requireAuthToken(*cf.authToken); err != nil {
+			return err
 		}
 
 		paths := pushCmd.Args()
@@ -201,9 +263,16 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*pushServerURL, *pushAuthToken, paths, *maxConcurrent, *verifyS3Integrity, *pushDebug)
+		return pushCommand(*cf.serverURL, *cf.authToken, paths, *maxConcurrent, *verifyS3Integrity, *cf.debug)
 
 	case "gc":
+		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
+		cf := addCommonFlags(gcCmd, defaultAuthToken)
+		authTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
+		olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration")
+		pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration")
+		force := gcCmd.Bool("force", false, "Force immediate deletion without grace period")
+
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
 			if err == flag.ErrHelp {
 				printGcHelp()
@@ -211,36 +280,79 @@ func run() error {
 			}
 			return fmt.Errorf("parsing flags: %w", err)
 		}
-
-		if *gcHelp {
+		if *cf.help {
 			printGcHelp()
 			os.Exit(0)
 		}
 
-		// Setup logger with debug level if requested
-		setupLogger(*gcDebug)
+		setupLogger(*cf.debug)
 
-		if *gcServerURL == "" {
-			return errors.New("server URL is required (use --server-url or NIKS3_SERVER_URL env var)")
+		if err := requireServerURL(*cf.serverURL); err != nil {
+			return err
 		}
 
-		// Handle auth token from file if specified
-		token := *gcAuthToken
+		token, err := resolveAuthToken(*cf.authToken, *authTokenPath)
+		if err != nil {
+			return err
+		}
+		if err := requireAuthToken(token); err != nil {
+			return err
+		}
 
-		if *gcAuthTokenPath != "" {
-			tokenData, err := os.ReadFile(*gcAuthTokenPath)
-			if err != nil {
-				return fmt.Errorf("reading auth token file: %w", err)
+		return gcCommand(*cf.serverURL, token, *olderThan, *pendingOlderThan, *force, *cf.debug)
+
+	case "listen":
+		listenCmd := flag.NewFlagSet("listen", flag.ContinueOnError)
+		cf := addCommonFlags(listenCmd, defaultAuthToken)
+		authTokenPath := listenCmd.String("auth-token-path", "", "Path to auth token file")
+		listenSocket := listenCmd.String("socket", client.DefaultSocketPath, "Socket path")
+		listenBatchSize := listenCmd.Int("batch-size", 50, "Number of paths per push batch")
+		listenBatchTimeout := listenCmd.String("batch-timeout", "10s", "Max wait before pushing a partial batch")
+		listenIdleExitTimeout := listenCmd.String("idle-exit-timeout", "60s", "Exit after this duration with no paths; \"0\" to disable")
+		listenMaxErrors := listenCmd.Int("max-errors", 5, "Exit after this many consecutive push errors")
+		listenMaxConcurrent := listenCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
+		listenVerifyS3 := listenCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+
+		if err := listenCmd.Parse(os.Args[2:]); err != nil {
+			if err == flag.ErrHelp {
+				printListenHelp()
+				os.Exit(0)
 			}
-
-			token = strings.TrimSpace(string(tokenData))
+			return fmt.Errorf("parsing flags: %w", err)
+		}
+		if *cf.help {
+			printListenHelp()
+			os.Exit(0)
 		}
 
-		if token == "" {
-			return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE env var, or store in $XDG_CONFIG_HOME/niks3/auth-token)")
+		setupLogger(*cf.debug)
+
+		if err := requireServerURL(*cf.serverURL); err != nil {
+			return err
 		}
 
-		return gcCommand(*gcServerURL, token, *olderThan, *pendingOlderThan, *force, *gcDebug)
+		token, err := resolveAuthToken(*cf.authToken, *authTokenPath)
+		if err != nil {
+			return err
+		}
+		if err := requireAuthToken(token); err != nil {
+			return err
+		}
+
+		batchTimeout, err := time.ParseDuration(*listenBatchTimeout)
+		if err != nil {
+			return fmt.Errorf("parsing --batch-timeout: %w", err)
+		}
+
+		var idleTimeout time.Duration
+		if *listenIdleExitTimeout != "0" {
+			idleTimeout, err = time.ParseDuration(*listenIdleExitTimeout)
+			if err != nil {
+				return fmt.Errorf("parsing --idle-exit-timeout: %w", err)
+			}
+		}
+
+		return listenCommand(*cf.serverURL, token, *listenSocket, *listenBatchSize, batchTimeout, idleTimeout, *listenMaxErrors, *listenMaxConcurrent, *listenVerifyS3, *cf.debug)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
@@ -255,22 +367,18 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 		maxConcurrent = 1
 	}
 
-	// Create client
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
-	// Set maximum concurrent uploads
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
 
-	// Enable HTTP debug logging if requested
 	if debug {
 		c.SetDebugHTTP(true)
 	}
 
-	// Use the high-level PushPaths method
 	if err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
 	}
@@ -282,13 +390,11 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Create client
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
-	// Enable HTTP debug logging if requested
 	if debug {
 		c.SetDebugHTTP(true)
 	}
@@ -300,7 +406,6 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 
 	slog.Info("Starting garbage collection", "older-than", olderThan, "failed-uploads-older-than", pendingOlderThan, "force", force)
 
-	// Run garbage collection
 	stats, err := c.RunGarbageCollection(ctx, olderThan, pendingOlderThan, force)
 	if err != nil {
 		return fmt.Errorf("running garbage collection: %w", err)
@@ -313,6 +418,61 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 		"objects-deleted-after-grace-period", stats.ObjectsDeletedAfterGracePeriod,
 		"objects-failed-to-delete", stats.ObjectsFailedToDelete,
 	)
+
+	return nil
+}
+
+func listenCommand(serverURL, authToken, socketPath string, batchSize int, batchTimeout, idleTimeout time.Duration, maxErrors, maxConcurrent int, verifyS3Integrity bool, debug bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+
+	// Acquire socket (systemd activation or self-created).
+	conn, activated, err := client.GetSocket(socketPath)
+	if err != nil {
+		return fmt.Errorf("acquiring socket: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if !activated {
+		// Clean up self-created socket on exit.
+		defer func() { _ = os.Remove(socketPath) }()
+	}
+
+	slog.Info("Listening for store paths",
+		"socket", socketPath,
+		"socket-activated", activated,
+		"batch-size", batchSize,
+		"batch-timeout", batchTimeout,
+		"idle-exit-timeout", idleTimeout,
+		"max-errors", maxErrors,
+	)
+
+	c, err := client.NewClient(ctx, serverURL, authToken)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+
+	c.MaxConcurrentNARUploads = maxConcurrent
+	c.VerifyS3Integrity = verifyS3Integrity
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	l := client.NewListener(conn, c.PushPaths, client.ListenerConfig{
+		BatchSize:    batchSize,
+		BatchTimeout: batchTimeout,
+		IdleTimeout:  idleTimeout,
+		MaxErrors:    maxErrors,
+	})
+
+	if err := l.Run(ctx); err != nil {
+		return fmt.Errorf("listener: %w", err)
+	}
 
 	return nil
 }
