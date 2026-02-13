@@ -237,18 +237,41 @@ func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []str
 		return nil, fmt.Errorf("command failed: %s\nerror: %w", cmdStr, err)
 	}
 
-	// Parse JSON output
+	return parsePathInfoJSON(output)
+}
+
+// parsePathInfoJSON parses the JSON output of `nix path-info --json`.
+// It supports both Nix format (object keyed by store path) and
+// Lix format (array of objects with a "path" field).
+func parsePathInfoJSON(output []byte) (map[string]*PathInfo, error) {
+	// Try Nix format first: object keyed by store path
 	var pathInfos map[string]*PathInfo
-	if err := json.Unmarshal(output, &pathInfos); err != nil {
+	if err := json.Unmarshal(output, &pathInfos); err == nil {
+		for path, info := range pathInfos {
+			info.Path = path
+		}
+
+		return pathInfos, nil
+	}
+
+	// Try Lix format: array of objects with "path" field
+	type lixPathInfo struct {
+		PathInfo
+		Path string `json:"path"`
+	}
+
+	var lixInfos []lixPathInfo
+	if err := json.Unmarshal(output, &lixInfos); err != nil {
 		return nil, fmt.Errorf("parsing nix path-info output: %w", err)
 	}
 
-	// Populate path field from map keys
-	for path, info := range pathInfos {
-		info.Path = path
+	result := make(map[string]*PathInfo, len(lixInfos))
+	for i := range lixInfos {
+		lixInfos[i].PathInfo.Path = lixInfos[i].Path
+		result[lixInfos[i].Path] = &lixInfos[i].PathInfo
 	}
 
-	return pathInfos, nil
+	return result, nil
 }
 
 // GetStorePathHash extracts the hash from a store path.
