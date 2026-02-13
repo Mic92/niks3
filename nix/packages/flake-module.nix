@@ -10,7 +10,6 @@
       packages.rustfs = pkgs.callPackage ./rustfs.nix { };
       packages.niks3 = pkgs.callPackage ./niks3.nix {
         inherit (pkgs) go;
-        nix = pkgs.nixVersions.stable;
       };
       packages.niks3-docker = pkgs.callPackage ./niks3-docker.nix {
         inherit (config.packages) niks3;
