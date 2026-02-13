@@ -12,6 +12,13 @@
   ...
 }:
 
+let
+  apiToken = "test-token-that-is-at-least-36-characters-long";
+  apiTokenFile = writeText "api-token" apiToken;
+  s3AccessKey = "rustfsadmin";
+  s3SecretKey = "rustfsadmin";
+  serverUrl = "http://server:5751";
+in
 testers.nixosTest {
   name = "nixos-test-niks3";
 
@@ -52,14 +59,14 @@ testers.nixosTest {
           httpAddr = "0.0.0.0:5751";
 
           s3 = {
-            endpoint = "localhost:9000";
+            endpoint = "server:9000";
             bucket = "niks3-test";
             useSSL = false;
-            accessKeyFile = writeText "s3-access-key" "rustfsadmin";
-            secretKeyFile = writeText "s3-secret-key" "rustfsadmin";
+            accessKeyFile = writeText "s3-access-key" s3AccessKey;
+            secretKeyFile = writeText "s3-secret-key" s3SecretKey;
           };
 
-          apiTokenFile = writeText "api-token" "test-token-that-is-at-least-36-characters-long";
+          inherit apiTokenFile;
           signKeyFiles = [ signingSecretKey ];
 
           # OIDC configuration for testing
@@ -68,7 +75,7 @@ testers.nixosTest {
             providers = {
               test = {
                 issuer = "http://127.0.0.1:8080/oidc";
-                audience = "http://server:5751";
+                audience = serverUrl;
                 boundClaims = {
                   repository_owner = [ "myorg" ];
                 };
@@ -103,7 +110,7 @@ testers.nixosTest {
           wantedBy = [ "multi-user.target" ];
 
           serviceConfig = {
-            ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key rustfsadmin --secret-key rustfsadmin /var/lib/rustfs";
+            ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key ${s3AccessKey} --secret-key ${s3SecretKey} /var/lib/rustfs";
             StateDirectory = "rustfs";
             DynamicUser = true;
             Restart = "on-failure";
@@ -118,9 +125,9 @@ testers.nixosTest {
           wantedBy = [ "multi-user.target" ];
 
           environment = {
-            S3_ENDPOINT_URL = "http://localhost:9000";
-            AWS_ACCESS_KEY_ID = "rustfsadmin";
-            AWS_SECRET_ACCESS_KEY = "rustfsadmin";
+            S3_ENDPOINT_URL = "http://server:9000";
+            AWS_ACCESS_KEY_ID = s3AccessKey;
+            AWS_SECRET_ACCESS_KEY = s3SecretKey;
           };
 
           path = [ s5cmd ];
@@ -178,10 +185,39 @@ testers.nixosTest {
           9000
         ];
       };
+
+    builder = {
+      imports = [ ../nixosModules/niks3-auto-upload.nix ];
+      nix.package = nix;
+      nix.settings = {
+        experimental-features = [
+          "nix-command"
+          "flakes"
+        ];
+        substituters = [ ];
+      };
+      services.niks3-auto-upload = {
+        enable = true;
+        package = niks3;
+        inherit serverUrl;
+        authTokenFile = toString apiTokenFile;
+        batchSize = 5;
+        batchTimeout = 5;
+        idleExitTimeout = 5;
+        maxErrors = 3;
+      };
+    };
   };
 
   testScript = ''
     start_all()
+
+    # Common test variables
+    niks3_cmd = "${niks3}/bin/niks3"
+    server_url = "${serverUrl}"
+    niks3_push_env = f"NIKS3_SERVER_URL={server_url} NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token"
+    s3_env = "export AWS_ACCESS_KEY_ID=${s3AccessKey}\nexport AWS_SECRET_ACCESS_KEY=${s3SecretKey}"
+    binary_cache_url = "s3://niks3-test?endpoint=http://server:9000&region=us-east-1"
 
     # Wait for services to be ready
     server.wait_for_unit("postgresql.service")
@@ -195,41 +231,27 @@ testers.nixosTest {
 
     # Create auth token file for testing
     server.succeed("mkdir -p /tmp/test-config")
-    server.succeed("echo -n 'test-token-that-is-at-least-36-characters-long' > /tmp/test-config/auth-token")
+    server.succeed("echo -n '${apiToken}' > /tmp/test-config/auth-token")
 
     # Use hello package to get a real closure with dependencies
     test_path = "${pkgs.hello}"
     print(f"Hello store path: {test_path}")
 
     # Test pushing the closure using the niks3 client with file-based auth token
-    server.succeed(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
-      ${niks3}/bin/niks3 push {test_path}
-    """)
+    server.succeed(f"{niks3_push_env} {niks3_cmd} push {test_path}")
 
     # Test with invalid auth token file (should fail)
     server.succeed("echo -n 'invalid-token' > /tmp/test-config/invalid-token")
-    server.fail(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/invalid-token \
-      ${niks3}/bin/niks3 push {test_path}
-    """)
+    server.fail(f"NIKS3_SERVER_URL={server_url} NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/invalid-token {niks3_cmd} push {test_path}")
 
     # Test pulling from the binary cache using S3 protocol
     server.succeed("mkdir -p /tmp/test-store")
 
-    # Configure S3 binary cache URL
-    binary_cache_url = "s3://niks3-test?endpoint=http://localhost:9000&region=us-east-1"
-
     # Test that signatures are verified by default (without --no-check-sigs)
     # This will fail if narinfos aren't properly signed
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=rustfsadmin
-      export AWS_SECRET_ACCESS_KEY=rustfsadmin
-      nix copy --from '{binary_cache_url}' \
-                --to /tmp/test-store \
-                {test_path}
+      {s3_env}
+      nix copy --from '{binary_cache_url}' --to /tmp/test-store {test_path}
     """)
 
     # Create a simple derivation that produces build log output
@@ -247,15 +269,10 @@ testers.nixosTest {
     test_output = server.succeed("nix-build --log-format bar-with-logs /tmp/test-drv.nix").strip()
     print(f"Test output path: {test_output}")
 
-    server.succeed(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
-      ${niks3}/bin/niks3 push {test_output}
-    """)
+    server.succeed(f"{niks3_push_env} {niks3_cmd} push {test_output}")
 
     log_output = server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=rustfsadmin
-      export AWS_SECRET_ACCESS_KEY=rustfsadmin
+      {s3_env}
       nix log --store '{binary_cache_url}' {test_output}
     """)
     assert "test build log output" in log_output, "Build log missing expected output"
@@ -281,22 +298,15 @@ testers.nixosTest {
     print(f"CA derivation output path: {ca_output}")
 
     # Push CA derivation to cache
-    server.succeed(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
-      ${niks3}/bin/niks3 push {ca_output}
-    """)
+    server.succeed(f"{niks3_push_env} {niks3_cmd} push {ca_output}")
 
     # Use a chroot store to test retrieval from cache WITH signature verification
     server.succeed("mkdir -p /tmp/chroot-store")
 
     # Verify nix can retrieve the CA derivation from the cache with signature verification
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=rustfsadmin
-      export AWS_SECRET_ACCESS_KEY=rustfsadmin
-      nix copy --from '{binary_cache_url}' \
-                --to /tmp/chroot-store \
-                {ca_output}
+      {s3_env}
+      nix copy --from '{binary_cache_url}' --to /tmp/chroot-store {ca_output}
     """)
 
     # Verify the content is correct in the chroot store
@@ -326,19 +336,12 @@ testers.nixosTest {
     assert symlink_target.endswith("/bin/test-program"), f"Symlink should point to a subdirectory path: {symlink_target}"
 
     # Push the symlink wrapper (this would fail before the fix)
-    server.succeed(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
-      ${niks3}/bin/niks3 push {symlink_wrapper}
-    """)
+    server.succeed(f"{niks3_push_env} {niks3_cmd} push {symlink_wrapper}")
 
     # Verify we can retrieve it from the cache
     server.succeed(f"""
-      export AWS_ACCESS_KEY_ID=rustfsadmin
-      export AWS_SECRET_ACCESS_KEY=rustfsadmin
-      nix copy --from '{binary_cache_url}' \
-                --to /tmp/test-store \
-                {symlink_wrapper}
+      {s3_env}
+      nix copy --from '{binary_cache_url}' --to /tmp/test-store {symlink_wrapper}
     """)
 
     # ============================================
@@ -362,14 +365,11 @@ testers.nixosTest {
 
     # Test 1: Push with valid OIDC token (matching repository_owner claim)
     valid_oidc_token = server.succeed(
-      "curl -s 'http://127.0.0.1:8081/issue?sub=repo:myorg/myrepo:ref:refs/heads/main&aud=http://server:5751&repository_owner=myorg'"
+      f"curl -s 'http://127.0.0.1:8081/issue?sub=repo:myorg/myrepo:ref:refs/heads/main&aud={server_url}&repository_owner=myorg'"
     ).strip()
     print(f"Valid OIDC token obtained (length={len(valid_oidc_token)})")
 
-    server.succeed(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      ${niks3}/bin/niks3 push --auth-token '{valid_oidc_token}' {oidc_test_path}
-    """)
+    server.succeed(f"NIKS3_SERVER_URL={server_url} {niks3_cmd} push --auth-token '{valid_oidc_token}' {oidc_test_path}")
     print("OIDC push with valid token: SUCCESS")
 
     # Build another derivation for the failure tests
@@ -388,14 +388,11 @@ testers.nixosTest {
 
     # Test 2: Push with invalid OIDC token (wrong repository_owner claim)
     invalid_oidc_token = server.succeed(
-      "curl -s 'http://127.0.0.1:8081/issue?sub=repo:otherorg/repo:ref:refs/heads/main&aud=http://server:5751&repository_owner=otherorg'"
+      f"curl -s 'http://127.0.0.1:8081/issue?sub=repo:otherorg/repo:ref:refs/heads/main&aud={server_url}&repository_owner=otherorg'"
     ).strip()
     print("Invalid OIDC token obtained (wrong org)")
 
-    server.fail(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      ${niks3}/bin/niks3 push --auth-token '{invalid_oidc_token}' {oidc_test_path2}
-    """)
+    server.fail(f"NIKS3_SERVER_URL={server_url} {niks3_cmd} push --auth-token '{invalid_oidc_token}' {oidc_test_path2}")
     print("OIDC push with wrong org: correctly rejected")
 
     # Test 3: Push with invalid OIDC token (wrong audience)
@@ -404,22 +401,58 @@ testers.nixosTest {
     ).strip()
     print("Wrong audience OIDC token obtained")
 
-    server.fail(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      ${niks3}/bin/niks3 push --auth-token '{wrong_aud_token}' {oidc_test_path2}
-    """)
+    server.fail(f"NIKS3_SERVER_URL={server_url} {niks3_cmd} push --auth-token '{wrong_aud_token}' {oidc_test_path2}")
     print("OIDC push with wrong audience: correctly rejected")
 
     # Test 4: Push with malformed token (not a valid JWT)
-    server.fail(f"""
-      NIKS3_SERVER_URL=http://server:5751 \
-      ${niks3}/bin/niks3 push --auth-token 'not-a-valid-jwt-token' {oidc_test_path2}
-    """)
+    server.fail(f"NIKS3_SERVER_URL={server_url} {niks3_cmd} push --auth-token 'not-a-valid-jwt-token' {oidc_test_path2}")
     print("OIDC push with malformed token: correctly rejected")
 
     print("All OIDC tests passed!")
 
     # Test that GC systemd service runs successfully
     server.succeed("systemctl start niks3-gc.service")
+
+    # ============================================
+    # Post-build-hook test: builder → socket → listener → server → S3
+    # ============================================
+
+    builder.wait_for_unit("niks3-auto-upload.socket")
+    builder.succeed("test -S /run/niks3/upload-to-cache.sock")
+    builder.succeed("grep post-build-hook /etc/nix/nix.conf")
+
+    # Build a derivation on the builder — this triggers the post-build-hook
+    builder.succeed("""
+    cat > /tmp/test-drv.nix << 'EOF'
+    derivation {
+      name = "post-build-hook-test";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo 'hello from post-build-hook test' > $out" ];
+    }
+    EOF
+    """)
+
+    test_output = builder.succeed("nix-build --log-format bar-with-logs /tmp/test-drv.nix --no-out-link").strip()
+    print(f"Built store path: {test_output}")
+
+    # The post-build-hook fires asynchronously via socket activation.
+    # Wait for the service to activate, upload, then exit after the idle timeout.
+    builder.wait_for_unit("niks3-auto-upload.service")
+    builder.wait_until_succeeds(
+        "test $(systemctl is-active niks3-auto-upload.service) = inactive",
+        timeout=60,
+    )
+
+    # Verify the path can be fetched from S3 with signature verification
+    server.succeed(f"""
+      {s3_env}
+      nix copy --from '{binary_cache_url}' --to /tmp/hook-test-store {test_output}
+    """)
+
+    content = server.succeed(f"nix --store /tmp/hook-test-store store cat {test_output}").strip()
+    assert "hello from post-build-hook test" in content, f"Content mismatch: {content}"
+
+    print("Post-build-hook pipeline test passed!")
   '';
 }
