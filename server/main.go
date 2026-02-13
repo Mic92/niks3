@@ -98,6 +98,9 @@ func parseArgs() (*options, error) {
 		"Maximum concurrent S3 operations (default: 100)")
 	flag.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
 		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
+	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
+		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
+		"Serve cache objects by proxying reads from S3 (for private buckets)")
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 
