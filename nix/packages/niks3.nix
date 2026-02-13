@@ -2,7 +2,6 @@
   pkgs,
   lib,
   go,
-  nix,
 }:
 
 let
@@ -33,8 +32,6 @@ pkgs.buildGoModule {
 
   doCheck = false;
 
-  nativeBuildInputs = [ pkgs.makeWrapper ];
-
   # Add unittest output for pre-compiled test binaries
   outputs = [
     "out"
@@ -59,15 +56,6 @@ pkgs.buildGoModule {
       for f in $unittest/bin/*.test; do
         remove-references-to -t ${go} "$f"
       done
-    fi
-
-    # Wrap niks3 client to include nix in PATH
-    # This avoids compatibility issues with Lix's different `nix path-info --json` output
-    # See: https://github.com/Mic92/niks3/issues/181
-    # Skip wrapping in cross-compilation (binary is in a subdirectory)
-    if [ -f $out/bin/niks3 ]; then
-      wrapProgram $out/bin/niks3 \
-        --prefix PATH : ${lib.makeBinPath [ nix ]}
     fi
   '';
 }
