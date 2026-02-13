@@ -66,6 +66,15 @@
             mock-oidc-server = config.packages.mock-oidc-server;
             niks3 = config.packages.niks3;
             rustfs = config.packages.rustfs;
+            nix = pkgs.nixVersions.latest;
+            ca-derivations-supported = true;
+          };
+          nixos-test-niks3-lix = pkgs.callPackage ./nixos-test-niks3.nix {
+            mock-oidc-server = config.packages.mock-oidc-server;
+            niks3 = config.packages.niks3;
+            rustfs = config.packages.rustfs;
+            nix = pkgs.lixPackageSets.latest.lix;
+            ca-derivations-supported = false;
           };
           nixos-test-read-proxy = pkgs.callPackage ./nixos-test-read-proxy.nix {
             niks3 = config.packages.niks3;
