@@ -1,11 +1,14 @@
 {
+  lib,
   testers,
   writeText,
   s5cmd,
   niks3,
   rustfs,
   mock-oidc-server,
+  nix,
   pkgs,
+  ca-derivations-supported,
   ...
 }:
 
@@ -34,11 +37,12 @@ testers.nixosTest {
       {
         imports = [ ../nixosModules/niks3.nix ];
 
+        nix.package = nix;
         nix.settings.experimental-features = [
           "nix-command"
           "flakes"
-          "ca-derivations"
-        ];
+        ]
+        ++ lib.optional ca-derivations-supported "ca-derivations";
         nix.settings.substituters = [ ];
         # Trust the signing key
         nix.settings.trusted-public-keys = [ signingPublicKey ];
@@ -255,7 +259,8 @@ testers.nixosTest {
       nix log --store '{binary_cache_url}' {test_output}
     """)
     assert "test build log output" in log_output, "Build log missing expected output"
-
+  ''
+  + (lib.optionalString ca-derivations-supported ''
     # Test CA (content-addressed) derivations with signature verification
     server.succeed("""
     cat > /tmp/ca-test.nix << 'EOF'
@@ -301,7 +306,8 @@ testers.nixosTest {
     # Verify realisation info is available in the chroot store
     realisation_info = server.succeed(f"nix --store /tmp/chroot-store realisation info {ca_output}")
     print(f"Realisation info in chroot store: {realisation_info}")
-
+  '')
+  + ''
     # Test uploading a store path that is a symlink to a subdirectory
     # This tests the fix for issue #59: a store path that's a symlink pointing
     # to a file in another store path's subdirectory
