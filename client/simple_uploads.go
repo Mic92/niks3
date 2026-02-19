@@ -127,5 +127,5 @@ func (c *Client) UploadBuildLogToPresignedURL(ctx context.Context, presignedURL 
 	}
 	defer deferCloseBody(resp)
 
-	return checkResponse(resp, http.StatusOK, http.StatusNoContent)
+	return checkResponse(resp, http.StatusOK, http.StatusCreated, http.StatusNoContent)
 }
