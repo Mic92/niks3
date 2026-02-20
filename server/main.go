@@ -83,6 +83,8 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
 	flag.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
 	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefault("NIKS3_S3_USE_SSL", "true") == "true", "Use SSL for S3")
+	flag.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefault("NIKS3_S3_USE_IAM", "false") == "true",
+		"Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.) instead of static keys")
 	flag.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
 	flag.StringVar(&s3AccessKeyPath, "s3-access-key-path", getEnvOrDefault("NIKS3_S3_ACCESS_KEY_PATH", ""),
 		"Path to file containing S3 access key")
@@ -154,12 +156,19 @@ func parseArgs() (*options, error) {
 		return nil, errors.New("missing required flag: --s3-endpoint")
 	}
 
-	if opts.S3AccessKey == "" {
-		return nil, errors.New("missing required flag: --s3-access-key or --s3-access-key-path")
+	hasStaticKeys := opts.S3AccessKey != "" || opts.S3SecretKey != ""
+	if opts.S3UseIAM && hasStaticKeys {
+		return nil, errors.New("--s3-use-iam cannot be combined with --s3-access-key / --s3-secret-key")
 	}
 
-	if opts.S3SecretKey == "" {
-		return nil, errors.New("missing required flag: --s3-secret-key or --s3-secret-key-path")
+	if !opts.S3UseIAM {
+		if opts.S3AccessKey == "" {
+			return nil, errors.New("missing required flag: --s3-access-key or --s3-access-key-path (or use --s3-use-iam)")
+		}
+
+		if opts.S3SecretKey == "" {
+			return nil, errors.New("missing required flag: --s3-secret-key or --s3-secret-key-path (or use --s3-use-iam)")
+		}
 	}
 
 	if opts.S3Bucket == "" {

@@ -24,11 +24,11 @@ type options struct {
 	DBConnectionString string
 	HTTPAddr           string
 
-	// TODO: Document how to use this with AWS.
 	S3Endpoint    string
 	S3AccessKey   string
 	S3SecretKey   string
 	S3UseSSL      bool
+	S3UseIAM      bool
 	S3Bucket      string
 	S3Concurrency int
 	S3RateLimit   float64
@@ -162,8 +162,15 @@ func runServer(opts *options) error {
 	}
 	defer pool.Close()
 
+	var creds *credentials.Credentials
+	if opts.S3UseIAM {
+		creds = credentials.NewIAM("")
+	} else {
+		creds = credentials.NewStaticV4(opts.S3AccessKey, opts.S3SecretKey, "")
+	}
+
 	minioClient, err := minio.New(opts.S3Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(opts.S3AccessKey, opts.S3SecretKey, ""),
+		Creds:  creds,
 		Secure: opts.S3UseSSL,
 	})
 	if err != nil {
