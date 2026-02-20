@@ -75,6 +75,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
 - Authentication via API tokens (Bearer auth)
 - OIDC authentication for CI/CD systems (GitHub Actions, GitLab CI)
+- S3 credentials via static keys (`--s3-access-key` / `--s3-secret-key`) or IAM (`--s3-use-iam` for IRSA, EC2 instance profiles, ECS task roles)
 
 ## Choosing an S3 Provider
 

@@ -157,6 +157,16 @@ in
           The file should contain only the secret key without any newlines.
         '';
       };
+
+      useIAM = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.)
+          instead of static access key / secret key files.
+          When enabled, accessKeyFile and secretKeyFile are not required.
+        '';
+      };
     };
 
     apiTokenFile = lib.mkOption {
@@ -327,12 +337,16 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.s3.accessKeyFile != null;
-        message = "services.niks3.s3.accessKeyFile must be set";
+        assertion = cfg.s3.useIAM || cfg.s3.accessKeyFile != null;
+        message = "services.niks3.s3.accessKeyFile must be set (or enable s3.useIAM)";
       }
       {
-        assertion = cfg.s3.secretKeyFile != null;
-        message = "services.niks3.s3.secretKeyFile must be set";
+        assertion = cfg.s3.useIAM || cfg.s3.secretKeyFile != null;
+        message = "services.niks3.s3.secretKeyFile must be set (or enable s3.useIAM)";
+      }
+      {
+        assertion = !(cfg.s3.useIAM && (cfg.s3.accessKeyFile != null || cfg.s3.secretKeyFile != null));
+        message = "s3.useIAM cannot be combined with s3.accessKeyFile / s3.secretKeyFile";
       }
     ];
 
@@ -377,8 +391,14 @@ in
             --s3-endpoint "${cfg.s3.endpoint}" \
             --s3-bucket "${cfg.s3.bucket}" \
             --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}" \
-            --s3-access-key-path "${cfg.s3.accessKeyFile}" \
-            --s3-secret-key-path "${cfg.s3.secretKeyFile}" \
+            ${
+              if cfg.s3.useIAM then
+                "--s3-use-iam"
+              else
+                ''
+                  --s3-access-key-path "${cfg.s3.accessKeyFile}" \
+                              --s3-secret-key-path "${cfg.s3.secretKeyFile}"''
+            } \
             --api-token-path "${cfg.apiTokenFile}"${
               lib.optionalString (cfg.oidc.providers != { }) ''
                 \
