@@ -371,7 +371,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = ''
-          ${cfg.package}/bin/niks3-server \
+          ${lib.getExe' cfg.package "niks3-server"} \
             --db "${cfg.database.connectionString}" \
             --http-addr "${cfg.httpAddr}" \
             --s3-endpoint "${cfg.s3.endpoint}" \
@@ -444,7 +444,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = ''
-          ${cfg.package}/bin/niks3 gc \
+          ${lib.getExe' cfg.package "niks3"} gc \
             --server-url "http://${cfg.httpAddr}" \
             --auth-token-path "${cfg.apiTokenFile}" \
             --older-than "${cfg.gc.olderThan}" \
