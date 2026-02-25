@@ -134,6 +134,19 @@ in
         description = "S3 bucket name.";
       };
 
+      region = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          S3 region override. When set, this region is used for request signing
+          instead of auto-detecting from the endpoint URL.
+          Required for some S3-compatible providers (e.g., "auto" for Cloudflare R2,
+          "eu-central-003" for Backblaze B2).
+          If empty, the region is inferred from the endpoint URL, defaulting to "us-east-1".
+        '';
+        example = "us-east-1";
+      };
+
       useSSL = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -390,7 +403,11 @@ in
             --http-addr "${cfg.httpAddr}" \
             --s3-endpoint "${cfg.s3.endpoint}" \
             --s3-bucket "${cfg.s3.bucket}" \
-            --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}" \
+            --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}"${
+              lib.optionalString (cfg.s3.region != "") ''
+                \
+                           --s3-region "${cfg.s3.region}"''
+            } \
             ${
               if cfg.s3.useIAM then
                 "--s3-use-iam"
