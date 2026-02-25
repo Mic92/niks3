@@ -4,7 +4,12 @@ import (
 	"net/http"
 )
 
-// RootRedirectHandler redirects requests to the root path to the public cache URL.
+// RootRedirectHandler redirects requests to the root path.
+// When the read proxy is enabled and a cache URL is configured (meaning
+// an index.html landing page was uploaded to S3), it redirects to
+// /index.html so the proxy can serve it directly — avoiding a redirect
+// loop when the cache URL points back to this server.
+// Otherwise it redirects to the external public cache URL.
 func (s *Service) RootRedirectHandler(w http.ResponseWriter, r *http.Request) {
 	// Only handle requests to the root path
 	if r.URL.Path != "/" {
@@ -18,6 +23,14 @@ func (s *Service) RootRedirectHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("niks3 binary cache server\n"))
+
+		return
+	}
+
+	// When the read proxy serves objects from S3 directly, redirect to
+	// the landing page instead of the external cache URL to avoid loops.
+	if s.EnableReadProxy {
+		http.Redirect(w, r, "/index.html", http.StatusMovedPermanently)
 
 		return
 	}

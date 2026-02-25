@@ -341,6 +341,48 @@ func TestReadProxyConditionalGet(t *testing.T) {
 	}
 }
 
+func TestReadProxyRootRedirectsToIndexHTML(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	service.CacheURL = "https://cache.example.com"
+	defer service.Close()
+
+	ctx := t.Context()
+
+	// Upload index.html so the redirect target exists
+	putTestObject(ctx, t, service, "index.html",
+		[]byte("<html><body>landing page</body></html>"), "text/html")
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	// Use a client that does NOT follow redirects so we can inspect the 301
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Get(ts.URL + "/")
+	ok(t, err)
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("Failed to close response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("expected 301, got %d", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc != "/index.html" {
+		t.Errorf("Location = %q, want /index.html", loc)
+	}
+}
+
 func TestReadProxyDisabled(t *testing.T) {
 	t.Parallel()
 
