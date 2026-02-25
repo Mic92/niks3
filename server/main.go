@@ -86,6 +86,7 @@ func parseArgs() (*options, error) {
 	flag.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefault("NIKS3_S3_USE_IAM", "false") == "true",
 		"Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.) instead of static keys")
 	flag.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
+	flag.StringVar(&opts.S3Region, "s3-region", getEnvOrDefault("NIKS3_S3_REGION", ""), "S3 region override (e.g., us-east-1, auto)")
 	flag.StringVar(&s3AccessKeyPath, "s3-access-key-path", getEnvOrDefault("NIKS3_S3_ACCESS_KEY_PATH", ""),
 		"Path to file containing S3 access key")
 	flag.StringVar(&s3SecretKeyPath, "s3-secret-key-path", getEnvOrDefault("NIKS3_S3_SECRET_KEY_PATH", ""),
