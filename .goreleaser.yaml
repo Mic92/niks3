@@ -24,6 +24,17 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: niks3-post-build-hook
+    main: ./cmd/niks3-post-build-hook
+    binary: niks3-post-build-hook
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
 archives:
   - # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
