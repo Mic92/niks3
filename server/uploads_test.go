@@ -362,6 +362,8 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		handler: service.CleanupClosuresOlder,
 	})
 
+	waitForGC(t, service)
+
 	checkNotFound2 := checkStatusCode(http.StatusNotFound)
 	testRequest(t, &TestRequest{
 		method:        "GET",
