@@ -55,6 +55,7 @@ type Service struct {
 	CacheURL        string
 	OIDCValidator   *oidc.Validator
 	EnableReadProxy bool
+	GCTasks         *GCTaskStore
 }
 
 // Close closes the database connection pool.
@@ -187,6 +188,7 @@ func runServer(opts *options) error {
 		S3RateLimiter: ratelimit.NewAdaptiveRateLimiter(opts.S3RateLimit, "s3"),
 		APIToken:      opts.APIToken,
 		CacheURL:      opts.CacheURL,
+		GCTasks:       NewGCTaskStore(),
 	}
 
 	// Initialize OIDC validator if configured
@@ -245,6 +247,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", service.AuthMiddleware(service.GCStatusHandler))
 
 	if opts.EnableReadProxy {
 		service.EnableReadProxy = true

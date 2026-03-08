@@ -295,6 +295,7 @@ func TestClientIntegration(t *testing.T) {
 	// Test garbage collection
 	t.Log("Testing garbage collection...")
 	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", testService.AuthMiddleware(testService.GCStatusHandler))
 
 	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
