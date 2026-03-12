@@ -1,10 +1,14 @@
-package oidc
+package oidc_test
 
 import (
 	"testing"
+
+	"github.com/Mic92/niks3/server/oidc"
 )
 
 func TestGlobMatch(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		pattern string
 		value   string
@@ -48,8 +52,10 @@ func TestGlobMatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_"+tt.value, func(t *testing.T) {
-			if got := globMatch(tt.pattern, tt.value); got != tt.want {
-				t.Errorf("globMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+			t.Parallel()
+
+			if got := oidc.GlobMatchForTesting(tt.pattern, tt.value); got != tt.want {
+				t.Errorf("GlobMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 			}
 		})
 	}
