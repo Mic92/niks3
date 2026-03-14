@@ -274,7 +274,7 @@ func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (s
 
 	defer deferCloseBody(resp)
 
-	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+	if err := checkResponse(resp, http.StatusOK, http.StatusCreated, http.StatusNoContent); err != nil {
 		return "", err
 	}
 
