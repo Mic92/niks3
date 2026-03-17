@@ -18,6 +18,9 @@
         inherit (config.packages) niks3-server;
       };
       packages.mock-oidc-server = pkgs.callPackage ./mock-oidc-server.nix { };
+      packages.niks3-action = pkgs.callPackage ./niks3-action.nix {
+        inherit (config.packages) niks3;
+      };
       packages.default = config.packages.niks3;
     };
 }
