@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,6 +103,62 @@ func TestDaemonStopBlocksUntilDrain(t *testing.T) {
 	}
 
 	<-daemonErr
+}
+
+// TestDaemonConcurrentPushStop fires many pushes and a stop from a shared
+// barrier. Before the WaitGroup fix this would panic with "send on closed
+// channel" — select+default does not guard against a closed channel; a send
+// on closed is "ready" and panics when selected.
+func TestDaemonConcurrentPushStop(t *testing.T) {
+	t.Parallel()
+
+	for i := range 10 {
+		socket := filepath.Join(t.TempDir(), fmt.Sprintf("race-%d.sock", i))
+
+		daemonErr := make(chan error, 1)
+
+		go func() {
+			daemonErr <- runCIDaemon(socket, daemonConfig{
+				serverURL: "http://test.invalid",
+				audience:  "test",
+			})
+		}()
+
+		waitForSocket(t, socket)
+
+		// Barrier: everyone dials first, then hammers the daemon together.
+		const pushers = 20
+
+		var barrier, done sync.WaitGroup
+
+		barrier.Add(1)
+		done.Add(pushers + 1)
+
+		for range pushers {
+			go func() {
+				defer done.Done()
+
+				barrier.Wait()
+				// Best effort — the daemon may close on us mid-write, which is
+				// fine. We're checking for panics, not delivery.
+				_ = pushToSocket(socket, []string{"/nix/store/aaa-race"})
+			}()
+		}
+
+		go func() {
+			defer done.Done()
+
+			barrier.Wait()
+			stopAndReadStats(t, socket)
+		}()
+
+		barrier.Done()
+		done.Wait()
+
+		if err := <-daemonErr; err != nil {
+			t.Fatalf("iteration %d: daemon returned error: %v", i, err)
+		}
+	}
 }
 
 type parsedStats struct {

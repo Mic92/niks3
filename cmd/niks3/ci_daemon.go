@@ -120,21 +120,31 @@ func runCIDaemon(socket string, cfg daemonConfig) error {
 
 	// Accept loop. Each connection handles exactly one command then closes.
 	// Post-build-hooks are short-lived: dial, write, read ack, exit.
-	go func() {
+	//
+	// The WaitGroup covers the accept loop itself plus every handler it
+	// spawns, so handlerWG.Wait() cannot return until Accept has seen the
+	// close AND every in-flight handler has finished its queue send. That's
+	// what makes close(queue) safe — a bare select+default would not guard
+	// against a closed channel (send on closed is "ready" and panics).
+	var handlerWG sync.WaitGroup
+
+	handlerWG.Go(func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				// Listener closed — stop accepting.
 				return
 			}
 
-			go handleConn(conn, queue, &stats, stopCh, ln)
+			handlerWG.Go(func() {
+				handleConn(conn, queue, &stats, stopCh, ln)
+			})
 		}
-	}()
+	})
 
 	// Wait for stop (via command or signal), then drain.
 	replyConn := <-stopCh
 
+	handlerWG.Wait()
 	close(queue)
 	<-done
 
