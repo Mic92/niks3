@@ -26,6 +26,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "\nCommands:")
 	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
 	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
+	fmt.Fprintln(os.Stderr, "  ci      GitHub Actions integration (setup/daemon/stop)")
 	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
 	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
@@ -169,6 +170,9 @@ func run() error {
 		}
 
 		return gcCommand(*cf.ServerURL, token, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
+
+	case "ci":
+		return runCI(os.Args[2:])
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
