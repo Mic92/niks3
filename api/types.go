@@ -64,3 +64,20 @@ type GCConflictResponse struct {
 	Error      string       `json:"error"`
 	ActiveTask GCTaskStatus `json:"active_task"`
 }
+
+// CacheConfig is returned by GET /api/cache-config and tells CI integrations
+// how to configure Nix (substituter, trusted keys) and which OIDC audience
+// to request when fetching a token.
+type CacheConfig struct {
+	// SubstituterURL is the read path clients should add to extra-substituters.
+	// Empty if the server was not started with --cache-url.
+	SubstituterURL string `json:"substituter_url"`
+
+	// PublicKeys lists the cache's signing keys in nix.conf format ("name:base64").
+	PublicKeys []string `json:"public_keys"`
+
+	// OIDCAudience is the audience to request when fetching an OIDC token for
+	// the issuer passed via ?issuer=. Empty if no issuer was requested or no
+	// matching provider is configured.
+	OIDCAudience string `json:"oidc_audience,omitempty"`
+}
