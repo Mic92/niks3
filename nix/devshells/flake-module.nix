@@ -31,6 +31,11 @@
 
           # General tools
           pkgs.watchexec
+
+          # GitHub Action wrapper (nix build .#niks3-action)
+          pkgs.nodejs
+          pkgs.esbuild
+          pkgs.typescript
         ];
 
         inputsFrom = [
