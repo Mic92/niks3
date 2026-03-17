@@ -59,6 +59,28 @@
                 echo "Running hook tests..."
                 niks3-hook.test -test.v
 
+                echo "Running cmd tests..."
+                niks3-cmd.test -test.v
+
+                touch $out
+              '';
+
+          # Fails if the committed dist/index.js doesn't match a fresh
+          # build. Catches forgotten regeneration after version bumps or
+          # action/src changes.
+          action-dist-fresh =
+            pkgs.runCommand "niks3-action-dist-fresh"
+              {
+                fresh = config.packages.niks3-action;
+                committed = ../../dist/index.js;
+              }
+              ''
+                if ! diff -u "$committed" "$fresh/dist/index.js"; then
+                  echo
+                  echo "dist/index.js is stale. Regenerate with:"
+                  echo "  nix build .#niks3-action && cp result/dist/index.js dist/"
+                  exit 1
+                fi
                 touch $out
               '';
         }
