@@ -142,7 +142,7 @@ func (nw *narWriter) writeString(s string) error {
 		}
 
 		// padding is always 0-7, safe to convert to uint64
-		nw.offset += uint64(padding) //nolint:gosec // padding is bounded by (8 - (len(s) % 8)) % 8, max value is 7
+		nw.offset += uint64(padding)
 	}
 
 	return nil

@@ -24,9 +24,9 @@ builds:
     goarch:
       - amd64
       - arm64
-  - id: niks3-post-build-hook
-    main: ./cmd/niks3-post-build-hook
-    binary: niks3-post-build-hook
+  - id: niks3-hook
+    main: ./cmd/niks3-hook
+    binary: niks3-hook
     env:
       - CGO_ENABLED=0
     goos:

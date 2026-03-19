@@ -417,13 +417,16 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 }
 
 // PushPaths uploads store paths and their closures to the server.
-func (c *Client) PushPaths(ctx context.Context, paths []string) error {
+// It returns the full list of store paths that were part of the uploaded
+// closures (including transitive dependencies), which callers can use to
+// prune queues of dependency paths that no longer need separate uploads.
+func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error) {
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths
 	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
 	if err != nil {
-		return fmt.Errorf("resolving symlinks: %w", err)
+		return nil, fmt.Errorf("resolving symlinks: %w", err)
 	}
 
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
@@ -433,15 +436,21 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 
 	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths, c.NixEnv)
 	if err != nil {
-		return fmt.Errorf("getting path info: %w", err)
+		return nil, fmt.Errorf("getting path info: %w", err)
 	}
 
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
+	// Collect all closure paths to return to the caller.
+	closurePaths := make([]string, 0, len(pathInfos))
+	for storePath := range pathInfos {
+		closurePaths = append(closurePaths, storePath)
+	}
+
 	// Prepare closures - one per top-level path
 	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv)
 	if err != nil {
-		return fmt.Errorf("preparing closures: %w", err)
+		return nil, fmt.Errorf("preparing closures: %w", err)
 	}
 
 	if len(result.LogPathsByKey) > 0 {
@@ -455,7 +464,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 	// Create pending closures and collect what needs uploading
 	pendingObjects, closureIDToNarinfoKey, err := c.CreatePendingClosures(ctx, result.Closures)
 	if err != nil {
-		return fmt.Errorf("creating pending closures: %w", err)
+		return nil, fmt.Errorf("creating pending closures: %w", err)
 	}
 
 	// Calculate how many paths are already cached vs need uploading
@@ -482,7 +491,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 		RealisationsByKey: result.RealisationsByKey,
 	})
 	if err != nil {
-		return fmt.Errorf("uploading objects: %w", err)
+		return nil, fmt.Errorf("uploading objects: %w", err)
 	}
 
 	slog.Debug("Uploaded all objects", "narinfos", len(narinfoMetadata))
@@ -515,18 +524,18 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) error {
 
 	// Sign narinfos for each closure and upload them
 	if err := c.SignAndUploadNarinfos(ctx, narinfosByClosureID, pendingObjects); err != nil {
-		return fmt.Errorf("signing and uploading narinfos: %w", err)
+		return nil, fmt.Errorf("signing and uploading narinfos: %w", err)
 	}
 
 	// Complete all pending closures (all objects including narinfos are now uploaded)
 	for id := range closureIDToNarinfoKey {
 		if err := c.CompletePendingClosure(ctx, id); err != nil {
-			return fmt.Errorf("completing pending closure %s: %w", id, err)
+			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
 	}
 
 	duration := time.Since(startTime)
 	slog.Info(fmt.Sprintf("Upload complete. (%s)", duration.Round(time.Millisecond)))
 
-	return nil
+	return closurePaths, nil
 }

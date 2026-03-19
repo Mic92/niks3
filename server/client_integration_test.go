@@ -238,7 +238,7 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	c.NixEnv = nixEnv
 
 	// Use the high-level PushPaths method
-	if err := c.PushPaths(ctx, paths); err != nil {
+	if _, err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
 	}
 

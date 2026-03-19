@@ -202,9 +202,7 @@ testers.nixosTest {
         inherit serverUrl;
         authTokenFile = toString apiTokenFile;
         batchSize = 5;
-        batchTimeout = 5;
         idleExitTimeout = 5;
-        maxErrors = 3;
       };
     };
   };

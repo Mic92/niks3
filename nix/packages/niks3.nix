@@ -15,7 +15,9 @@ pkgs.buildGoModule {
     fileset = lib.fileset.unions [
       ../../api
       ../../cmd
+      ../../cmdutil
       ../../client
+      ../../hook
       ../../ratelimit
       ../../server
       ../../go.mod
@@ -34,7 +36,7 @@ pkgs.buildGoModule {
   subPackages = [
     "cmd/niks3"
     "cmd/niks3-server"
-    "cmd/niks3-post-build-hook"
+    "cmd/niks3-hook"
   ];
 
   doCheck = false;
@@ -51,14 +53,14 @@ pkgs.buildGoModule {
     go test -c ./client -o client.test
     go test -c ./server -o server.test
     go test -c ./server/oidc -o server-oidc.test
-    go test -c ./cmd/niks3-post-build-hook -o post-build-hook.test
+    go test -c ./hook -o hook.test
 
     # Install test binaries to unittest output
     mkdir -p $unittest/bin
     install -D client.test $unittest/bin/niks3-client.test
     install -D server.test $unittest/bin/niks3-server.test
     install -D server-oidc.test $unittest/bin/niks3-server-oidc.test
-    install -D post-build-hook.test $unittest/bin/niks3-post-build-hook.test
+    install -D hook.test $unittest/bin/niks3-hook.test
 
     # Remove Go compiler reference to reduce closure size
     if command -v remove-references-to >/dev/null; then

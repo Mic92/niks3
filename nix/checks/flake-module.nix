@@ -58,8 +58,8 @@
                 echo "Running OIDC tests..."
                 niks3-server-oidc.test -test.v
 
-                echo "Running post-build-hook tests..."
-                niks3-post-build-hook.test -test.v
+                echo "Running hook tests..."
+                niks3-hook.test -test.v
 
                 touch $out
               '';

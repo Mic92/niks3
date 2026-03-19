@@ -8,6 +8,10 @@
 let
   cfg = config.services.niks3-auto-upload;
   hookPackage = cfg.package.override { postBuildHookSocketPath = cfg.socketPath; };
+  # Nix post-build-hook must be a single executable; wrap the subcommand invocation.
+  postBuildHookScript = pkgs.writeShellScript "niks3-post-build-hook" ''
+    exec ${lib.getExe' hookPackage "niks3-hook"} send "$@"
+  '';
 in
 {
   options.services.niks3-auto-upload = {
@@ -39,7 +43,7 @@ in
     socketPath = lib.mkOption {
       type = lib.types.str;
       default = "/run/niks3/upload-to-cache.sock";
-      description = "Path to the unix datagram socket.";
+      description = "Path to the unix stream socket.";
     };
 
     batchSize = lib.mkOption {
@@ -48,22 +52,10 @@ in
       description = "Number of store paths to collect before pushing a batch.";
     };
 
-    batchTimeout = lib.mkOption {
-      type = lib.types.int;
-      default = 10;
-      description = "Seconds to wait before pushing a partial batch.";
-    };
-
     idleExitTimeout = lib.mkOption {
       type = lib.types.int;
       default = 60;
-      description = "Seconds of idle time before the listener exits. Set to 0 to disable.";
-    };
-
-    maxErrors = lib.mkOption {
-      type = lib.types.int;
-      default = 5;
-      description = "Exit after this many consecutive push errors.";
+      description = "Seconds of idle time before the daemon exits. Set to 0 to disable.";
     };
 
     maxConcurrentUploads = lib.mkOption {
@@ -86,24 +78,23 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    nix.settings.post-build-hook = lib.getExe' hookPackage "niks3-post-build-hook";
+    nix.settings.post-build-hook = toString postBuildHookScript;
 
     systemd.sockets.niks3-auto-upload = {
       description = "niks3 auto-upload socket";
       wantedBy = [ "sockets.target" ];
 
       socketConfig = {
-        ListenDatagram = cfg.socketPath;
+        ListenStream = cfg.socketPath;
         SocketUser = "root";
         SocketGroup = "nixbld";
         SocketMode = "0660";
-        ReceiveBuffer = "50M";
         RemoveOnStop = true;
       };
     };
 
     systemd.services.niks3-auto-upload = {
-      description = "niks3 auto-upload listener";
+      description = "niks3 auto-upload daemon";
       after = [ "network.target" ];
       requires = [ "niks3-auto-upload.socket" ];
       path = [ config.nix.package ];
@@ -116,8 +107,8 @@ in
           in
           lib.concatStringsSep " " (
             [
-              (lib.getExe' cfg.package "niks3")
-              "listen"
+              (lib.getExe' cfg.package "niks3-hook")
+              "serve"
               "--server-url"
               (lib.escapeShellArg cfg.serverUrl)
               "--auth-token-path"
@@ -126,20 +117,19 @@ in
               (lib.escapeShellArg cfg.socketPath)
               "--batch-size"
               (toString cfg.batchSize)
-              "--batch-timeout"
-              "${toString cfg.batchTimeout}s"
               "--idle-exit-timeout"
               idleStr
-              "--max-errors"
-              (toString cfg.maxErrors)
               "--max-concurrent-uploads"
               (toString cfg.maxConcurrentUploads)
+              "--db-path"
+              "/var/lib/niks3-hook/upload-queue.db"
             ]
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
           );
         Restart = "on-failure";
         RestartSec = "5s";
+        StateDirectory = "niks3-hook";
 
         # Hardening
         NoNewPrivileges = true;
