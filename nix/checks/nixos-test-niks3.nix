@@ -4,6 +4,7 @@
   writeText,
   s5cmd,
   niks3,
+  niks3-hook,
   rustfs,
   mock-oidc-server,
   nix,
@@ -198,7 +199,7 @@ testers.nixosTest {
       };
       services.niks3-auto-upload = {
         enable = true;
-        package = niks3;
+        package = niks3-hook;
         inherit serverUrl;
         authTokenFile = toString apiTokenFile;
         batchSize = 5;

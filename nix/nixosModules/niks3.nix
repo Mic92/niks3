@@ -89,7 +89,14 @@ in
       type = lib.types.package;
       default = pkgs.callPackage ../packages/niks3.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage ./niks3.nix { }";
-      description = "The niks3 package to use.";
+      description = "The niks3 CLI package (push, gc).";
+    };
+
+    serverPackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.callPackage ../packages/niks3-server.nix { };
+      defaultText = lib.literalExpression "pkgs.callPackage ./niks3-server.nix { }";
+      description = "The niks3-server package.";
     };
 
     httpAddr = lib.mkOption {
@@ -398,7 +405,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = ''
-          ${lib.getExe' cfg.package "niks3-server"} \
+          ${lib.getExe' cfg.serverPackage "niks3-server"} \
             --db "${cfg.database.connectionString}" \
             --http-addr "${cfg.httpAddr}" \
             --s3-endpoint "${cfg.s3.endpoint}" \

@@ -19,9 +19,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../packages/niks3.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ./niks3.nix { }";
-      description = "The niks3 package to use.";
+      default = pkgs.callPackage ../packages/niks3-hook.nix { };
+      defaultText = lib.literalExpression "pkgs.callPackage ./niks3-hook.nix { }";
+      description = "The niks3-hook package to use.";
     };
 
     serverUrl = lib.mkOption {
@@ -153,6 +153,7 @@ in
         SystemCallFilter = [
           "@system-service"
           "~@privileged"
+          "@chown"
         ];
         SystemCallArchitectures = "native";
       };
