@@ -83,7 +83,8 @@ func run() error {
 	switch os.Args[1] {
 	case "--help", "-h", "help":
 		printUsage()
-		os.Exit(0)
+
+		return nil
 	case "send":
 		return runSend()
 	case "serve":
@@ -93,8 +94,6 @@ func run() error {
 
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
-
-	return nil
 }
 
 func runSend() error {
