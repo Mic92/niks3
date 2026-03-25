@@ -64,7 +64,7 @@ func (t *gcTask) fail(stats api.GCStats, errMsg string) {
 // the most recent task (active or completed) is always available for status
 // polling via GET /api/gc/status.
 type GCTaskStore struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	task *gcTask
 }
 
@@ -114,9 +114,9 @@ func (s *GCTaskStore) Start(params api.GCTaskParams) StartResult {
 
 // Get returns a snapshot of the current (or most recent) GC task.
 func (s *GCTaskStore) Get() (api.GCTaskStatus, bool) {
-	s.mu.Lock()
+	s.mu.RLock()
 	t := s.task
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if t == nil {
 		return api.GCTaskStatus{}, false

@@ -181,13 +181,17 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 		stats.ObjectsFailedToDelete = live.FailedCount
 		task.updateStats(*stats)
 	})
-	if err != nil {
-		if objectStats != nil {
-			stats.ObjectsMarkedForDeletion = objectStats.MarkedCount
-			stats.ObjectsDeletedAfterGracePeriod = objectStats.DeletedCount
-			stats.ObjectsFailedToDelete = objectStats.FailedCount
-		}
 
+	// Always reconcile final object stats from the returned value,
+	// which includes counts from the last batch flush that may not
+	// have triggered an onProgress callback.
+	if objectStats != nil {
+		stats.ObjectsMarkedForDeletion = objectStats.MarkedCount
+		stats.ObjectsDeletedAfterGracePeriod = objectStats.DeletedCount
+		stats.ObjectsFailedToDelete = objectStats.FailedCount
+	}
+
+	if err != nil {
 		task.fail(*stats, "failed to cleanup orphan objects: "+err.Error())
 
 		return
