@@ -161,5 +161,9 @@ func (q *Queue) Count() (int, error) {
 
 // Close closes the underlying database connection.
 func (q *Queue) Close() error {
-	return fmt.Errorf("closing database: %w", q.db.Close())
+	if err := q.db.Close(); err != nil {
+		return fmt.Errorf("closing database: %w", err)
+	}
+
+	return nil
 }
