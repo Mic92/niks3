@@ -100,6 +100,7 @@ func TestPathInfoHashCompatibility(t *testing.T) {
 			t.Parallel()
 
 			var pathInfo client.PathInfo
+
 			err := json.Unmarshal([]byte(tt.jsonInput), &pathInfo)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("json.Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
@@ -327,6 +328,7 @@ func TestPathInfoCACompatibility(t *testing.T) {
 			t.Parallel()
 
 			var pathInfo client.PathInfo
+
 			err := json.Unmarshal([]byte(tt.jsonInput), &pathInfo)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("json.Unmarshal() error = %v, wantErr %v", err, tt.wantErr)

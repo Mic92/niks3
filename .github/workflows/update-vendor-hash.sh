@@ -7,13 +7,28 @@ cd "$(git rev-parse --show-toplevel)"
 
 go mod tidy
 
-failedbuild=$(nix build --log-format bar-with-logs --impure --expr '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.niks3.overrideAttrs (_:{ vendorHash = ""; })' 2>&1 || true)
-echo "$failedbuild"
-checksum=$(echo "$failedbuild" | awk '/got:.*sha256/ { print $2 }')
+# Each package has its own vendor hash because they include different
+# subsets of the Go source tree via Nix filesets.
+for pkg in niks3 niks3-server niks3-hook niks3-tests; do
+  case "$pkg" in
+    niks3)        hashfile="nix/packages/goVendorHash.txt" ;;
+    niks3-server) hashfile="nix/packages/goVendorHash-server.txt" ;;
+    niks3-hook)   hashfile="nix/packages/goVendorHash-hook.txt" ;;
+    niks3-tests)  hashfile="nix/packages/goVendorHash-tests.txt" ;;
+  esac
 
-if [ -z "$checksum" ]; then
-  echo "Error: Could not extract checksum from build output"
-  exit 1
-fi
+  failedbuild=$(nix build --log-format bar-with-logs --impure \
+    --expr "(builtins.getFlake (toString ./.)).packages.\${builtins.currentSystem}.${pkg}.overrideAttrs (_:{ vendorHash = \"\"; })" \
+    2>&1 || true)
+  echo "$failedbuild"
+  checksum=$(echo "$failedbuild" | awk '/got:.*sha256/ { print $2 }')
 
-echo "$checksum" > nix/packages/goVendorHash.txt
+  if [ -z "$checksum" ]; then
+    # Build succeeded — hash is already correct, read the current one.
+    echo "Package $pkg: vendor hash already up to date"
+    continue
+  fi
+
+  echo "$checksum" > "$hashfile"
+  echo "Package $pkg: updated $hashfile to $checksum"
+done

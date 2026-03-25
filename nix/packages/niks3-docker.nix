@@ -1,8 +1,8 @@
 {
   lib,
   pkgs,
-  niks3,
-  imageName ? "${niks3.pname}:latest",
+  niks3-server,
+  imageName ? "${niks3-server.pname}:latest",
 }:
 let
   supportedPlatforms = {
@@ -24,15 +24,14 @@ let
         if system == crossSystem then pkgs else (import pkgs.path { inherit system crossSystem; });
     in
     crossPkgs.dockerTools.buildLayeredImage {
-      name = niks3.pname;
-      tag = "${niks3.version}-${crossSystem}";
+      name = niks3-server.pname;
+      tag = "${niks3-server.version}-${crossSystem}";
       contents = [
-        (niks3.overrideAttrs (old: {
+        (niks3-server.overrideAttrs (old: {
           env = old.env // {
             inherit GOOS GOARCH;
             CGO_ENABLED = 0;
           };
-          subPackages = [ "cmd/niks3-server" ];
           postInstall = (old.postInstall or "") + ''
             if [ -d $out/bin/${GOOS}_${GOARCH} ]; then
               mv $out/bin/${GOOS}_${GOARCH}/* $out/bin/
@@ -56,8 +55,8 @@ let
   ) supportedPlatforms;
 in
 pkgs.stdenvNoCC.mkDerivation {
-  name = "${niks3.pname}-docker";
-  inherit (niks3) version;
+  name = "${niks3-server.pname}-docker";
+  inherit (niks3-server) version;
   phases = [ "installPhase" ];
   src = pkgs.linkFarm "images" (lib.mapAttrsToList (name: path: { inherit name path; }) platforms);
   nativeBuildInputs = [ pkgs.regctl ];

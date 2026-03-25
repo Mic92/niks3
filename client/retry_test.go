@@ -67,6 +67,7 @@ func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoWithRetry failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("closing response body: %v", err)
