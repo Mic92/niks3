@@ -84,12 +84,11 @@ func createProxyTestService(tb testing.TB) *server.Service {
 }
 
 // putTestObject uploads a test object to the service's S3 bucket.
-func putTestObject(ctx context.Context, tb testing.TB, service *server.Service, key string, content []byte, contentType string) {
+func putTestObject(ctx context.Context, tb testing.TB, service *server.Service, key string, content []byte, opts minio.PutObjectOptions) {
 	tb.Helper()
 
 	_, err := service.MinioClient.PutObject(ctx, service.Bucket, key,
-		bytes.NewReader(content), int64(len(content)),
-		minio.PutObjectOptions{ContentType: contentType})
+		bytes.NewReader(content), int64(len(content)), opts)
 	ok(tb, err)
 }
 
@@ -124,7 +123,8 @@ func TestReadProxyNarinfo(t *testing.T) {
 	// Narinfos are stored zstd-compressed in S3 — the proxy must decompress.
 	plainNarinfo := []byte("StorePath: /nix/store/abc123-hello\nURL: nar/abc.nar.zst\n")
 	compressed := zstdCompress(t, plainNarinfo)
-	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", compressed, "application/x-nix-narinfo")
+	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", compressed,
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
@@ -162,6 +162,51 @@ func TestReadProxyNarinfo(t *testing.T) {
 	}
 }
 
+// TestReadProxyNarinfoAlreadyDecompressed verifies that narinfos already
+// decompressed by a transparent proxy (e.g. Cloudflare Tunnel) are served
+// as-is when Content-Encoding is absent.
+func TestReadProxyNarinfoAlreadyDecompressed(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	// Simulate a transparent proxy that already decompressed the narinfo:
+	// plain text in S3 with no Content-Encoding header.
+	plainNarinfo := []byte("StorePath: /nix/store/abc123-hello\nURL: nar/abc.nar.zst\n")
+	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", plainNarinfo,
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
+	ok(t, err)
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("Failed to close response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	ok(t, err)
+
+	if !bytes.Equal(body, plainNarinfo) {
+		t.Errorf("body mismatch: got %q, want %q", body, plainNarinfo)
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
+		t.Errorf("Content-Type = %q, want text/x-nix-narinfo", ct)
+	}
+}
+
 func TestReadProxyNarStreaming(t *testing.T) {
 	t.Parallel()
 
@@ -172,7 +217,8 @@ func TestReadProxyNarStreaming(t *testing.T) {
 
 	// 64KB to exercise streaming (not just buffered in a single chunk)
 	narContent := bytes.Repeat([]byte("x"), 1024*64)
-	putTestObject(ctx, t, service, "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst", narContent, "application/x-nix-nar")
+	putTestObject(ctx, t, service, "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst", narContent,
+		minio.PutObjectOptions{ContentType: "application/x-nix-nar"})
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
@@ -258,7 +304,8 @@ func TestReadProxyHead(t *testing.T) {
 	ctx := t.Context()
 
 	compressed := zstdCompress(t, []byte("StorePath: /nix/store/abc123-hello\n"))
-	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", compressed, "application/x-nix-narinfo")
+	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", compressed,
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
@@ -299,7 +346,8 @@ func TestReadProxyConditionalGet(t *testing.T) {
 	ctx := t.Context()
 
 	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo",
-		zstdCompress(t, []byte("StorePath: /nix/store/abc123-hello\n")), "application/x-nix-narinfo")
+		zstdCompress(t, []byte("StorePath: /nix/store/abc123-hello\n")),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
@@ -352,7 +400,8 @@ func TestReadProxyRootRedirectsToIndexHTML(t *testing.T) {
 
 	// Upload index.html so the redirect target exists
 	putTestObject(ctx, t, service, "index.html",
-		[]byte("<html><body>landing page</body></html>"), "text/html")
+		[]byte("<html><body>landing page</body></html>"),
+		minio.PutObjectOptions{ContentType: "text/html"})
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()

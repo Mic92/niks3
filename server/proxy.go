@@ -230,11 +230,16 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 	}
 }
 
-// serveDecompressedNarinfo reads a zstd-compressed narinfo from S3 and writes
-// the decompressed content to the response. Narinfos are tiny (~500 bytes
-// compressed) so buffering the whole thing is fine.
+// serveDecompressedNarinfo reads a narinfo from S3 and writes the decompressed
+// content to the response. Narinfos are tiny (~500 bytes compressed) so
+// buffering the whole thing is fine.
+//
+// Narinfos are stored zstd-compressed in S3 with Content-Encoding: zstd.
+// A transparent proxy (e.g. Cloudflare Tunnel) may decompress the data and
+// strip the Content-Encoding header before it reaches us. We only decompress
+// when the Content-Encoding header is still present.
 func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Object, info *minio.ObjectInfo) {
-	compressed, err := io.ReadAll(obj)
+	data, err := io.ReadAll(obj)
 	if err != nil {
 		slog.Error("Failed to read narinfo from S3", "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
@@ -242,21 +247,32 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Obj
 		return
 	}
 
-	decoder, ok := zstdDecoderPool.Get().(*zstd.Decoder)
-	if !ok {
-		slog.Error("Failed to get zstd decoder from pool")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	plain := data
 
-		return
+	// S3 stores Content-Encoding either as a standard header or as user
+	// metadata (X-Amz-Meta-Content-Encoding) depending on the implementation.
+	contentEncoding := info.Metadata.Get("Content-Encoding")
+	if contentEncoding == "" {
+		contentEncoding = info.Metadata.Get("X-Amz-Meta-Content-Encoding")
 	}
-	defer zstdDecoderPool.Put(decoder)
 
-	plain, err := decoder.DecodeAll(compressed, nil)
-	if err != nil {
-		slog.Error("Failed to decompress narinfo", "error", err)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	if strings.EqualFold(contentEncoding, "zstd") {
+		decoder, ok := zstdDecoderPool.Get().(*zstd.Decoder)
+		if !ok {
+			slog.Error("Failed to get zstd decoder from pool")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 
-		return
+			return
+		}
+		defer zstdDecoderPool.Put(decoder)
+
+		plain, err = decoder.DecodeAll(data, nil)
+		if err != nil {
+			slog.Error("Failed to decompress narinfo", "error", err)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/x-nix-narinfo")
