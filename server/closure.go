@@ -47,6 +47,9 @@ func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // CleanupClosuresOlder handles the DELETE /closures endpoint.
+// It validates parameters, starts an asynchronous GC task, and returns
+// 202 Accepted with the task status. Identical in-flight requests are
+// deduplicated; conflicting ones receive 409 Conflict.
 func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Starting cleanup of old closures", "method", r.Method, "path", r.URL.Path)
 
@@ -96,30 +99,69 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	force := r.URL.Query().Get("force") == "true"
+
+	params := api.GCTaskParams{
+		OlderThan:              olderThan,
+		FailedUploadsOlderThan: failedUploadsOlderThan,
+		Force:                  force,
+	}
+
+	result := s.GCTasks.Start(params)
+
+	if result.Conflict {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+
+		_ = json.NewEncoder(w).Encode(api.GCConflictResponse{
+			Error:      "a different garbage collection is already running",
+			ActiveTask: result.Status,
+		})
+
+		return
+	}
+
+	if result.IsNew {
+		go s.runGarbageCollection(result.Task, age, pendingAge, force)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(result.Status)
+}
+
+// runGarbageCollection executes the full GC sequence in a background goroutine,
+// updating the task snapshot after each phase. It uses context.Background() so
+// that client disconnects or reverse-proxy timeouts do not cancel the work.
+func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Duration, force bool) {
+	ctx := context.Background()
 	stats := &api.GCStats{}
 
-	// Clean up pending closures first (failed/stale uploads)
-	failedUploadsCount, err := s.cleanupPendingClosures(r.Context(), pendingAge)
+	task.setPhase(api.GCTaskPhaseCleanupPendingUploads)
+
+	failedUploadsCount, err := s.cleanupPendingClosures(ctx, pendingAge)
 	if err != nil {
-		http.Error(w, "failed to cleanup pending closures: "+err.Error(), http.StatusInternalServerError)
+		task.fail(*stats, "failed to cleanup pending closures: "+err.Error())
 
 		return
 	}
 
 	stats.FailedUploadsDeleted = failedUploadsCount
+	task.updateStats(*stats)
 
-	// Then clean up old completed closures
-	oldClosuresCount, err := cleanupClosureOlderThan(r.Context(), s.Pool, age)
+	task.setPhase(api.GCTaskPhaseCleanupOldClosures)
+
+	oldClosuresCount, err := cleanupClosureOlderThan(ctx, s.Pool, age)
 	if err != nil {
-		http.Error(w, "failed to cleanup old closures: "+err.Error(), http.StatusInternalServerError)
+		task.fail(*stats, "failed to cleanup old closures: "+err.Error())
 
 		return
 	}
 
 	stats.OldClosuresDeleted = oldClosuresCount
+	task.updateStats(*stats)
 
-	// Check if force mode is enabled
-	force := r.URL.Query().Get("force") == "true"
+	task.setPhase(api.GCTaskPhaseCleanupOrphanObjects)
 
 	var gracePeriod int32
 	if force {
@@ -133,18 +175,28 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		gracePeriod = int32(pendingAge.Seconds())
 	}
 
-	objectStats, err := s.cleanupOrphanObjects(r.Context(), gracePeriod)
+	objectStats, err := s.cleanupOrphanObjects(ctx, gracePeriod, func(live ObjectCleanupStats) {
+		stats.ObjectsMarkedForDeletion = live.MarkedCount
+		stats.ObjectsDeletedAfterGracePeriod = live.DeletedCount
+		stats.ObjectsFailedToDelete = live.FailedCount
+		task.updateStats(*stats)
+	})
+
+	// Always reconcile final object stats from the returned value,
+	// which includes counts from the last batch flush that may not
+	// have triggered an onProgress callback.
+	if objectStats != nil {
+		stats.ObjectsMarkedForDeletion = objectStats.MarkedCount
+		stats.ObjectsDeletedAfterGracePeriod = objectStats.DeletedCount
+		stats.ObjectsFailedToDelete = objectStats.FailedCount
+	}
+
 	if err != nil {
-		http.Error(w, "failed to cleanup orphan objects: "+err.Error(), http.StatusInternalServerError)
+		task.fail(*stats, "failed to cleanup orphan objects: "+err.Error())
 
 		return
 	}
 
-	stats.ObjectsMarkedForDeletion = objectStats.MarkedCount
-	stats.ObjectsDeletedAfterGracePeriod = objectStats.DeletedCount
-	stats.ObjectsFailedToDelete = objectStats.FailedCount
-
-	// Log statistics on server side
 	slog.Info("Garbage collection completed",
 		"failed-uploads-deleted", stats.FailedUploadsDeleted,
 		"old-closures-deleted", stats.OldClosuresDeleted,
@@ -153,18 +205,23 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		"objects-failed-to-delete", stats.ObjectsFailedToDelete,
 	)
 
-	// VACUUM all tables modified during GC to reclaim space and update statistics
-	s.vacuumGCTables(r.Context())
+	task.setPhase(api.GCTaskPhaseVacuumTables)
+	s.vacuumGCTables(ctx)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	task.succeed(*stats)
+}
 
-	err = json.NewEncoder(w).Encode(stats)
-	if err != nil {
-		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
+// GCStatusHandler handles GET /api/gc/status.
+func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
+	status, ok := s.GCTasks.Get()
+	if !ok {
+		http.Error(w, "no garbage collection has run yet", http.StatusNotFound)
 
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.

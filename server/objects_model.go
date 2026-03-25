@@ -39,8 +39,9 @@ func flushBatch(ctx context.Context, keys []string, operation func(context.Conte
 func (s *Service) getObjectsForDeletion(ctx context.Context,
 	objectCh chan<- minio.ObjectInfo,
 	queryErr *error,
-	markedCount *int,
+	stats *ObjectCleanupStats,
 	gracePeriod int32,
+	onProgress func(ObjectCleanupStats),
 ) {
 	defer close(objectCh)
 
@@ -55,7 +56,11 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		return
 	}
 
-	*markedCount = int(marked)
+	stats.MarkedCount = int(marked)
+
+	if onProgress != nil {
+		onProgress(*stats)
+	}
 
 	// Then, get objects ready for deletion (marked > gracePeriod ago)
 	for {
@@ -115,12 +120,19 @@ func handleFailedObject(ctx context.Context, objectName string, resultErr error,
 func (s *Service) removeS3Objects(ctx context.Context,
 	objectCh <-chan minio.ObjectInfo,
 	stats *ObjectCleanupStats,
+	onProgress func(ObjectCleanupStats),
 ) ([]error, []error) {
 	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
 	failedKeys := make([]string, 0, DeletionBatchSize)
 	deletedKeys := make([]string, 0, DeletionBatchSize)
 
 	queries := pg.New(s.Pool)
+
+	notifyProgress := func() {
+		if onProgress != nil {
+			onProgress(*stats)
+		}
+	}
 
 	var s3Errors, batchErrors []error
 
@@ -142,6 +154,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 				}
 
 				stats.DeletedCount++
+				notifyProgress()
 
 				continue
 			}
@@ -159,6 +172,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 			}
 
 			stats.FailedCount++
+			notifyProgress()
 
 			continue
 		}
@@ -173,6 +187,7 @@ func (s *Service) removeS3Objects(ctx context.Context,
 		}
 
 		stats.DeletedCount++
+		notifyProgress()
 	}
 
 	// Flush remaining batches
@@ -187,7 +202,10 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	return s3Errors, batchErrors
 }
 
-func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32) (*ObjectCleanupStats, error) {
+// cleanupOrphanObjects marks unreachable objects and deletes them from S3.
+// When onProgress is non-nil it is called after every individual
+// mark/delete/fail so callers can expose live counters.
+func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32, onProgress func(ObjectCleanupStats)) (*ObjectCleanupStats, error) {
 	// limit channel size to 1000, as minio limits to 1000 in one request
 	objectCh := make(chan minio.ObjectInfo, DeletionBatchSize)
 
@@ -195,9 +213,9 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32) (
 
 	var queryErr error
 
-	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, &stats.MarkedCount, gracePeriod)
+	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, stats, gracePeriod, onProgress)
 
-	s3Errs, batchErrs := s.removeS3Objects(ctx, objectCh, stats)
+	s3Errs, batchErrs := s.removeS3Objects(ctx, objectCh, stats, onProgress)
 
 	if queryErr != nil {
 		return stats, queryErr
