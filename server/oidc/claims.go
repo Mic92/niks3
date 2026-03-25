@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -23,13 +24,16 @@ func validateBoundClaims(claims map[string]any, boundClaims map[string][]string)
 
 		// Check if ANY value matches ANY pattern
 		matched := false
+
 		for _, v := range values {
 			for _, pattern := range allowedPatterns {
 				if matchGlob(pattern, v) {
 					matched = true
+
 					break
 				}
 			}
+
 			if matched {
 				break
 			}
@@ -39,6 +43,7 @@ func validateBoundClaims(claims map[string]any, boundClaims map[string][]string)
 			return fmt.Errorf("claim %q value %v not in allowed patterns %v", claimName, values, allowedPatterns)
 		}
 	}
+
 	return nil
 }
 
@@ -50,7 +55,7 @@ func validateBoundSubject(claims map[string]any, boundSubject []string) error {
 
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" {
-		return fmt.Errorf("token missing 'sub' claim")
+		return errors.New("token missing 'sub' claim")
 	}
 
 	for _, pattern := range boundSubject {
@@ -73,18 +78,19 @@ func getClaim(claims map[string]any, name string) (any, error) {
 	// Try dot notation for nested claims
 	parts := strings.Split(name, ".")
 	if len(parts) == 1 {
-		return nil, fmt.Errorf("claim not found")
+		return nil, errors.New("claim not found")
 	}
 
 	var current any = claims
 	for _, part := range parts {
 		m, ok := current.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("claim not found")
+			return nil, errors.New("claim not found")
 		}
+
 		current, ok = m[part]
 		if !ok {
-			return nil, fmt.Errorf("claim not found")
+			return nil, errors.New("claim not found")
 		}
 	}
 
@@ -103,6 +109,7 @@ func normalizeToStringSlice(value any) []string {
 				result = append(result, s)
 			}
 		}
+
 		return result
 	case []string:
 		return v
@@ -136,21 +143,22 @@ func globMatch(pattern, str string) bool {
 	matchIdx := 0
 
 	for sIdx < len(str) {
-		if pIdx < len(pattern) && (pattern[pIdx] == '?' || pattern[pIdx] == str[sIdx]) {
+		switch {
+		case pIdx < len(pattern) && (pattern[pIdx] == '?' || pattern[pIdx] == str[sIdx]):
 			// Characters match or pattern has ?
 			pIdx++
 			sIdx++
-		} else if pIdx < len(pattern) && pattern[pIdx] == '*' {
+		case pIdx < len(pattern) && pattern[pIdx] == '*':
 			// Star found, record position
 			starIdx = pIdx
 			matchIdx = sIdx
 			pIdx++
-		} else if starIdx != -1 {
+		case starIdx != -1:
 			// No match, but we have a star to fall back to
 			pIdx = starIdx + 1
 			matchIdx++
 			sIdx = matchIdx
-		} else {
+		default:
 			// No match
 			return false
 		}

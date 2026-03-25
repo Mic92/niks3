@@ -3,6 +3,7 @@ package oidc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -75,10 +76,11 @@ func LoadConfig(path string) (*Config, error) {
 
 func (c *Config) validate() error {
 	if len(c.Providers) == 0 {
-		return fmt.Errorf("no providers configured")
+		return errors.New("no providers configured")
 	}
 
 	issuers := make(map[string]string) // issuer -> provider name
+
 	for name, provider := range c.Providers {
 		if provider.Issuer == "" {
 			return fmt.Errorf("provider %q: missing issuer", name)
@@ -89,9 +91,11 @@ func (c *Config) validate() error {
 		if err != nil {
 			return fmt.Errorf("provider %q: invalid issuer URL %q: %w", name, provider.Issuer, err)
 		}
+
 		if issuerURL.Scheme == "" || issuerURL.Host == "" {
 			return fmt.Errorf("provider %q: issuer URL %q must be absolute with scheme and host", name, provider.Issuer)
 		}
+
 		if issuerURL.Scheme != "https" && !c.AllowInsecure {
 			return fmt.Errorf("provider %q: issuer URL %q must use HTTPS (scheme is %q)", name, provider.Issuer, issuerURL.Scheme)
 		}
@@ -105,6 +109,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("provider %q: duplicate issuer (already used by %q)",
 				name, existing)
 		}
+
 		issuers[provider.Issuer] = name
 	}
 
