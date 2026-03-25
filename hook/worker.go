@@ -58,7 +58,7 @@ func (w *Worker) Run(ctx context.Context) {
 		if backoff > 0 {
 			select {
 			case <-ctx.Done():
-				w.drain(ctx)
+				w.drain()
 
 				return
 			case <-time.After(backoff):
@@ -67,7 +67,7 @@ func (w *Worker) Run(ctx context.Context) {
 		} else {
 			select {
 			case <-ctx.Done():
-				w.drain(ctx)
+				w.drain()
 
 				return
 			case <-time.After(defaultPollInterval):
@@ -78,7 +78,7 @@ func (w *Worker) Run(ctx context.Context) {
 		// Process all available batches.
 		for {
 			if ctx.Err() != nil {
-				w.drain(ctx)
+				w.drain()
 
 				return
 			}
@@ -175,7 +175,7 @@ func (w *Worker) QueueEmpty() bool {
 }
 
 // drain processes remaining queue entries with a background context.
-func (w *Worker) drain(_ context.Context) {
+func (w *Worker) drain() {
 	for {
 		paths, err := w.queue.FetchBatch(w.batchSize)
 		if err != nil || len(paths) == 0 {
