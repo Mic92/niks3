@@ -1,0 +1,55 @@
+name: Repair Docker Tags
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to rebuild docker image for (e.g. "v1.4.0")'
+        required: true
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-substituters = https://cache.thalheim.io
+            extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
+      - name: Build Docker image
+        run: |
+          nix build .#niks3-docker --print-build-logs
+      - name: Push images
+        env:
+          REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -xve
+          PATH="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin:$PATH"
+          regctl registry login "$REGISTRY" -u "${{ github.actor }}" --pass-stdin <<< "$REGCTL_PASSWORD"
+          regctl image import "ocidir://local:niks3" ./result
+
+          # Push the exact version tag
+          regctl image copy "ocidir://local:niks3" "$REGISTRY/$IMAGE_NAME:$TAG"
+
+          # Also push major.minor and major tags
+          # e.g. v1.4.0 -> v1.4, v1
+          MINOR="${TAG%.*}"
+          MAJOR="${MINOR%.*}"
+          if [ "$MINOR" != "$TAG" ]; then
+            regctl image copy "ocidir://local:niks3" "$REGISTRY/$IMAGE_NAME:$MINOR"
+          fi
+          if [ "$MAJOR" != "$MINOR" ] && [ "$MAJOR" != "$TAG" ]; then
+            regctl image copy "ocidir://local:niks3" "$REGISTRY/$IMAGE_NAME:$MAJOR"
+          fi
+
+          # Push latest for the highest version
+          regctl image copy "ocidir://local:niks3" "$REGISTRY/$IMAGE_NAME:latest"
