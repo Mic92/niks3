@@ -12,7 +12,6 @@ jobs:
       packages: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
     steps:
       - name: Checkout at tag
         uses: actions/checkout@v5
@@ -31,8 +30,12 @@ jobs:
         env:
           REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
+          # github.repository preserves owner case (e.g. Mic92/niks3), but
+          # Docker registries require lowercase image names.
+          IMAGE_NAME: ${{ format('{0}/{1}', github.repository_owner, github.event.repository.name) }}
         run: |
           set -xve
+          IMAGE_NAME="${IMAGE_NAME,,}"
           PATH="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin:$PATH"
           regctl registry login "$REGISTRY" -u "${{ github.actor }}" --pass-stdin <<< "$REGCTL_PASSWORD"
           regctl image import "ocidir://local:niks3" ./result
