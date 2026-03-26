@@ -12,36 +12,39 @@ running one instance next to the CI infrastructure.
 
 ## Architecture
 
+### Write path
+
 ```mermaid
 flowchart LR
-    subgraph Clients
-        niks3cli[niks3 CLI]
-        nix[Nix Client]
-    end
-
-    subgraph Infrastructure
-        s3[(S3 Bucket<br/>NAR files, narinfo,<br/>logs, realisations)]
-        niks3[niks3 Server]
-        db[(PostgreSQL<br/>closure tracking)]
-    end
-
-    niks3cli -->|1. request upload| niks3
-    niks3 -->|2. signed S3 URLs| niks3cli
-    niks3cli -->|3. upload NAR/narinfo| s3
-    niks3 -->|track references| db
-    nix -->|4a. read directly| s3
-    nix -.->|4b. read via proxy| niks3
-    niks3 -.->|fetch on behalf| s3
+    niks3cli[niks3 CLI] -->|request upload| niks3[niks3 Server]
+    niks3 -->|presigned S3 URLs| niks3cli
+    niks3cli -->|PUT NAR + narinfo| s3[(S3 Bucket)]
+    niks3 -->|track references| db[(PostgreSQL)]
 ```
 
-**Write path**: The niks3 CLI requests an upload from the server, which returns pre-signed S3 URLs.
+The niks3 CLI requests an upload from the server, which returns pre-signed S3 URLs.
 The client uploads NAR files and narinfo directly to S3.
 The server tracks references in PostgreSQL for garbage collection.
 
-**Read path**: Nix clients read directly from S3 (or a CDN in front of it) without going through niks3.
+### Read path
+
+```mermaid
+flowchart LR
+    nix[Nix Client] -->|read NAR + narinfo| s3[(S3 Bucket)]
+```
+
+Nix clients read directly from S3 (or a CDN in front of it) without going through niks3.
 This allows the read path to scale independently and remain highly available.
 
-**Read proxy** (optional): For private S3 buckets, niks3 can proxy read requests
+### Read proxy (optional)
+
+```mermaid
+flowchart LR
+    nix[Nix Client] -->|read request| niks3[niks3 Server]
+    niks3 -->|fetch on behalf| s3[(S3 Bucket)]
+```
+
+For private S3 buckets, niks3 can proxy read requests
 from Nix clients to S3 using its own credentials. Enable with `--enable-read-proxy`.
 See the [Private S3 Buckets](https://github.com/Mic92/niks3/wiki/Private-S3-Buckets) wiki page.
 
