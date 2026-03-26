@@ -51,16 +51,8 @@ jobs:
           for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
             regctl image copy "ocidir://local:niks3" "$tag"
           done
-  cleanup:
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      packages: write
-    steps:
-      - name: Delete old untagged images
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: niks3
-          package-type: container
-          min-versions-to-keep: 10
-          delete-only-untagged-versions: true
+  # NOTE: cleanup of untagged versions was removed because multi-arch images
+  # store platform-specific manifests as untagged versions in GHCR. Deleting
+  # untagged versions breaks all existing tagged multi-arch images (v1, v1.4.0,
+  # etc.) since their index manifests reference those now-deleted platform
+  # manifests. See https://github.com/Mic92/niks3/issues/291
