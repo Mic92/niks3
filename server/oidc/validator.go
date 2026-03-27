@@ -95,6 +95,18 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	return v, nil
 }
 
+// AudienceForIssuer returns the configured audience for the given issuer URL,
+// and whether a provider is configured for that issuer.
+func (v *Validator) AudienceForIssuer(issuer string) (string, bool) {
+	for _, p := range v.config.Providers {
+		if p.Issuer == issuer {
+			return p.Audience, true
+		}
+	}
+
+	return "", false
+}
+
 // ValidateToken validates a JWT token and returns the validated claims.
 // On failure, returns a *ValidationError with detailed information about why validation failed.
 func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*ValidatedClaims, error) {

@@ -1,0 +1,41 @@
+name: Update action dist
+on:
+  pull_request:
+    paths:
+      - action/package.json
+      - action/src/**
+      - nix/packages/niks3.nix # version bumps bake NIKS3_VERSION into dist
+      - nix/packages/niks3-action.nix
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    # Skip when triggered by our own bot's push (avoids a re-trigger loop;
+    # the app token, unlike GITHUB_TOKEN, does fire workflows).
+    if: github.actor != 'niks3-flake-updater[bot]'
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Regenerate
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          ./.github/workflows/update-action-dist.sh
+          if [[ -n $(git diff) ]]; then
+            git add action/package-lock.json nix/packages/niks3-action-npm-deps-hash.txt dist/index.js
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git config --global user.name "github-actions[bot]"
+            git commit -m "regenerate action dist"
+            git push origin HEAD:"${HEAD_REF}"
+          fi
