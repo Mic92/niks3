@@ -32,14 +32,14 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3-hook <command> [flags]")
 	fmt.Fprintln(os.Stderr, "\nCommands:")
-	fmt.Fprintln(os.Stderr, "  send    Send store paths to the upload daemon (called by Nix post-build-hook)")
-	fmt.Fprintln(os.Stderr, "  serve   Run the upload daemon (accepts paths, queues, and uploads)")
+	fmt.Fprintln(os.Stderr, "  send    Send store paths to upload daemon (called by Nix post-build-hook)")
+	fmt.Fprintln(os.Stderr, "  serve   Run as upload daemon (accepts paths, queues, and uploads)")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3-hook <command> --help' for more information about a command.")
 }
 
 func printSendHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3-hook send [flags]")
-	fmt.Fprintln(os.Stderr, "\nSend store paths from OUT_PATHS to the upload daemon via unix socket.")
+	fmt.Fprintln(os.Stderr, "\nSend store paths from OUT_PATHS to upload daemon via unix socket.")
 	fmt.Fprintln(os.Stderr, "Always exits 0 to avoid affecting Nix builds. Errors are logged to stderr.")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintf(os.Stderr, "  --socket string\n        Unix socket path (default: %s)\n", socketPath)
@@ -49,7 +49,7 @@ func printSendHelp() {
 
 func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3-hook serve [flags]")
-	fmt.Fprintln(os.Stderr, "\nRun the upload daemon. Listens on a unix stream socket, queues paths in SQLite,")
+	fmt.Fprintln(os.Stderr, "\nRun as upload daemon. Listens on a unix stream socket, queues paths in SQLite,")
 	fmt.Fprintln(os.Stderr, "and uploads them to the niks3 server in the background.")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
@@ -66,7 +66,11 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Concurrent upload limit (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
-	fmt.Fprintln(os.Stderr, "        Verify S3 objects before skipping")
+	fmt.Fprintln(os.Stderr, "        Verify S3 integrity before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --client-cert string")
+	fmt.Fprintln(os.Stderr, "        Client certificate file for mTLS authentication")
+	fmt.Fprintln(os.Stderr, "  --client-key string")
+	fmt.Fprintln(os.Stderr, "        Client private key file for mTLS authentication")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -148,6 +152,8 @@ func runServe() error {
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
 	maxConcurrent := fs.Int("max-concurrent-uploads", 30, "Concurrent upload limit")
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+	clientCert := fs.String("client-cert", "", "Client certificate file for mTLS")
+	clientKey := fs.String("client-key", "", "Client private key file for mTLS")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -190,7 +196,7 @@ func runServe() error {
 		*maxConcurrent = 1
 	}
 
-	// Open the SQLite queue.
+	// Open SQLite queue.
 	queue, err := hook.OpenQueue(*dbPath)
 	if err != nil {
 		return fmt.Errorf("opening queue: %w", err)
@@ -207,10 +213,22 @@ func runServe() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Create the niks3 client.
+	// Create niks3 client.
 	c, err := client.NewClient(ctx, *cf.ServerURL, token)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
+	}
+
+	// Configure mTLS if certificates are provided
+	if *clientCert != "" && *clientKey != "" {
+		slog.Info("Configuring client TLS with certificates",
+			"cert", *clientCert,
+			"key", *clientKey)
+		if err := c.SetClientTLS(*clientCert, *clientKey); err != nil {
+			return fmt.Errorf("setting up client TLS: %w", err)
+		}
+	} else if *clientCert != "" || *clientKey != "" {
+		return errors.New("both --client-cert and --client-key must be provided for mTLS")
 	}
 
 	c.MaxConcurrentNARUploads = *maxConcurrent
@@ -220,9 +238,9 @@ func runServe() error {
 		c.SetDebugHTTP(true)
 	}
 
-	// Notification channels: the server notifies both the worker and the
-	// idle timer when new paths are queued. Separate channels avoid the
-	// race where one consumer steals the signal from the other.
+	// Notification channels: server notifies both the worker and
+	// idle timer when new paths are queued. Separate channels avoid
+	// a race where one consumer steals the signal from the other.
 	workerNotify := make(chan struct{}, 1)
 	idleNotify := make(chan struct{}, 1)
 
@@ -281,7 +299,7 @@ func runServe() error {
 	// Start the socket server.
 	srv := hook.NewServer(ln, queueFunc)
 
-	// Idle exit: cancel the context when both the socket is idle and the queue is empty.
+	// Idle exit: cancel context when both the socket is idle and the queue is empty.
 	if idleTimeout > 0 {
 		go func() {
 			idleTimer := time.NewTimer(idleTimeout)
@@ -328,3 +346,5 @@ func runServe() error {
 
 	return nil
 }
+
+
