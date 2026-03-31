@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,8 @@ type Client struct {
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
+	ClientCertFile string // Path to client certificate file for mTLS
+	ClientKeyFile  string // Path to client private key file for mTLS
 }
 
 // loggingTransport wraps an http.RoundTripper to log requests and responses.
@@ -133,6 +136,39 @@ func (c *Client) SetDebugHTTP(enabled bool) {
 	}
 }
 
+// SetClientTLS configures the HTTP client with client certificates for mTLS.
+func (c *Client) SetClientTLS(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("loading client certificate: %w", err)
+	}
+
+	// Get existing transport or create new one
+	transport := c.httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	// Wrap with TLS config
+	if httpTransport, ok := transport.(*http.Transport); ok {
+		httpTransport.TLSClientConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		c.httpClient.Transport = httpTransport
+	} else {
+		// If not http.Transport, create new one
+		c.httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			},
+		}
+	}
+
+	return nil
+}
+
 func deferCloseBody(resp *http.Response) {
 	if err := resp.Body.Close(); err != nil {
 		slog.Error("Failed to close response body", "error", err)
@@ -165,3 +201,4 @@ func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.R
 
 	return resp, nil
 }
+
