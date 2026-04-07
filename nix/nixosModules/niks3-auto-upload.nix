@@ -149,7 +149,7 @@ in
             ]
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
-            ++ lib.optional mtlsCfg.enable "--client-cert"
+            ++ lib.optional cfg.mtls.enable "--client-cert"
             ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientCert)
             ++ lib.optional mtlsCfg.enable "--client-key"
             ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientKey)
