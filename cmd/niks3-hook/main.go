@@ -71,6 +71,8 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Client certificate file for mTLS authentication")
 	fmt.Fprintln(os.Stderr, "  --client-key string")
 	fmt.Fprintln(os.Stderr, "        Client private key file for mTLS authentication")
+	fmt.Fprintln(os.Stderr, "  --ca-cert string")
+	fmt.Fprintln(os.Stderr, "        CA certificate file for server verification (optional)")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -154,6 +156,7 @@ func runServe() error {
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 	clientCert := fs.String("client-cert", "", "Client certificate file for mTLS")
 	clientKey := fs.String("client-key", "", "Client private key file for mTLS")
+	caCert := fs.String("ca-cert", "", "CA certificate file for server verification (optional)")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -221,10 +224,15 @@ func runServe() error {
 
 	// Configure mTLS if certificates are provided
 	if *clientCert != "" && *clientKey != "" {
+		caInfo := "default"
+		if *caCert != "" {
+			caInfo = *caCert
+		}
 		slog.Info("Configuring client TLS with certificates",
 			"cert", *clientCert,
-			"key", *clientKey)
-		if err := c.SetClientTLS(*clientCert, *clientKey); err != nil {
+			"key", *clientKey,
+			"ca", caInfo)
+		if err := c.SetClientTLS(*clientCert, *clientKey, *caCert); err != nil {
 			return fmt.Errorf("setting up client TLS: %w", err)
 		}
 	} else if *clientCert != "" || *clientKey != "" {
@@ -346,5 +354,3 @@ func runServe() error {
 
 	return nil
 }
-
-
