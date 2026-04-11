@@ -150,11 +150,11 @@ in
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
             ++ lib.optional cfg.mtls.enable "--client-cert"
-            ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientCert)
-            ++ lib.optional mtlsCfg.enable "--client-key"
-            ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientKey)
-            ++ lib.optional (mtlsCfg.caCert != null) "--ca-cert"
-            ++ lib.optional (mtlsCfg.caCert != null) (lib.escapeShellArg mtlsCfg.caCert) 
+            ++ lib.optional cfg.mtls.enable (lib.escapeShellArg cfg.mtls.clientCert)
+            ++ lib.optional cfg.mtls.enable "--client-key"
+            ++ lib.optional cfg.mtls.enable (lib.escapeShellArg cfg.mtls.clientKey)
+            ++ lib.optional (cfg.mtls.caCert != null) "--ca-cert"
+            ++ lib.optional (cfg.mtls.caCert != null) (lib.escapeShellArg cfg.mtls.caCert)
           );
         Restart = "on-failure";
         RestartSec = "5s";
