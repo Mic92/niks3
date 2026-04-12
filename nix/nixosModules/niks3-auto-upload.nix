@@ -97,7 +97,7 @@ in
         description = "Path to CA certificate for server verification (optional).";
         example = "/var/lib/secrets/niks3/ca.crt";
       };
-    };    
+    };
   };
 
   config = lib.mkIf cfg.enable {

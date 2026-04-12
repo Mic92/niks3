@@ -30,9 +30,9 @@ type Client struct {
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
-	ClientCertFile string // Path to client certificate file for mTLS
-	ClientKeyFile  string // Path to client private key file for mTLS
-	CACertFile     string // Path to CA certificate for server verification (optional)
+	ClientCertFile          string                         // Path to client certificate file for mTLS
+	ClientKeyFile           string                         // Path to client private key file for mTLS
+	CACertFile              string                         // Path to CA certificate for server verification (optional)
 }
 
 // loggingTransport wraps an http.RoundTripper to log requests and responses.
