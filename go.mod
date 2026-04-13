@@ -11,7 +11,7 @@ require (
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
 	github.com/pressly/goose/v3 v3.27.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.42.0
+	golang.org/x/sys v0.43.0
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.48.2
 )
