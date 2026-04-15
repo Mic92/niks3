@@ -39,6 +39,7 @@ let
             fi
           '';
         }))
+        (import ./niks3.nix { inherit pkgs lib; })
       ]
       ++ (with crossPkgs.pkgsStatic; [
         busybox
