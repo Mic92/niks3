@@ -1,0 +1,43 @@
+name: niks3
+description: Push Nix build outputs to a niks3 binary cache with per-derivation caching
+author: Mic92
+branding:
+  icon: database
+  color: blue
+inputs:
+  server-url:
+    description: >-
+      niks3 server URL (e.g. https://niks3.example.com). The action fetches substituter URL, public keys, and OIDC audience from this server's /api/cache-config endpoint unless overridden below.
+    required: true
+  substituter:
+    description: >-
+      Override the substituter URL written to nix.conf. Defaults to the server's configured cache-url.
+    required: false
+  public-key:
+    description: >-
+      Override the trusted public key(s), space-separated. Defaults to the server's signing keys.
+    required: false
+  audience:
+    description: >-
+      Override the OIDC audience to request from GitHub. Defaults to the audience the server has configured for the GitHub issuer.
+    required: false
+  skip-push:
+    description: >-
+      Only configure the substituter; do not push build outputs.
+    default: 'false'
+  niks3-bin:
+    description: >-
+      Path to a niks3 binary. Defaults to downloading the release that matches this action's tag.
+    required: false
+  drain-timeout:
+    description: >-
+      Seconds to wait for the upload daemon to drain in the post step.
+    default: '600'
+  debug:
+    description: >-
+      Enable debug logging from the niks3 binary.
+    default: 'false'
+runs:
+  using: node24
+  main: dist/index.js
+  post: dist/index.js

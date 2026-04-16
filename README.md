@@ -91,6 +91,28 @@ For detailed pricing comparison and alternative providers, see the [S3 Provider 
 
 For complete setup instructions, see the [Setup Guide](https://github.com/Mic92/niks3/wiki/Setup-Guide) in the wiki.
 
+## GitHub Actions
+
+niks3 ships a GitHub Action that configures the substituter, starts an
+upload daemon, and drains it in a post-job step — intermediate derivations
+get cached even when the build fails.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: cachix/install-nix-action@v31
+  - uses: Mic92/niks3@v1
+    with:
+      server-url: https://niks3.example.com
+  - run: nix build .#foo
+```
+
+The action fetches the substituter URL, public keys, and OIDC audience
+from the server's `/api/cache-config` endpoint, so these don't need to be
+hardcoded in the workflow. See the [GitHub Actions wiki page](https://github.com/Mic92/niks3/wiki/GitHub-Actions)
+for server configuration and advanced options.
+
 ## OIDC Authentication (CI/CD)
 
 niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:
