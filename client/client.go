@@ -3,12 +3,15 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 
 	"github.com/Mic92/niks3/ratelimit"
@@ -27,6 +30,9 @@ type Client struct {
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
+	ClientCertFile          string                         // Path to client certificate file for mTLS
+	ClientKeyFile           string                         // Path to client private key file for mTLS
+	CACertFile              string                         // Path to CA certificate for server verification (optional)
 }
 
 // loggingTransport wraps an http.RoundTripper to log requests and responses.
@@ -131,6 +137,53 @@ func (c *Client) SetDebugHTTP(enabled bool) {
 			c.httpClient.Transport = lt.transport
 		}
 	}
+}
+
+// SetClientTLS configures the HTTP client with client certificates for mTLS.
+// If caFile is provided, server certificate will be verified against the specified CA.
+// If caFile is empty, system certificate authorities will be used.
+func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("loading client certificate: %w", err)
+	}
+
+	// Create TLS config with client certificates
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	// Load CA cert for server verification if provided (optional)
+	if caFile != "" {
+		caCert, err := os.ReadFile(caFile)
+		if err != nil {
+			return fmt.Errorf("loading CA certificate: %w", err)
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caCert) {
+			return fmt.Errorf("failed to parse CA certificate")
+		}
+		tlsConfig.RootCAs = certPool
+	}
+
+	// Get existing transport or create new one
+	transport := c.httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	// Wrap with TLS config
+	if httpTransport, ok := transport.(*http.Transport); ok {
+		httpTransport.TLSClientConfig = tlsConfig
+		c.httpClient.Transport = httpTransport
+	} else {
+		c.httpClient.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+	}
+
+	return nil
 }
 
 func deferCloseBody(resp *http.Response) {
