@@ -1,0 +1,12 @@
+{
+  "name": "niks3-action",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/tool-cache": "^2.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  }
+}
