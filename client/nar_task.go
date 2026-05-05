@@ -43,6 +43,13 @@ func (c *Client) uploadNARWithListing(
 		}
 	}
 
+	// Release the listing now that the .ls file is in S3. Phase 2 only uses
+	// compressedInfo for presence checks, so keeping the recursive directory
+	// tree pinned for the rest of phase 1 wastes O(closure-size) memory per path.
+	compressedInfoMu.Lock()
+	info.Listing = nil
+	compressedInfoMu.Unlock()
+
 	return nil
 }
 

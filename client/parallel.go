@@ -236,5 +236,12 @@ func (c *Client) uploadMetadataOnly(
 		}
 	}
 
+	// Release the listing now that the .ls file is in S3 (see uploadNARWithListing).
+	compressedInfoMu.Lock()
+	if existing := compressedInfo[hash]; existing != nil {
+		existing.Listing = nil
+	}
+	compressedInfoMu.Unlock()
+
 	return nil
 }
