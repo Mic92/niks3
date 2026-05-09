@@ -10,25 +10,22 @@ import (
 // Successfully uploaded NARs are stored in compressedInfo for later narinfo uploads.
 func (c *Client) uploadNARWithListing(
 	ctx context.Context,
-	task uploadTask,
-	pendingByHash pendingObjectsByHash,
-	pathInfoByHash map[string]*PathInfo,
+	narTask uploadTask,
+	lsTask *uploadTask,
+	pathInfo *PathInfo,
 ) error {
-	// Upload NAR
-	pathInfo, ok := pathInfoByHash[task.hash]
-	if !ok || pathInfo == nil {
-		return fmt.Errorf("missing PathInfo for hash %s", task.hash)
+	if pathInfo == nil {
+		return fmt.Errorf("missing PathInfo for hash %s", narTask.hash)
 	}
 
-	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.obj, task.key)
+	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj, narTask.key)
 	if err != nil {
-		return fmt.Errorf("uploading NAR %s: %w", task.key, err)
+		return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
 	}
 
 	// Upload listing immediately in same goroutine
-	entry := pendingByHash[task.hash]
-	if entry.lsTask != nil {
-		if err := c.uploadListing(ctx, *entry.lsTask, listing); err != nil {
+	if lsTask != nil {
+		if err := c.uploadListing(ctx, *lsTask, listing); err != nil {
 			return err
 		}
 	}

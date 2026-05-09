@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -117,14 +118,16 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 
 	// Queue all NAR tasks and metadata-only tasks
 	for hash, entry := range pendingByHash {
+		pathInfo := uploadCtx.PathInfoByHash[hash]
+
 		if entry.narTask != nil {
 			g.Go(func() error {
-				return c.uploadNARWithListing(ctx, *entry.narTask, pendingByHash, uploadCtx.PathInfoByHash)
+				return c.uploadNARWithListing(ctx, *entry.narTask, entry.lsTask, pathInfo)
 			})
 		} else if entry.narinfoTask != nil {
 			// Deduplicated NAR - queue metadata-only task
 			g.Go(func() error {
-				return c.uploadMetadataOnly(ctx, hash, pendingByHash, uploadCtx.PathInfoByHash)
+				return c.uploadMetadataOnly(ctx, entry.lsTask, pathInfo)
 			})
 		}
 	}
@@ -190,14 +193,11 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 // It generates the listing and uploads .ls file without uploading the NAR.
 func (c *Client) uploadMetadataOnly(
 	ctx context.Context,
-	hash string,
-	pendingByHash pendingObjectsByHash,
-	pathInfoByHash map[string]*PathInfo,
+	lsTask *uploadTask,
+	pathInfo *PathInfo,
 ) error {
-	// Get path info
-	pathInfo, ok := pathInfoByHash[hash]
-	if !ok || pathInfo == nil {
-		return fmt.Errorf("missing PathInfo for hash %s", hash)
+	if pathInfo == nil {
+		return errors.New("missing PathInfo for metadata-only upload")
 	}
 
 	// Generate listing from store path (fast directory walk, no NAR serialization)
@@ -207,9 +207,8 @@ func (c *Client) uploadMetadataOnly(
 	}
 
 	// Upload .ls file if needed
-	entry := pendingByHash[hash]
-	if entry.lsTask != nil {
-		if err := c.uploadListing(ctx, *entry.lsTask, listing); err != nil {
+	if lsTask != nil {
+		if err := c.uploadListing(ctx, *lsTask, listing); err != nil {
 			return err
 		}
 	}
