@@ -11,11 +11,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// UploadBytesToPresignedURL uploads bytes to a presigned URL.
-func (c *Client) UploadBytesToPresignedURL(ctx context.Context, presignedURL string, data []byte) error {
-	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, data, nil)
-}
-
 // UploadBytesToPresignedURLWithHeaders uploads bytes to a presigned URL with optional custom headers.
 func (c *Client) UploadBytesToPresignedURLWithHeaders(ctx context.Context, presignedURL string, data []byte, headers map[string]string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, bytes.NewReader(data))
