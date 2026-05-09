@@ -23,26 +23,13 @@ func (c *Client) uploadNARWithListing(
 	}
 
 	// Upload listing immediately in same goroutine
-	if lsTask != nil {
-		if err := c.uploadListing(ctx, lsTask.obj.PresignedURL, lsTask.key, listing); err != nil {
-			return err
+	if lsTask != nil && listing != nil {
+		if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
+			return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
 		}
+
+		slog.Debug("Uploaded listing", "key", lsTask.key)
 	}
-
-	return nil
-}
-
-// uploadListing uploads a listing file.
-func (c *Client) uploadListing(ctx context.Context, presignedURL, key string, listing *NarListing) error {
-	if listing == nil {
-		return fmt.Errorf("listing not generated for %s", key)
-	}
-
-	if err := c.UploadListingToPresignedURL(ctx, presignedURL, listing); err != nil {
-		return fmt.Errorf("uploading listing %s: %w", key, err)
-	}
-
-	slog.Debug("Uploaded listing", "key", key)
 
 	return nil
 }

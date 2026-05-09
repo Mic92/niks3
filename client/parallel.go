@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -195,10 +196,12 @@ func (c *Client) uploadMetadataOnly(
 	}
 
 	// Upload .ls file if needed
-	if lsTask != nil {
-		if err := c.uploadListing(ctx, lsTask.obj.PresignedURL, lsTask.key, listing); err != nil {
-			return err
+	if lsTask != nil && listing != nil {
+		if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
+			return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
 		}
+
+		slog.Debug("Uploaded listing", "key", lsTask.key)
 	}
 
 	return nil
