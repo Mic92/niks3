@@ -219,28 +219,17 @@ func (c *Client) uploadMetadataOnly(
 		return fmt.Errorf("generating listing for %s: %w", pathInfo.Path, err)
 	}
 
-	// Store listing in compressedInfo (protected by mutex)
-	compressedInfoMu.Lock()
-
-	compressedInfo[hash] = &CompressedFileInfo{
-		Listing: listing,
-	}
-
-	compressedInfoMu.Unlock()
-
 	// Upload .ls file if needed
 	entry := pendingByHash[hash]
 	if entry.lsTask != nil {
-		if err := c.uploadListing(ctx, *entry.lsTask, &CompressedFileInfo{Listing: listing}); err != nil {
+		if err := c.uploadListing(ctx, *entry.lsTask, listing); err != nil {
 			return err
 		}
 	}
 
-	// Release the listing now that the .ls file is in S3 (see uploadNARWithListing).
+	// Mark hash as uploaded for phase 2 narinfo metadata collection
 	compressedInfoMu.Lock()
-	if existing := compressedInfo[hash]; existing != nil {
-		existing.Listing = nil
-	}
+	compressedInfo[hash] = &CompressedFileInfo{}
 	compressedInfoMu.Unlock()
 
 	return nil

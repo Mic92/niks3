@@ -23,44 +23,36 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("missing PathInfo for hash %s", task.hash)
 	}
 
-	info, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.task.obj, task.task.key)
+	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.task.obj, task.task.key)
 	if err != nil {
 		return fmt.Errorf("uploading NAR %s: %w", task.task.key, err)
 	}
 
-	// Store compressed info for narinfo phase (protected by mutex for concurrent writes)
-	compressedInfoMu.Lock()
-
-	compressedInfo[task.hash] = info
-
-	compressedInfoMu.Unlock()
-
-	// Upload listing immediately in same goroutine
+	// Upload listing immediately in same goroutine (before storing in compressedInfo
+	// so the listing tree is never retained in the shared map)
 	entry := pendingByHash[task.hash]
 	if entry.lsTask != nil {
-		if err := c.uploadListing(ctx, *entry.lsTask, info); err != nil {
+		if err := c.uploadListing(ctx, *entry.lsTask, listing); err != nil {
 			return err
 		}
 	}
 
-	// Release the listing now that the .ls file is in S3. Phase 2 only uses
-	// compressedInfo for presence checks, so keeping the recursive directory
-	// tree pinned for the rest of phase 1 wastes O(closure-size) memory per path.
+	// Mark hash as uploaded for phase 2 narinfo metadata collection
 	compressedInfoMu.Lock()
-	info.Listing = nil
+	compressedInfo[task.hash] = &CompressedFileInfo{}
 	compressedInfoMu.Unlock()
 
 	return nil
 }
 
 // uploadListing uploads a listing file.
-func (c *Client) uploadListing(ctx context.Context, task uploadTask, info *CompressedFileInfo) error {
-	if info.Listing == nil {
+func (c *Client) uploadListing(ctx context.Context, task uploadTask, listing *NarListing) error {
+	if listing == nil {
 		return fmt.Errorf("listing not found for hash %s", task.hash)
 	}
 
 	// Upload listing with brotli compression
-	if err := c.UploadListingToPresignedURL(ctx, task.obj.PresignedURL, info.Listing); err != nil {
+	if err := c.UploadListingToPresignedURL(ctx, task.obj.PresignedURL, listing); err != nil {
 		return fmt.Errorf("uploading listing %s: %w", task.key, err)
 	}
 
