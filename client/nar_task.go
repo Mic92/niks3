@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 )
 
 // uploadNARWithListing uploads a NAR and its listing.
@@ -14,8 +13,6 @@ func (c *Client) uploadNARWithListing(
 	task uploadTask,
 	pendingByHash pendingObjectsByHash,
 	pathInfoByHash map[string]*PathInfo,
-	compressedInfo map[string]struct{},
-	compressedInfoMu *sync.Mutex,
 ) error {
 	// Upload NAR
 	pathInfo, ok := pathInfoByHash[task.hash]
@@ -35,11 +32,6 @@ func (c *Client) uploadNARWithListing(
 			return err
 		}
 	}
-
-	// Mark hash as uploaded for phase 2 narinfo metadata collection
-	compressedInfoMu.Lock()
-	compressedInfo[task.hash] = struct{}{}
-	compressedInfoMu.Unlock()
 
 	return nil
 }

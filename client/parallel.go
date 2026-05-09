@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -90,9 +89,7 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 // then narinfo metadata is collected for server-side signing.
 func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObjectsByHash, logTasks []uploadTask, realisationTasks []uploadTask, uploadCtx *UploadContext) (map[string]NarinfoMetadata, error) {
 	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
-	var compressedInfoMu sync.Mutex
 
-	compressedInfo := make(map[string]struct{})
 
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
@@ -122,12 +119,12 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	for hash, entry := range pendingByHash {
 		if entry.narTask != nil {
 			g.Go(func() error {
-				return c.uploadNARWithListing(ctx, *entry.narTask, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+				return c.uploadNARWithListing(ctx, *entry.narTask, pendingByHash, uploadCtx.PathInfoByHash)
 			})
 		} else if entry.narinfoTask != nil {
 			// Deduplicated NAR - queue metadata-only task
 			g.Go(func() error {
-				return c.uploadMetadataOnly(ctx, hash, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+				return c.uploadMetadataOnly(ctx, hash, pendingByHash, uploadCtx.PathInfoByHash)
 			})
 		}
 	}
@@ -141,8 +138,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	narinfoMetadata := make(map[string]NarinfoMetadata)
 
 	for hash, entry := range pendingByHash {
-		// Only collect metadata if we have compressedInfo (NAR uploaded or metadata-only)
-		if _, ok := compressedInfo[hash]; !ok || entry.narinfoTask == nil {
+		if entry.narinfoTask == nil {
 			continue
 		}
 
@@ -197,8 +193,6 @@ func (c *Client) uploadMetadataOnly(
 	hash string,
 	pendingByHash pendingObjectsByHash,
 	pathInfoByHash map[string]*PathInfo,
-	compressedInfo map[string]struct{},
-	compressedInfoMu *sync.Mutex,
 ) error {
 	// Get path info
 	pathInfo, ok := pathInfoByHash[hash]
@@ -219,11 +213,6 @@ func (c *Client) uploadMetadataOnly(
 			return err
 		}
 	}
-
-	// Mark hash as uploaded for phase 2 narinfo metadata collection
-	compressedInfoMu.Lock()
-	compressedInfo[hash] = struct{}{}
-	compressedInfoMu.Unlock()
 
 	return nil
 }
