@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -66,13 +66,17 @@ func stripCaseHackSuffix(name string) string {
 	return name
 }
 
-func writeUint64(w io.Writer, v uint64) error {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], v)
+// writeUint64 writes a little-endian uint64 using the narWriter's scratch
+// buffer to avoid a heap allocation per call (passing a stack array to an
+// io.Writer interface forces it to escape).
+func (nw *narWriter) writeUint64(v uint64) error {
+	binary.LittleEndian.PutUint64(nw.scratch[:], v)
 
-	if _, err := w.Write(buf[:]); err != nil {
+	if _, err := nw.w.Write(nw.scratch[:]); err != nil {
 		return fmt.Errorf("writing uint64: %w", err)
 	}
+
+	nw.offset += 8
 
 	return nil
 }
@@ -108,8 +112,9 @@ type NarListingEntry struct {
 
 // narWriter wraps an io.Writer and tracks the current offset for NAR serialization.
 type narWriter struct {
-	w      io.Writer
-	offset uint64
+	w       io.Writer
+	offset  uint64
+	scratch [8]byte // reused for uint64 framing writes
 }
 
 func (nw *narWriter) writeStatic(data []byte) error {
@@ -123,11 +128,9 @@ func (nw *narWriter) writeStatic(data []byte) error {
 }
 
 func (nw *narWriter) writeString(s string) error {
-	if err := writeUint64(nw.w, uint64(len(s))); err != nil {
+	if err := nw.writeUint64(uint64(len(s))); err != nil {
 		return err
 	}
-
-	nw.offset += 8
 
 	if _, err := io.WriteString(nw.w, s); err != nil {
 		return fmt.Errorf("writing string content: %w", err)
@@ -149,11 +152,9 @@ func (nw *narWriter) writeString(s string) error {
 }
 
 func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error) {
-	if err := writeUint64(nw.w, size); err != nil {
+	if err := nw.writeUint64(size); err != nil {
 		return 0, fmt.Errorf("writing file size: %w", err)
 	}
-
-	nw.offset += 8
 
 	contentOffset := nw.offset
 
@@ -175,15 +176,28 @@ func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error)
 	}
 	defer copyBufferPool.Put(bufPtr)
 
-	n, err := io.CopyBuffer(nw.w, f, *bufPtr)
-	if err != nil {
-		return 0, fmt.Errorf("copying file %s: %w", path, err)
-	}
+	// We already know the file size from stat, so copy exactly that many
+	// bytes. Plain io.CopyBuffer would issue one extra read syscall just to
+	// observe EOF, which doubles the syscall count for small files.
+	buf := *bufPtr
+	remaining := size
 
-	// n is from io.CopyBuffer which returns int64; size comes from os.FileInfo.Size() which is also int64
-	// The conversion is safe as we're comparing values from the same source
-	if uint64(n) != size { //nolint:gosec // n and size are both from filesystem operations, safe to compare
-		return 0, fmt.Errorf("file size mismatch for %s: expected %d, copied %d", path, size, n)
+	for remaining > 0 {
+		chunk := buf
+		if uint64(len(chunk)) > remaining {
+			chunk = chunk[:remaining]
+		}
+
+		rn, rerr := io.ReadFull(f, chunk)
+		if rerr != nil {
+			return 0, fmt.Errorf("reading file %s: expected %d more bytes: %w", path, remaining, rerr)
+		}
+
+		if _, werr := nw.w.Write(chunk[:rn]); werr != nil {
+			return 0, fmt.Errorf("copying file %s: %w", path, werr)
+		}
+
+		remaining -= uint64(rn) //nolint:gosec // rn is bounded by len(chunk)
 	}
 
 	nw.offset += size
@@ -299,8 +313,8 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 	}
 
 	// Sort entries by name (NAR requirement)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
 	})
 
 	listingEntries := make(map[string]NarListingEntry)
