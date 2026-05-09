@@ -11,10 +11,10 @@ import (
 // Successfully uploaded NARs are stored in compressedInfo for later narinfo uploads.
 func (c *Client) uploadNARWithListing(
 	ctx context.Context,
-	task genericUploadTask,
+	task uploadTask,
 	pendingByHash pendingObjectsByHash,
 	pathInfoByHash map[string]*PathInfo,
-	compressedInfo map[string]*CompressedFileInfo,
+	compressedInfo map[string]struct{},
 	compressedInfoMu *sync.Mutex,
 ) error {
 	// Upload NAR
@@ -23,13 +23,12 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("missing PathInfo for hash %s", task.hash)
 	}
 
-	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.task.obj, task.task.key)
+	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, task.obj, task.key)
 	if err != nil {
-		return fmt.Errorf("uploading NAR %s: %w", task.task.key, err)
+		return fmt.Errorf("uploading NAR %s: %w", task.key, err)
 	}
 
-	// Upload listing immediately in same goroutine (before storing in compressedInfo
-	// so the listing tree is never retained in the shared map)
+	// Upload listing immediately in same goroutine
 	entry := pendingByHash[task.hash]
 	if entry.lsTask != nil {
 		if err := c.uploadListing(ctx, *entry.lsTask, listing); err != nil {
@@ -39,7 +38,7 @@ func (c *Client) uploadNARWithListing(
 
 	// Mark hash as uploaded for phase 2 narinfo metadata collection
 	compressedInfoMu.Lock()
-	compressedInfo[task.hash] = &CompressedFileInfo{}
+	compressedInfo[task.hash] = struct{}{}
 	compressedInfoMu.Unlock()
 
 	return nil

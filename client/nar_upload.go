@@ -27,10 +27,6 @@ var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should b
 	},
 }
 
-// CompressedFileInfo tracks that a NAR was successfully compressed and uploaded.
-// Used as a presence sentinel in phase 2 for narinfo metadata collection.
-type CompressedFileInfo struct{}
-
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
 // It also generates a directory listing during serialization.
 func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, pendingObj PendingObject, objectKey string) (*NarListing, error) {
@@ -95,7 +91,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 	switch {
 	case pendingObj.MultipartInfo != nil:
 		// Upload using multipart
-		_, err = c.uploadMultipart(ctx, pr, pendingObj.MultipartInfo, objectKey)
+		err = c.uploadMultipart(ctx, pr, pendingObj.MultipartInfo, objectKey)
 	case pendingObj.PresignedURL != "":
 		// Single-part upload (shouldn't happen for NARs, but just in case)
 		return nil, errors.New("NAR files should use multipart upload")

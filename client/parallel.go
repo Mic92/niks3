@@ -15,13 +15,6 @@ type uploadTask struct {
 	hash string
 }
 
-// genericUploadTask represents any upload operation in the unified worker pool.
-type genericUploadTask struct {
-	taskType string // "nar", "listing", "narinfo", "log", "realisation"
-	task     uploadTask
-	hash     string // For looking up related tasks
-}
-
 // pendingObjectsByHash groups related objects by their store path hash.
 type pendingObjectsByHash map[string]struct {
 	narTask     *uploadTask
@@ -99,7 +92,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
 	var compressedInfoMu sync.Mutex
 
-	compressedInfo := make(map[string]*CompressedFileInfo)
+	compressedInfo := make(map[string]struct{})
 
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
@@ -129,7 +122,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	for hash, entry := range pendingByHash {
 		if entry.narTask != nil {
 			g.Go(func() error {
-				return c.uploadNARWithListing(ctx, genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+				return c.uploadNARWithListing(ctx, *entry.narTask, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
 			})
 		} else if entry.narinfoTask != nil {
 			// Deduplicated NAR - queue metadata-only task
@@ -204,7 +197,7 @@ func (c *Client) uploadMetadataOnly(
 	hash string,
 	pendingByHash pendingObjectsByHash,
 	pathInfoByHash map[string]*PathInfo,
-	compressedInfo map[string]*CompressedFileInfo,
+	compressedInfo map[string]struct{},
 	compressedInfoMu *sync.Mutex,
 ) error {
 	// Get path info
@@ -229,7 +222,7 @@ func (c *Client) uploadMetadataOnly(
 
 	// Mark hash as uploaded for phase 2 narinfo metadata collection
 	compressedInfoMu.Lock()
-	compressedInfo[hash] = &CompressedFileInfo{}
+	compressedInfo[hash] = struct{}{}
 	compressedInfoMu.Unlock()
 
 	return nil

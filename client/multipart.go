@@ -173,7 +173,7 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 }
 
 // uploadMultipart uploads a stream in parts using presigned URLs (sequential).
-func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) (*CompressedFileInfo, error) {
+func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) error {
 	slog.Debug("Uploading", "object_key", objectKey)
 
 	var completedParts []CompletedPart
@@ -181,7 +181,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	// Get buffer from pool
 	bufferPtr, ok := uploadBufferPool.Get().(*[]byte)
 	if !ok {
-		return nil, errors.New("failed to get buffer from pool")
+		return errors.New("failed to get buffer from pool")
 	}
 
 	defer uploadBufferPool.Put(bufferPtr)
@@ -205,7 +205,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 			newPartURLs, err := c.RequestMoreParts(ctx, objectKey, multipartInfo.UploadID, partNumber, additionalParts)
 			if err != nil {
-				return nil, fmt.Errorf("requesting more parts at part %d: %w", partNumber, err)
+				return fmt.Errorf("requesting more parts at part %d: %w", partNumber, err)
 			}
 
 			partURLs = append(partURLs, newPartURLs...)
@@ -222,7 +222,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 		}
 
 		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf("reading part %d: %w", partNumber, readErr)
+			return fmt.Errorf("reading part %d: %w", partNumber, readErr)
 		}
 
 		partData := buffer[:n]
@@ -232,7 +232,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 		etag, err := c.uploadPart(ctx, partURL, partData)
 		if err != nil {
-			return nil, fmt.Errorf("uploading part %d: %w", partNumber, err)
+			return fmt.Errorf("uploading part %d: %w", partNumber, err)
 		}
 
 		completedParts = append(completedParts, CompletedPart{
@@ -251,18 +251,18 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	}
 
 	if !reachedEOF {
-		return nil, errors.New("unexpected end of upload loop without reaching EOF")
+		return errors.New("unexpected end of upload loop without reaching EOF")
 	}
 
 	// Complete the multipart upload
 	err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, completedParts)
 	if err != nil {
-		return nil, fmt.Errorf("completing multipart upload: %w", err)
+		return fmt.Errorf("completing multipart upload: %w", err)
 	}
 
 	slog.Debug("Completed upload", "parts", len(completedParts))
 
-	return &CompressedFileInfo{}, nil
+	return nil
 }
 
 // uploadPart uploads a single part and returns the ETag.
