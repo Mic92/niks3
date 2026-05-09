@@ -10,9 +10,8 @@ import (
 )
 
 type uploadTask struct {
-	key  string
-	obj  PendingObject
-	hash string
+	key string
+	obj PendingObject
 }
 
 // pendingObjectsByHash groups related objects by their store path hash.
@@ -51,7 +50,7 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 		case "narinfo":
 			hash := strings.TrimSuffix(key, ".narinfo")
 			entry := pendingByHash[hash]
-			entry.narinfoTask = &uploadTask{key: key, obj: obj, hash: hash}
+			entry.narinfoTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[hash] = entry
 
 		case "nar":
@@ -61,20 +60,20 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 			}
 
 			entry := pendingByHash[storePathHash]
-			entry.narTask = &uploadTask{key: key, obj: obj, hash: storePathHash}
+			entry.narTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[storePathHash] = entry
 
 		case "listing":
 			hash := strings.TrimSuffix(key, ".ls")
 			entry := pendingByHash[hash]
-			entry.lsTask = &uploadTask{key: key, obj: obj, hash: hash}
+			entry.lsTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[hash] = entry
 
 		case "build_log":
-			logTasks = append(logTasks, uploadTask{key: key, obj: obj, hash: ""})
+			logTasks = append(logTasks, uploadTask{key: key, obj: obj})
 
 		case "realisation":
-			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj, hash: ""})
+			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj})
 
 		default:
 			return nil, fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
