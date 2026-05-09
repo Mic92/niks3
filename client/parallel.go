@@ -2,24 +2,17 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
-	"sync"
 
 	"golang.org/x/sync/errgroup"
 )
 
 type uploadTask struct {
-	key  string
-	obj  PendingObject
-	hash string
-}
-
-// genericUploadTask represents any upload operation in the unified worker pool.
-type genericUploadTask struct {
-	taskType string // "nar", "listing", "narinfo", "log", "realisation"
-	task     uploadTask
-	hash     string // For looking up related tasks
+	key string
+	obj PendingObject
 }
 
 // pendingObjectsByHash groups related objects by their store path hash.
@@ -58,7 +51,7 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 		case "narinfo":
 			hash := strings.TrimSuffix(key, ".narinfo")
 			entry := pendingByHash[hash]
-			entry.narinfoTask = &uploadTask{key: key, obj: obj, hash: hash}
+			entry.narinfoTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[hash] = entry
 
 		case "nar":
@@ -68,38 +61,25 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 			}
 
 			entry := pendingByHash[storePathHash]
-			entry.narTask = &uploadTask{key: key, obj: obj, hash: storePathHash}
+			entry.narTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[storePathHash] = entry
 
 		case "listing":
 			hash := strings.TrimSuffix(key, ".ls")
 			entry := pendingByHash[hash]
-			entry.lsTask = &uploadTask{key: key, obj: obj, hash: hash}
+			entry.lsTask = &uploadTask{key: key, obj: obj}
 			pendingByHash[hash] = entry
 
 		case "build_log":
-			logTasks = append(logTasks, uploadTask{key: key, obj: obj, hash: ""})
+			logTasks = append(logTasks, uploadTask{key: key, obj: obj})
 
 		case "realisation":
-			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj, hash: ""})
+			realisationTasks = append(realisationTasks, uploadTask{key: key, obj: obj})
 
 		default:
 			return nil, fmt.Errorf("unknown object type %q for key: %s", obj.Type, key)
 		}
 	}
-
-	// Upload all objects with unified worker pool and collect narinfo metadata
-	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, uploadCtx)
-}
-
-// uploadAllObjects uploads all objects using a unified worker pool.
-// Logs and realisations upload independently, NARs upload with their listings in the same goroutine,
-// then narinfo metadata is collected for server-side signing.
-func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObjectsByHash, logTasks []uploadTask, realisationTasks []uploadTask, uploadCtx *UploadContext) (map[string]NarinfoMetadata, error) {
-	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
-	var compressedInfoMu sync.Mutex
-
-	compressedInfo := make(map[string]*CompressedFileInfo)
 
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
@@ -127,14 +107,16 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 
 	// Queue all NAR tasks and metadata-only tasks
 	for hash, entry := range pendingByHash {
+		pathInfo := uploadCtx.PathInfoByHash[hash]
+
 		if entry.narTask != nil {
 			g.Go(func() error {
-				return c.uploadNARWithListing(ctx, genericUploadTask{taskType: "nar", task: *entry.narTask, hash: hash}, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+				return c.uploadNARWithListing(ctx, *entry.narTask, entry.lsTask, pathInfo)
 			})
 		} else if entry.narinfoTask != nil {
 			// Deduplicated NAR - queue metadata-only task
 			g.Go(func() error {
-				return c.uploadMetadataOnly(ctx, hash, pendingByHash, uploadCtx.PathInfoByHash, compressedInfo, &compressedInfoMu)
+				return c.uploadMetadataOnly(ctx, entry.lsTask, pathInfo)
 			})
 		}
 	}
@@ -148,8 +130,7 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 	narinfoMetadata := make(map[string]NarinfoMetadata)
 
 	for hash, entry := range pendingByHash {
-		// Only collect metadata if we have compressedInfo (NAR uploaded or metadata-only)
-		if _, ok := compressedInfo[hash]; !ok || entry.narinfoTask == nil {
+		if entry.narinfoTask == nil {
 			continue
 		}
 
@@ -201,16 +182,11 @@ func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObje
 // It generates the listing and uploads .ls file without uploading the NAR.
 func (c *Client) uploadMetadataOnly(
 	ctx context.Context,
-	hash string,
-	pendingByHash pendingObjectsByHash,
-	pathInfoByHash map[string]*PathInfo,
-	compressedInfo map[string]*CompressedFileInfo,
-	compressedInfoMu *sync.Mutex,
+	lsTask *uploadTask,
+	pathInfo *PathInfo,
 ) error {
-	// Get path info
-	pathInfo, ok := pathInfoByHash[hash]
-	if !ok || pathInfo == nil {
-		return fmt.Errorf("missing PathInfo for hash %s", hash)
+	if pathInfo == nil {
+		return errors.New("missing PathInfo for metadata-only upload")
 	}
 
 	// Generate listing from store path (fast directory walk, no NAR serialization)
@@ -219,21 +195,13 @@ func (c *Client) uploadMetadataOnly(
 		return fmt.Errorf("generating listing for %s: %w", pathInfo.Path, err)
 	}
 
-	// Store listing in compressedInfo (protected by mutex)
-	compressedInfoMu.Lock()
-
-	compressedInfo[hash] = &CompressedFileInfo{
-		Listing: listing,
-	}
-
-	compressedInfoMu.Unlock()
-
 	// Upload .ls file if needed
-	entry := pendingByHash[hash]
-	if entry.lsTask != nil {
-		if err := c.uploadListing(ctx, *entry.lsTask, &CompressedFileInfo{Listing: listing}); err != nil {
-			return err
+	if lsTask != nil && listing != nil {
+		if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
+			return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
 		}
+
+		slog.Debug("Uploaded listing", "key", lsTask.key)
 	}
 
 	return nil

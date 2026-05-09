@@ -27,14 +27,9 @@ var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should b
 	},
 }
 
-// CompressedFileInfo contains information about a compressed file.
-type CompressedFileInfo struct {
-	Listing *NarListing // Directory listing (if generated)
-}
-
 // CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
 // It also generates a directory listing during serialization.
-func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, pendingObj PendingObject, objectKey string) (*CompressedFileInfo, error) {
+func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, multipartInfo *MultipartUploadInfo, objectKey string) (*NarListing, error) {
 	name := filepath.Base(storePath)
 	slog.Info(fmt.Sprintf("Uploading %s (%s)", name, formatBytes(narSize)))
 
@@ -91,21 +86,11 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 		listingChan <- listing
 	}()
 
-	var info *CompressedFileInfo
-
-	var err error
-
-	switch {
-	case pendingObj.MultipartInfo != nil:
-		// Upload using multipart
-		info, err = c.uploadMultipart(ctx, pr, pendingObj.MultipartInfo, objectKey)
-	case pendingObj.PresignedURL != "":
-		// Single-part upload (shouldn't happen for NARs, but just in case)
-		return nil, errors.New("NAR files should use multipart upload")
-	default:
-		return nil, errors.New("no upload method provided")
+	if multipartInfo == nil {
+		return nil, errors.New("NAR files require multipart upload info")
 	}
 
+	err := c.uploadMultipart(ctx, pr, multipartInfo, objectKey)
 	// If upload failed, signal compressor to stop and wait for it to exit
 	if err != nil {
 		_ = pw.CloseWithError(err)
@@ -120,15 +105,9 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 		return nil, compressErr
 	}
 
-	// Get the listing
 	listing := <-listingChan
-
-	// Add listing to info
-	if info != nil {
-		info.Listing = listing
-	}
 
 	slog.Debug("Uploaded NAR", "object_key", objectKey)
 
-	return info, nil
+	return listing, nil
 }
