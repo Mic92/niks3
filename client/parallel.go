@@ -81,17 +81,6 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 		}
 	}
 
-	// Upload all objects with unified worker pool and collect narinfo metadata
-	return c.uploadAllObjects(ctx, pendingByHash, logTasks, realisationTasks, uploadCtx)
-}
-
-// uploadAllObjects uploads all objects using a unified worker pool.
-// Logs and realisations upload independently, NARs upload with their listings in the same goroutine,
-// then narinfo metadata is collected for server-side signing.
-func (c *Client) uploadAllObjects(ctx context.Context, pendingByHash pendingObjectsByHash, logTasks []uploadTask, realisationTasks []uploadTask, uploadCtx *UploadContext) (map[string]NarinfoMetadata, error) {
-	// Shared state for compressed NAR info (protected by mutex for concurrent writes in phase 1)
-
-
 	// Determine number of workers
 	numWorkers := c.MaxConcurrentNARUploads
 	if numWorkers <= 0 {
@@ -208,7 +197,7 @@ func (c *Client) uploadMetadataOnly(
 
 	// Upload .ls file if needed
 	if lsTask != nil {
-		if err := c.uploadListing(ctx, *lsTask, listing); err != nil {
+		if err := c.uploadListing(ctx, lsTask.obj.PresignedURL, lsTask.key, listing); err != nil {
 			return err
 		}
 	}

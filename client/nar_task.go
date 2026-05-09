@@ -7,7 +7,6 @@ import (
 )
 
 // uploadNARWithListing uploads a NAR and its listing.
-// Successfully uploaded NARs are stored in compressedInfo for later narinfo uploads.
 func (c *Client) uploadNARWithListing(
 	ctx context.Context,
 	narTask uploadTask,
@@ -25,7 +24,7 @@ func (c *Client) uploadNARWithListing(
 
 	// Upload listing immediately in same goroutine
 	if lsTask != nil {
-		if err := c.uploadListing(ctx, *lsTask, listing); err != nil {
+		if err := c.uploadListing(ctx, lsTask.obj.PresignedURL, lsTask.key, listing); err != nil {
 			return err
 		}
 	}
@@ -34,17 +33,16 @@ func (c *Client) uploadNARWithListing(
 }
 
 // uploadListing uploads a listing file.
-func (c *Client) uploadListing(ctx context.Context, task uploadTask, listing *NarListing) error {
+func (c *Client) uploadListing(ctx context.Context, presignedURL, key string, listing *NarListing) error {
 	if listing == nil {
-		return fmt.Errorf("listing not found for hash %s", task.hash)
+		return fmt.Errorf("listing not generated for %s", key)
 	}
 
-	// Upload listing with brotli compression
-	if err := c.UploadListingToPresignedURL(ctx, task.obj.PresignedURL, listing); err != nil {
-		return fmt.Errorf("uploading listing %s: %w", task.key, err)
+	if err := c.UploadListingToPresignedURL(ctx, presignedURL, listing); err != nil {
+		return fmt.Errorf("uploading listing %s: %w", key, err)
 	}
 
-	slog.Debug("Uploaded listing", "key", task.key)
+	slog.Debug("Uploaded listing", "key", key)
 
 	return nil
 }
