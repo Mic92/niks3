@@ -320,6 +320,19 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Verify the upload is registered before touching S3, so clients cannot
+	// finalize multipart uploads outside the pending-closure book-keeping.
+	queries := pg.New(s.Pool)
+	if _, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
+		UploadID:  req.UploadID,
+		ObjectKey: req.ObjectKey,
+	}); err != nil {
+		slog.Error("Multipart upload not found", "error", err, "upload_id", req.UploadID, "object_key", req.ObjectKey)
+		http.Error(w, "multipart upload not found", http.StatusNotFound)
+
+		return
+	}
+
 	// Convert to Minio format
 	completeParts := make([]minio.CompletePart, len(req.Parts))
 	for i, part := range req.Parts {
@@ -360,7 +373,6 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	s.S3RateLimiter.RecordSuccess()
 
 	// Delete the multipart upload tracking row
-	queries := pg.New(s.Pool)
 	if err := queries.DeleteMultipartUpload(r.Context(), req.UploadID); err != nil {
 		// Log the error but don't fail the request - the upload already succeeded in S3
 		slog.Error("Failed to delete multipart upload tracking row", "error", err, "upload_id", req.UploadID)
