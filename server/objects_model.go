@@ -80,7 +80,13 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		}
 
 		for _, obj := range objs {
-			objectCh <- minio.ObjectInfo{Key: obj}
+			select {
+			case objectCh <- minio.ObjectInfo{Key: obj}:
+			case <-ctx.Done():
+				*queryErr = ctx.Err()
+
+				return
+			}
 		}
 	}
 }
