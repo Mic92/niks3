@@ -171,7 +171,12 @@ WHERE first_deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
 LIMIT sqlc.arg(limit_count);
 
--- Pin queries
+-- name: GetClosureForShare :one
+-- Lock the closure row so concurrent GC cannot delete it between the
+-- existence check and the pin upsert.
+SELECT updated_at FROM closures
+WHERE key = $1 LIMIT 1
+FOR SHARE;
 
 -- name: UpsertPin :exec
 -- Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.

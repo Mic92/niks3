@@ -71,12 +71,42 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queries := pg.New(s.Pool)
+	// Run the existence check and upsert in one transaction with the closure
+	// row locked FOR SHARE, so concurrent GC cannot delete the closure in
+	// between (which would surface as an FK violation / 500).
+	tx, err := s.Pool.Begin(r.Context())
+	if err != nil {
+		slog.Error("Failed to begin transaction", "error", err)
+		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
 
-	_, err = queries.GetClosure(r.Context(), narinfoKey)
+		return
+	}
+
+	committed := false
+
+	defer rollbackOnError(r.Context(), &tx, &err, &committed)
+
+	queries := pg.New(tx)
+
+	_, err = queries.GetClosureForShare(r.Context(), narinfoKey)
 	if err != nil {
 		slog.Error("Failed to get closure for pin", "narinfo_key", narinfoKey, "error", err)
 		http.Error(w, "closure not found: store path must be pushed before pinning", http.StatusNotFound)
+
+		return
+	}
+
+	// Write to S3 before committing so the pin is durable even if the DB
+	// write fails. If S3 succeeds but the commit fails, the next create
+	// overwrites the S3 object anyway, and the orphan S3 object is harmless.
+	pinKey := "pins/" + name
+
+	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
+		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+	if err != nil {
+		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
+		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
@@ -93,18 +123,14 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write the pin to S3 for easy retrieval via curl
-	pinKey := "pins/" + name
-
-	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
-		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
-	if err != nil {
-		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
-		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
+	if err = tx.Commit(r.Context()); err != nil {
+		slog.Error("Failed to commit pin transaction", "name", name, "error", err)
+		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
+
+	committed = true
 
 	slog.Info("Created/updated pin", "name", name, "store_path", req.StorePath, "narinfo_key", narinfoKey)
 

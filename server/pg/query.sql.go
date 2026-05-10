@@ -126,6 +126,21 @@ func (q *Queries) GetClosure(ctx context.Context, key string) (pgtype.Timestamp,
 	return updated_at, err
 }
 
+const getClosureForShare = `-- name: GetClosureForShare :one
+SELECT updated_at FROM closures
+WHERE key = $1 LIMIT 1
+FOR SHARE
+`
+
+// Lock the closure row so concurrent GC cannot delete it between the
+// existence check and the pin upsert.
+func (q *Queries) GetClosureForShare(ctx context.Context, key string) (pgtype.Timestamp, error) {
+	row := q.db.QueryRow(ctx, getClosureForShare, key)
+	var updated_at pgtype.Timestamp
+	err := row.Scan(&updated_at)
+	return updated_at, err
+}
+
 const getClosureObjects = `-- name: GetClosureObjects :many
 WITH RECURSIVE closure_reach AS (
     -- Start with the provided closure key
@@ -461,7 +476,6 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 }
 
 const upsertPin = `-- name: UpsertPin :exec
-
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
 VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
 ON CONFLICT (name) DO UPDATE SET
@@ -476,7 +490,6 @@ type UpsertPinParams struct {
 	StorePath  string `json:"store_path"`
 }
 
-// Pin queries
 // Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
 func (q *Queries) UpsertPin(ctx context.Context, arg UpsertPinParams) error {
 	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey, arg.StorePath)
