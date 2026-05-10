@@ -67,12 +67,7 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Concurrent upload limit (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify S3 objects before skipping")
-	fmt.Fprintln(os.Stderr, "  --client-cert string")
-	fmt.Fprintln(os.Stderr, "        Client certificate file for mTLS authentication")
-	fmt.Fprintln(os.Stderr, "  --client-key string")
-	fmt.Fprintln(os.Stderr, "        Client private key file for mTLS authentication")
-	fmt.Fprintln(os.Stderr, "  --ca-cert string")
-	fmt.Fprintln(os.Stderr, "        CA certificate file for server verification (optional)")
+	fmt.Fprintln(os.Stderr, cmdutil.TLSHelp)
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -139,26 +134,6 @@ func runSend() error {
 	return nil
 }
 
-// configureClientTLS sets up mTLS on the client when a certificate/key pair is
-// supplied. It is a no-op when neither is set and errors when only one is set.
-func configureClientTLS(c *client.Client, certFile, keyFile, caFile string) error {
-	if certFile == "" && keyFile == "" {
-		return nil
-	}
-
-	if certFile == "" || keyFile == "" {
-		return errors.New("both --client-cert and --client-key must be provided for mTLS")
-	}
-
-	slog.Info("Configuring client TLS", "cert", certFile, "key", keyFile, "ca", caFile)
-
-	if err := c.SetClientTLS(certFile, keyFile, caFile); err != nil {
-		return fmt.Errorf("setting up client TLS: %w", err)
-	}
-
-	return nil
-}
-
 func runServe() error {
 	defaultAuthToken, err := cmdutil.GetAuthToken()
 	if err != nil {
@@ -174,9 +149,7 @@ func runServe() error {
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
 	maxConcurrent := fs.Int("max-concurrent-uploads", 30, "Concurrent upload limit")
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
-	clientCert := fs.String("client-cert", "", "Client certificate file for mTLS")
-	clientKey := fs.String("client-key", "", "Client private key file for mTLS")
-	caCert := fs.String("ca-cert", "", "CA certificate file for server verification (optional)")
+	tf := cmdutil.AddTLSFlags(fs)
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -242,7 +215,7 @@ func runServe() error {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
-	if err := configureClientTLS(c, *clientCert, *clientKey, *caCert); err != nil {
+	if err := tf.Configure(c); err != nil {
 		return err
 	}
 

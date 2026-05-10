@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Mic92/niks3/client"
 )
 
 // SetupLogger configures the global slog logger with the specified level.
@@ -126,3 +128,49 @@ const AuthTokenHelp = `  --auth-token string
 //nolint:gosec // G101: help text, not credentials
 const AuthTokenPathHelp = `  --auth-token-path string
         Path to file containing the auth token (preferred over --auth-token)`
+
+const TLSHelp = `  --client-cert string
+        Client certificate file for mTLS authentication
+  --client-key string
+        Client private key file for mTLS authentication
+  --ca-cert string
+        CA certificate file for server verification (optional)`
+
+// TLSFlags holds pointers to the mTLS-related flags shared across subcommands.
+type TLSFlags struct {
+	ClientCert *string
+	ClientKey  *string
+	CACert     *string
+}
+
+// AddTLSFlags registers --client-cert, --client-key, and --ca-cert on the
+// given FlagSet and returns pointers to them.
+func AddTLSFlags(fs *flag.FlagSet) TLSFlags {
+	return TLSFlags{
+		ClientCert: fs.String("client-cert", "", "Client certificate file for mTLS"),
+		ClientKey:  fs.String("client-key", "", "Client private key file for mTLS"),
+		CACert:     fs.String("ca-cert", "", "CA certificate file for server verification (optional)"),
+	}
+}
+
+// Configure sets up mTLS on the client when a certificate/key pair is
+// supplied. It is a no-op when neither is set and errors when only one is set.
+func (tf TLSFlags) Configure(c *client.Client) error {
+	certFile, keyFile, caFile := *tf.ClientCert, *tf.ClientKey, *tf.CACert
+
+	if certFile == "" && keyFile == "" {
+		return nil
+	}
+
+	if certFile == "" || keyFile == "" {
+		return errors.New("both --client-cert and --client-key must be provided for mTLS")
+	}
+
+	slog.Info("Configuring client TLS", "cert", certFile, "key", keyFile, "ca", caFile)
+
+	if err := c.SetClientTLS(certFile, keyFile, caFile); err != nil {
+		return fmt.Errorf("setting up client TLS: %w", err)
+	}
+
+	return nil
+}
