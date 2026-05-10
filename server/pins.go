@@ -83,20 +83,9 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upsert the pin in the database
-	err = queries.UpsertPin(r.Context(), pg.UpsertPinParams{
-		Name:       name,
-		NarinfoKey: narinfoKey,
-		StorePath:  req.StorePath,
-	})
-	if err != nil {
-		slog.Error("Failed to upsert pin", "name", name, "narinfo_key", narinfoKey, "error", err)
-		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
-
-	// Write the pin to S3 for easy retrieval via curl
+	// Write to S3 first so the pin is durable even if the DB write fails.
+	// If S3 succeeds but DB fails, the next create overwrites the S3 object
+	// anyway, and the orphan S3 object is harmless.
 	pinKey := "pins/" + name
 
 	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
@@ -105,6 +94,19 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
 		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// Upsert the pin in the database (protects closure from GC)
+	err = queries.UpsertPin(r.Context(), pg.UpsertPinParams{
+		Name:       name,
+		NarinfoKey: narinfoKey,
+		StorePath:  req.StorePath,
+	})
+	if err != nil {
+		slog.Error("Failed to upsert pin", "name", name, "narinfo_key", narinfoKey, "error", err)
+		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
