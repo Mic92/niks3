@@ -15,7 +15,11 @@ import (
 // is set, the server requests and verifies client certs against it (native
 // mTLS).
 func serverTLSConfig(clientCA string) (*tls.Config, error) {
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// ListenAndServeTLS only auto-enables HTTP/2 when TLSConfig is nil.
+		NextProtos: []string{"h2", "http/1.1"},
+	}
 
 	if clientCA == "" {
 		return cfg, nil
@@ -45,11 +49,15 @@ func serverTLSConfig(clientCA string) (*tls.Config, error) {
 // substituters present no credentials and the cache contents are
 // integrity-signed.
 func (s *Service) ReadAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	if len(s.MTLSBoundSubjectsRead) == 0 {
-		return next
-	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Checked per-request, not at registration: the bound subject list
+		// may not be set yet when the mux is built (e.g. in tests).
+		if len(s.MTLSBoundSubjectsRead) == 0 {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
 		if !s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
