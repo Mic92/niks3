@@ -85,7 +85,15 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	objectsMap := make(map[string]objectWithRefs)
+
 	for _, object := range req.Objects {
+		// Security gate: must run before any DB or S3 work.
+		if !IsValidUploadKey(object.Key, object.Type) {
+			http.Error(w, fmt.Sprintf("invalid object key %q for type %q", object.Key, object.Type), http.StatusBadRequest)
+
+			return
+		}
+
 		objectsMap[object.Key] = object
 	}
 
@@ -153,6 +161,13 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 
 	if req.ObjectKey == "" {
 		http.Error(w, "missing object_key", http.StatusBadRequest)
+
+		return
+	}
+
+	// Multipart uploads are only ever created for NAR objects.
+	if !IsValidUploadKey(req.ObjectKey, "nar") {
+		http.Error(w, fmt.Sprintf("invalid object key %q", req.ObjectKey), http.StatusBadRequest)
 
 		return
 	}
@@ -255,6 +270,13 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 
 	if req.ObjectKey == "" {
 		http.Error(w, "missing object_key", http.StatusBadRequest)
+
+		return
+	}
+
+	// Multipart uploads are only ever created for NAR objects.
+	if !IsValidUploadKey(req.ObjectKey, "nar") {
+		http.Error(w, fmt.Sprintf("invalid object key %q", req.ObjectKey), http.StatusBadRequest)
 
 		return
 	}

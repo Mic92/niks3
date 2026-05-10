@@ -45,7 +45,7 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 
 	closureHash := "00000000000000000000000000000000"
 	closureKey := closureHash + ".narinfo"
-	narKey := "nar/" + closureHash + ".nar.zst"
+	narKey := narKeyFor(closureHash)
 	objects := []map[string]any{
 		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
 		{"key": narKey, "type": "nar", "refs": []string{}},
@@ -207,7 +207,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	checkBareClosure := checkStatusCode(http.StatusBadRequest)
 	closureHash := "ffffffffffffffffffffffffffffffff"
 	narinfoKey := closureHash + ".narinfo"
-	narKey := "nar/" + closureHash + ".nar.zst"
+	narKey := narKeyFor(closureHash)
 
 	bodyBareClosure, err := json.Marshal(map[string]any{
 		"closure": closureHash,
@@ -227,8 +227,8 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	})
 
 	closureKey := "00000000000000000000000000000000"
-	firstObject := closureKey + ".narinfo"           // This should be the narinfo file
-	secondObject := "nar/" + closureKey + ".nar.zst" // This should be the NAR file
+	firstObject := closureKey + ".narinfo" // This should be the narinfo file
+	secondObject := narKeyFor(closureKey)  // This should be the NAR file
 	objects := []map[string]any{
 		{"key": firstObject, "type": "narinfo", "refs": []string{secondObject}}, // narinfo references the NAR file
 		{"key": secondObject, "type": "nar", "refs": []string{}},                // NAR file has no references
@@ -268,7 +268,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 			// Narinfo is handled server-side - collect metadata instead
 			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureKey + "-test-package",
-				"url":         "nar/" + closureKey + ".nar.zst",
+				"url":         narKeyFor(closureKey),
 				"compression": "zstd",
 				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
 				"nar_size":    1000,
@@ -387,9 +387,9 @@ func TestService_verifyS3Integrity(t *testing.T) {
 	defer service.Close()
 
 	// Step 1: Upload a closure
-	closureKey := "deadbeefdeadbeefdeadbeefdeadbeef"
+	closureKey := "dadb44fdadb44fdadb44fdadb44f0000"
 	narinfoKey := closureKey + ".narinfo"
-	narKey := "nar/" + closureKey + ".nar.zst"
+	narKey := narKeyFor(closureKey)
 	objects := []map[string]any{
 		{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
 		{"key": narKey, "type": "nar", "refs": []string{}},

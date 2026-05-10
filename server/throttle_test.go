@@ -120,7 +120,7 @@ func TestCompleteMultipartUploadHandler_RateLimitTriggersThrottle(t *testing.T) 
 	// Step 1: Create a pending closure to get multipart upload info
 	closureHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01"
 	narinfoKey := closureHash + ".narinfo"
-	narKey := "nar/" + closureHash + ".nar.zst"
+	narKey := narKeyFor(closureHash)
 
 	body, err := json.Marshal(map[string]any{
 		"closure": narinfoKey,

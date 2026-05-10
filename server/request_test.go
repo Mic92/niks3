@@ -162,6 +162,13 @@ func nixStoreAdd(tb testing.TB, nixEnv []string, filePath string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// narKeyFor returns a syntactically valid NAR object key for tests.
+// Real NAR keys use a 52-char nix-base32 sha256 hash; we pad the 32-char
+// closure hash with a fixed nix-base32 suffix so IsValidUploadKey accepts it.
+func narKeyFor(closureHash string) string {
+	return "nar/" + closureHash + "00000000000000000000.nar.zst"
+}
+
 type TestRequest struct {
 	method  string
 	path    string
