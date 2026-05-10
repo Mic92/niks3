@@ -147,18 +147,22 @@ func (c *Client) SetDebugHTTP(enabled bool) {
 	}
 }
 
-// SetClientTLS configures the HTTP client with a client certificate for mTLS.
-// If caFile is non-empty the server certificate is verified against that CA;
-// otherwise the system certificate pool is used.
+// SetClientTLS configures the HTTP client TLS settings. certFile/keyFile
+// add a client certificate for mTLS; either both or neither must be set.
+// If caFile is non-empty the server certificate is verified against that
+// CA; otherwise the system certificate pool is used.
 func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return fmt.Errorf("loading client certificate: %w", err)
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
 	}
 
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+	if certFile != "" || keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return fmt.Errorf("loading client certificate: %w", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
 	if caFile != "" {

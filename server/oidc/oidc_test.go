@@ -48,8 +48,8 @@ func TestGlobMatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_"+tt.value, func(t *testing.T) {
-			if got := globMatch(tt.pattern, tt.value); got != tt.want {
-				t.Errorf("globMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+			if got := GlobMatch(tt.pattern, tt.value); got != tt.want {
+				t.Errorf("GlobMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 			}
 		})
 	}

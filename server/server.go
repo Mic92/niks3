@@ -41,21 +41,46 @@ type options struct {
 	OIDCConfigPath  string
 	EnableReadProxy bool
 
+	// MTLSProxyHeader, when set, names a header the reverse proxy sets to
+	// "SUCCESS" after verifying a client certificate (e.g. nginx's
+	// $ssl_client_verify). Requests carrying it are accepted without a
+	// bearer token. ONLY enable behind a proxy that overrides the header
+	// on every request — including failed/anonymous ones.
+	MTLSProxyHeader string
+
+	// MTLSSubjectHeader names the header carrying the verified cert's
+	// subject DN (e.g. nginx's $ssl_client_s_dn). Used with
+	// MTLSBoundSubjects.
+	MTLSSubjectHeader string
+
+	// MTLSBoundSubjects restricts mTLS auth to certs whose subject DN
+	// matches one of these glob patterns. Empty = any verified cert.
+	MTLSBoundSubjects []string
+
+	// MTLSBoundSubjectsRead, when non-empty, gates the read proxy behind
+	// mTLS: only clients presenting a cert whose subject DN matches one of
+	// these globs may read. Empty = read proxy is public (default).
+	MTLSBoundSubjectsRead []string
+
 	Debug bool
 }
 
 type Service struct {
-	Pool            *pgxpool.Pool
-	MinioClient     *minio.Client
-	Bucket          string
-	S3Concurrency   int
-	S3RateLimiter   *ratelimit.AdaptiveRateLimiter
-	APIToken        string
-	SigningKeys     []*signing.Key
-	CacheURL        string
-	OIDCValidator   *oidc.Validator
-	EnableReadProxy bool
-	GCTasks         *GCTaskStore
+	Pool                  *pgxpool.Pool
+	MinioClient           *minio.Client
+	Bucket                string
+	S3Concurrency         int
+	S3RateLimiter         *ratelimit.AdaptiveRateLimiter
+	APIToken              string
+	SigningKeys           []*signing.Key
+	CacheURL              string
+	OIDCValidator         *oidc.Validator
+	EnableReadProxy       bool
+	MTLSProxyHeader       string
+	MTLSSubjectHeader     string
+	MTLSBoundSubjects     []string
+	MTLSBoundSubjectsRead []string
+	GCTasks               *GCTaskStore
 }
 
 // Close closes the database connection pool.
@@ -69,6 +94,15 @@ const (
 
 func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// mTLS via reverse proxy. The proxy is responsible for overriding
+		// these headers on every request; we only trust them because the
+		// operator opted in.
+		if s.mtlsAuthenticated(r) {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -126,7 +160,8 @@ func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
 
 	if oidcErr != nil {
 		// Log OIDC-specific failure details
-		slog.Warn("Authentication failed",
+		slog.Warn(
+			"Authentication failed",
 			"token_preview", tokenPreview,
 			"token_length", len(token),
 			"oidc_error", oidcErr.Reason,
@@ -139,14 +174,16 @@ func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
 		}
 	} else if s.OIDCValidator != nil {
 		// OIDC configured but we didn't get a ValidationError (shouldn't happen normally)
-		slog.Warn("Authentication failed",
+		slog.Warn(
+			"Authentication failed",
 			"token_preview", tokenPreview,
 			"token_length", len(token),
 			"reason", "token did not match OIDC or static API token",
 		)
 	} else {
 		// No OIDC configured, just static token mismatch
-		slog.Warn("Authentication failed",
+		slog.Warn(
+			"Authentication failed",
 			"token_preview", tokenPreview,
 			"token_length", len(token),
 			"reason", "static API token mismatch",
@@ -181,14 +218,18 @@ func runServer(opts *options) error {
 	}
 
 	service := &Service{
-		Pool:          pool,
-		MinioClient:   minioClient,
-		Bucket:        opts.S3Bucket,
-		S3Concurrency: opts.S3Concurrency,
-		S3RateLimiter: ratelimit.NewAdaptiveRateLimiter(opts.S3RateLimit, "s3"),
-		APIToken:      opts.APIToken,
-		CacheURL:      opts.CacheURL,
-		GCTasks:       NewGCTaskStore(),
+		Pool:                  pool,
+		MinioClient:           minioClient,
+		Bucket:                opts.S3Bucket,
+		S3Concurrency:         opts.S3Concurrency,
+		S3RateLimiter:         ratelimit.NewAdaptiveRateLimiter(opts.S3RateLimit, "s3"),
+		APIToken:              opts.APIToken,
+		MTLSProxyHeader:       opts.MTLSProxyHeader,
+		MTLSSubjectHeader:     opts.MTLSSubjectHeader,
+		MTLSBoundSubjects:     opts.MTLSBoundSubjects,
+		MTLSBoundSubjectsRead: opts.MTLSBoundSubjectsRead,
+		CacheURL:              opts.CacheURL,
+		GCTasks:               NewGCTaskStore(),
 	}
 
 	// Initialize OIDC validator if configured
@@ -254,7 +295,7 @@ func runServer(opts *options) error {
 		service.EnableReadProxy = true
 		// Register without method prefix to avoid ServeMux conflicts with
 		// auto-generated HEAD routes. The handler rejects non-GET/HEAD itself.
-		mux.HandleFunc("/{path...}", service.ReadProxyHandler)
+		mux.HandleFunc("/{path...}", service.ReadAuthMiddleware(service.ReadProxyHandler))
 		slog.Info("Read proxy enabled — serving cache objects from S3")
 	} else {
 		mux.HandleFunc("GET /", service.RootRedirectHandler)
