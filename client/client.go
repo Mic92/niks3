@@ -20,7 +20,7 @@ import (
 // Client handles uploads to the niks3 server.
 type Client struct {
 	baseURL                 *url.URL
-	authToken               string
+	tokenSource             TokenSource
 	httpClient              *http.Client
 	MaxConcurrentNARUploads int                            // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string                       // Optional environment variables for nix commands (for testing)
@@ -82,13 +82,20 @@ type ObjectWithRefs struct {
 	NarSize *uint64    `json:"nar_size,omitempty"` // For estimating multipart parts
 }
 
-// NewClient creates a new upload client.
+// NewClient creates a new upload client with a static auth token.
 // The default MaxConcurrentNARUploads is set to 16, optimized for I/O-bound upload workloads.
 // This is comparable to browser HTTP/2 connection limits and Cachix's default of 8.
 //
 // TODO: Test this value in various network setups (local network, high-latency WAN,
 // rate-limited connections) to determine optimal defaults for different scenarios.
 func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error) {
+	return NewClientWithTokenSource(ctx, serverURL, StaticToken(authToken))
+}
+
+// NewClientWithTokenSource creates a new upload client that resolves its
+// auth token via ts before each server request. Use this for short-lived
+// tokens (OIDC, vault) that need to refresh during a long-running upload.
+func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSource) (*Client, error) {
 	baseURL, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing server URL: %w", err)
@@ -101,8 +108,8 @@ func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error
 	}
 
 	return &Client{
-		baseURL:   baseURL,
-		authToken: authToken,
+		baseURL:     baseURL,
+		tokenSource: ts,
 		httpClient: &http.Client{
 			Timeout: 0, // No timeout for streaming uploads
 		},

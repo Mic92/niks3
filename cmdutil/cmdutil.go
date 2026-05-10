@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Mic92/niks3/client"
 )
@@ -40,65 +39,86 @@ func DefaultAuthTokenPath() string {
 	return filepath.Join(configDir, "niks3", "auth-token")
 }
 
-// GetAuthToken reads the auth token from NIKS3_AUTH_TOKEN_FILE or the default XDG path.
-// The file should contain the token as a single line (trailing whitespace is trimmed).
-func GetAuthToken() (string, error) {
-	tokenFile := os.Getenv("NIKS3_AUTH_TOKEN_FILE")
-	if tokenFile == "" {
-		tokenFile = DefaultAuthTokenPath()
-		if tokenFile == "" {
-			return "", nil
-		}
-
-		if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
-			return "", nil
-		}
+// envAuthTokenPath returns the token file from NIKS3_AUTH_TOKEN_FILE or the
+// XDG default path, or "" if neither is set / the default doesn't exist.
+func envAuthTokenPath() string {
+	if p := os.Getenv("NIKS3_AUTH_TOKEN_FILE"); p != "" {
+		return p
 	}
 
-	data, err := os.ReadFile(tokenFile) //nolint:gosec // token path is user-provided config, not attacker-controlled
-	if err != nil {
-		return "", fmt.Errorf("reading auth token from file %q: %w", tokenFile, err)
+	p := DefaultAuthTokenPath()
+	if p == "" {
+		return ""
 	}
 
-	return strings.TrimSpace(string(data)), nil
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return ""
+	}
+
+	return p
 }
 
-// ResolveAuthToken returns the token from the file at flagTokenPath if set,
-// otherwise falls back to flagToken (from --auth-token or the env/XDG default).
-func ResolveAuthToken(flagToken, flagTokenPath string) (string, error) {
-	if flagTokenPath != "" {
-		data, err := os.ReadFile(flagTokenPath)
-		if err != nil {
-			return "", fmt.Errorf("reading auth token file: %w", err)
-		}
-
-		return strings.TrimSpace(string(data)), nil
+// ResolveTokenSource picks a client.TokenSource from the auth flags, in
+// priority order: script > file > literal token > env/XDG file. All file
+// sources (--auth-token-path, NIKS3_AUTH_TOKEN_FILE, the XDG default) get
+// the same FileToken behavior with periodic re-reads, so an external
+// refresher rotating the file works regardless of how the path was supplied.
+func ResolveTokenSource(flagToken, flagTokenPath, flagTokenScript string) (client.TokenSource, error) {
+	switch {
+	case flagTokenScript != "":
+		return client.ScriptToken(flagTokenScript), nil
+	case flagTokenPath != "":
+		return client.FileToken(flagTokenPath), nil
+	case flagToken != "":
+		return client.StaticToken(flagToken), nil
 	}
 
-	return flagToken, nil
+	if p := envAuthTokenPath(); p != "" {
+		return client.FileToken(p), nil
+	}
+
+	return nil, errors.New("auth token is required (use --auth-token-path, --auth-token-script, NIKS3_AUTH_TOKEN_FILE, or $XDG_CONFIG_HOME/niks3/auth-token)")
 }
 
 // CommonFlags holds pointers to flags shared across subcommands.
 type CommonFlags struct {
-	ServerURL *string
-	AuthToken *string
-	Debug     *bool
-	Help      *bool
+	ServerURL       *string
+	AuthToken       *string
+	AuthTokenPath   *string
+	AuthTokenScript *string
+	Debug           *bool
+	Help            *bool
 }
 
-// AddCommonFlags registers --server-url, --auth-token, --debug, and -h/--help
-// on the given FlagSet and returns pointers to them.
-func AddCommonFlags(fs *flag.FlagSet, defaultAuthToken string) CommonFlags {
+// AddCommonFlags registers --server-url, the auth flags, --debug, and
+// -h/--help on the given FlagSet and returns pointers to them.
+func AddCommonFlags(fs *flag.FlagSet) CommonFlags {
 	fs.Usage = func() {} // Suppress default usage; each command prints its own.
 	cf := CommonFlags{
-		ServerURL: fs.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL"),
-		AuthToken: fs.String("auth-token", defaultAuthToken, "Auth token"),
-		Debug:     fs.Bool("debug", false, "Enable debug logging"),
-		Help:      fs.Bool("help", false, "Show help"),
+		ServerURL:       fs.String("server-url", os.Getenv("NIKS3_SERVER_URL"), "Server URL"),
+		AuthToken:       fs.String("auth-token", "", "Auth token (deprecated)"),
+		AuthTokenPath:   fs.String("auth-token-path", "", "Path to auth token file"),
+		AuthTokenScript: fs.String("auth-token-script", "", "Command that emits a token JSON document"),
+		Debug:           fs.Bool("debug", false, "Enable debug logging"),
+		Help:            fs.Bool("help", false, "Show help"),
 	}
 	fs.BoolVar(cf.Help, "h", false, "Show help")
 
 	return cf
+}
+
+// TokenSource resolves the auth flags via ResolveTokenSource and warns if
+// the deprecated --auth-token flag was set explicitly on the command line
+// (as opposed to being filled in from NIKS3_AUTH_TOKEN_FILE or the XDG
+// default). fs must be the FlagSet the flags were registered on.
+func (cf CommonFlags) TokenSource(fs *flag.FlagSet) (client.TokenSource, error) {
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "auth-token" {
+			slog.Warn("--auth-token is deprecated: tokens on the command line are visible in /proc and shell history; use --auth-token-path or --auth-token-script")
+		}
+	})
+
+	return ResolveTokenSource(*cf.AuthToken, *cf.AuthTokenPath, *cf.AuthTokenScript)
 }
 
 // RequireServerURL returns an error if the URL is empty.
@@ -110,24 +130,22 @@ func RequireServerURL(url string) error {
 	return nil
 }
 
-// RequireAuthToken returns an error if the token is empty.
-func RequireAuthToken(token string) error {
-	if token == "" {
-		return errors.New("auth token is required (use --auth-token, --auth-token-path, NIKS3_AUTH_TOKEN_FILE, or $XDG_CONFIG_HOME/niks3/auth-token)")
-	}
-
-	return nil
-}
-
 //nolint:gosec // G101: help text, not credentials
 const AuthTokenHelp = `  --auth-token string
-        Auth token (default: reads from $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)
-        WARNING: tokens passed on the command line are visible in /proc and shell history;
-        prefer --auth-token-path or NIKS3_AUTH_TOKEN_FILE`
+        DEPRECATED: tokens passed on the command line are visible in /proc and
+        shell history. Use --auth-token-path, --auth-token-script, or
+        NIKS3_AUTH_TOKEN_FILE instead.
+        When unset, falls back to NIKS3_AUTH_TOKEN_FILE or $XDG_CONFIG_HOME/niks3/auth-token`
 
 //nolint:gosec // G101: help text, not credentials
 const AuthTokenPathHelp = `  --auth-token-path string
-        Path to file containing the auth token (preferred over --auth-token)`
+        Path to file containing the auth token (preferred over --auth-token).
+        Re-read periodically so an external refresher can rotate it`
+
+//nolint:gosec // G101: help text, not credentials
+const AuthTokenScriptHelp = `  --auth-token-script string
+        Command that prints {"token":"...","expires_at":"RFC3339"} on stdout.
+        Run on first use and again before expiry. Use for short-lived OIDC tokens`
 
 const TLSHelp = `  --client-cert string
         Client certificate file for mTLS authentication

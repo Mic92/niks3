@@ -46,8 +46,6 @@ func (c *Client) StartGarbageCollection(ctx context.Context, olderThan string, f
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
-
 	resp, err := c.DoServerRequest(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("executing request: %w", err)
@@ -86,8 +84,6 @@ func (c *Client) GetGCStatus(ctx context.Context) (*api.GCTaskStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
 
 	resp, err := c.DoServerRequest(ctx, req)
 	if err != nil {
@@ -133,7 +129,8 @@ func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, fai
 		}
 
 		if status.Phase != lastPhase || status.Stats != lastStats {
-			slog.Info("Garbage collection progress",
+			slog.Info(
+				"Garbage collection progress",
 				"phase", status.Phase,
 				"failed_uploads_deleted", status.Stats.FailedUploadsDeleted,
 				"old_closures_deleted", status.Stats.OldClosuresDeleted,

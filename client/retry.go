@@ -147,8 +147,20 @@ func retryAfterDuration(resp *http.Response) time.Duration {
 	return 0
 }
 
-// DoServerRequest executes an HTTP request to the niks3 server with rate limiting and retry.
+// DoServerRequest executes an HTTP request to the niks3 server with rate
+// limiting, retry, and auth. The Authorization header is resolved from the
+// client's TokenSource immediately before the request so short-lived tokens
+// (OIDC, vault) stay fresh across long uploads.
 func (c *Client) DoServerRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
+	tok, err := c.tokenSource(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolving auth token: %w", err)
+	}
+
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
 	return c.doWithRetry(ctx, req, c.ServerRateLimiter)
 }
 
