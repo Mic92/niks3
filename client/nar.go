@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -58,7 +58,6 @@ func stripCaseHackSuffix(name string) string {
 		return name
 	}
 
-	// Only strip if case hack suffix is at the end
 	if strings.HasSuffix(name, caseHackSuffix) {
 		return name[:len(name)-len(caseHackSuffix)]
 	}
@@ -66,13 +65,17 @@ func stripCaseHackSuffix(name string) string {
 	return name
 }
 
-func writeUint64(w io.Writer, v uint64) error {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], v)
+// writeUint64 writes a little-endian uint64 using the narWriter's scratch
+// buffer to avoid a heap allocation per call (passing a stack array to an
+// io.Writer interface forces it to escape).
+func (nw *narWriter) writeUint64(v uint64) error {
+	binary.LittleEndian.PutUint64(nw.scratch[:], v)
 
-	if _, err := w.Write(buf[:]); err != nil {
+	if _, err := nw.w.Write(nw.scratch[:]); err != nil {
 		return fmt.Errorf("writing uint64: %w", err)
 	}
+
+	nw.offset += 8
 
 	return nil
 }
@@ -108,8 +111,9 @@ type NarListingEntry struct {
 
 // narWriter wraps an io.Writer and tracks the current offset for NAR serialization.
 type narWriter struct {
-	w      io.Writer
-	offset uint64
+	w       io.Writer
+	offset  uint64
+	scratch [8]byte // reused for uint64 framing writes
 }
 
 func (nw *narWriter) writeStatic(data []byte) error {
@@ -123,11 +127,9 @@ func (nw *narWriter) writeStatic(data []byte) error {
 }
 
 func (nw *narWriter) writeString(s string) error {
-	if err := writeUint64(nw.w, uint64(len(s))); err != nil {
+	if err := nw.writeUint64(uint64(len(s))); err != nil {
 		return err
 	}
-
-	nw.offset += 8
 
 	if _, err := io.WriteString(nw.w, s); err != nil {
 		return fmt.Errorf("writing string content: %w", err)
@@ -141,21 +143,45 @@ func (nw *narWriter) writeString(s string) error {
 			return fmt.Errorf("writing padding: %w", err)
 		}
 
-		// padding is always 0-7, safe to convert to uint64
 		nw.offset += uint64(padding)
 	}
 
 	return nil
 }
 
-func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error) {
-	if err := writeUint64(nw.w, size); err != nil {
+// writeContentsHeader writes the size framing before file contents and
+// returns the NAR offset of the contents.
+func (nw *narWriter) writeContentsHeader(size uint64) (uint64, error) {
+	if err := nw.writeUint64(size); err != nil {
 		return 0, fmt.Errorf("writing file size: %w", err)
 	}
 
-	nw.offset += 8
+	return nw.offset, nil
+}
 
-	contentOffset := nw.offset
+// writeContentsFooter writes the trailing padding after file contents.
+func (nw *narWriter) writeContentsFooter(size uint64) error {
+	nw.offset += size
+
+	padding := (8 - (size % 8)) % 8
+	if padding > 0 {
+		if _, err := nw.w.Write(zeroPad[:padding]); err != nil {
+			return fmt.Errorf("writing padding: %w", err)
+		}
+
+		nw.offset += padding
+	}
+
+	return nil
+}
+
+// writeFileContentsStreaming reads a file directly into the NAR output. Used
+// for large files that are too big to prefetch into memory.
+func (nw *narWriter) writeFileContentsStreaming(path string, size uint64) (uint64, error) {
+	contentOffset, err := nw.writeContentsHeader(size)
+	if err != nil {
+		return 0, err
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -168,93 +194,299 @@ func (nw *narWriter) writeFileContents(path string, size uint64) (uint64, error)
 		}
 	}()
 
-	// Use a pooled buffer to reduce syscalls and allocations
 	bufPtr, ok := copyBufferPool.Get().(*[]byte)
 	if !ok {
 		return 0, errors.New("invalid buffer type from pool")
 	}
 	defer copyBufferPool.Put(bufPtr)
 
-	n, err := io.CopyBuffer(nw.w, f, *bufPtr)
-	if err != nil {
-		return 0, fmt.Errorf("copying file %s: %w", path, err)
-	}
+	// We already know the file size from stat, so copy exactly that many
+	// bytes. Plain io.CopyBuffer would issue one extra read syscall just to
+	// observe EOF, which doubles the syscall count for small files.
+	buf := *bufPtr
+	remaining := size
 
-	// n is from io.CopyBuffer which returns int64; size comes from os.FileInfo.Size() which is also int64
-	// The conversion is safe as we're comparing values from the same source
-	if uint64(n) != size { //nolint:gosec // n and size are both from filesystem operations, safe to compare
-		return 0, fmt.Errorf("file size mismatch for %s: expected %d, copied %d", path, size, n)
-	}
-
-	nw.offset += size
-
-	padding := (8 - (size % 8)) % 8
-	if padding > 0 {
-		if _, err := nw.w.Write(zeroPad[:padding]); err != nil {
-			return 0, fmt.Errorf("writing padding: %w", err)
+	for remaining > 0 {
+		chunk := buf
+		if uint64(len(chunk)) > remaining {
+			chunk = chunk[:remaining]
 		}
 
-		nw.offset += padding
+		rn, rerr := io.ReadFull(f, chunk)
+		if rerr != nil {
+			return 0, fmt.Errorf("reading file %s: expected %d more bytes: %w", path, remaining, rerr)
+		}
+
+		if _, werr := nw.w.Write(chunk[:rn]); werr != nil {
+			return 0, fmt.Errorf("copying file %s: %w", path, werr)
+		}
+
+		remaining -= uint64(rn) //nolint:gosec // rn is bounded by len(chunk)
+	}
+
+	if err := nw.writeContentsFooter(size); err != nil {
+		return 0, err
 	}
 
 	return contentOffset, nil
 }
 
+// writeFileContentsPrefetched writes already-read file contents from a
+// prefetched buffer.
+func (nw *narWriter) writeFileContentsPrefetched(pf *prefetchedFile) (uint64, error) {
+	<-pf.done
+
+	if pf.err != nil {
+		return 0, pf.err
+	}
+
+	contentOffset, err := nw.writeContentsHeader(pf.size)
+	if err != nil {
+		return 0, err
+	}
+
+	if _, err := nw.w.Write(pf.data); err != nil {
+		return 0, fmt.Errorf("writing file %s: %w", pf.path, err)
+	}
+
+	if err := nw.writeContentsFooter(pf.size); err != nil {
+		return 0, err
+	}
+
+	return contentOffset, nil
+}
+
+// narNode is one entry in the pre-walked tree. The walk is metadata-only
+// (readdir/lstat/readlink) and cheap; the expensive part — reading file
+// contents — is deferred to the write pass where it can be parallelized.
+type narNode struct {
+	name       string // case-hack-stripped name in parent directory
+	path       string // absolute path on disk
+	kind       byte   // 'f' regular, 'd' directory, 'l' symlink
+	size       uint64 // regular files only
+	executable bool   // regular files only
+	target     string // symlinks only
+	children   []*narNode
+}
+
 // DumpPathWithListing serializes a path to NAR format and returns the directory listing.
 // The listing is compatible with Nix's .ls format.
+//
+// Serialization runs in two passes: a fast metadata-only walk builds the tree,
+// then the write pass streams it to w while a worker pool prefetches small
+// file contents ahead of the writer.
 func DumpPathWithListing(w io.Writer, path string) (*NarListing, error) {
+	root, err := walkPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	pf := newPrefetcher(0)
+
+	// The enqueuer feeds files to the prefetcher in the same DFS order the
+	// writer consumes them. It blocks when the prefetch queue is full, so it
+	// must run concurrently with the writer.
+	enqueueDone := make(chan struct{})
+
+	go func() {
+		defer close(enqueueDone)
+
+		enqueuePrefetch(pf, root)
+		pf.close()
+	}()
+
+	// On error, drain the prefetch queue so the enqueuer goroutine unblocks
+	// and the worker pool shuts down cleanly.
+	drain := func() {
+		go func() {
+			for f := range pf.queue {
+				<-f.done
+				pf.release(f)
+			}
+		}()
+
+		<-enqueueDone
+	}
+
 	nw := &narWriter{w: w, offset: 0}
 
 	if err := nw.writeStatic(narVersionMagicEncoded); err != nil {
+		drain()
+
 		return nil, err
 	}
 
 	if err := nw.writeStatic(openParenEncoded); err != nil {
+		drain()
+
 		return nil, err
 	}
 
-	entry, err := dumpPathWithListing(nw, path)
+	entry, err := writeNode(nw, pf, root)
 	if err != nil {
+		drain()
+
 		return nil, err
 	}
 
 	if err := nw.writeStatic(closeParenEncoded); err != nil {
+		drain()
+
 		return nil, err
 	}
+
+	<-enqueueDone
 
 	return &NarListing{Version: 1, Root: entry}, nil
 }
 
-func dumpPathWithListing(nw *narWriter, path string) (NarListingEntry, error) {
+// walkPath builds the narNode tree for a path using only metadata syscalls.
+func walkPath(path string) (*narNode, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return NarListingEntry{}, fmt.Errorf("stat %s: %w", path, err)
+		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
+	return walkNode(path, "", info.Mode(), info)
+}
+
+// walkNode classifies a single filesystem entry and recurses into
+// directories. info may be nil for directories and symlinks (they don't need
+// it); the mode tells us which branch to take.
+func walkNode(path, name string, mode os.FileMode, info os.FileInfo) (*narNode, error) {
+	switch {
+	case mode.IsRegular():
+		if info == nil {
+			return nil, fmt.Errorf("missing file info for %s", path)
+		}
+
+		return &narNode{
+			name:       name,
+			path:       path,
+			kind:       'f',
+			size:       uint64(info.Size()), //nolint:gosec // file size is non-negative
+			executable: info.Mode()&0o111 != 0,
+		}, nil
+
+	case mode.IsDir():
+		return walkDirectory(path, name)
+
+	case mode&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading symlink %s: %w", path, err)
+		}
+
+		return &narNode{name: name, path: path, kind: 'l', target: target}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported file type for %s: %v", path, mode)
+	}
+}
+
+func walkDirectory(path, name string) (*narNode, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading directory %s: %w", path, err)
+	}
+
+	// Sort entries by name (NAR requirement)
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
+
+	node := &narNode{name: name, path: path, kind: 'd', children: make([]*narNode, 0, len(entries))}
+
+	for _, entry := range entries {
+		entryName := entry.Name()
+		narName := stripCaseHackSuffix(entryName)
+		childPath := filepath.Join(path, entryName)
+
+		// Use entry.Type() to avoid an extra stat syscall when possible.
+		// Fall back to entry.Info() if Type() returns DT_UNKNOWN.
+		entryType := entry.Type()
+
+		var (
+			info os.FileInfo
+			mode os.FileMode
+		)
+
+		switch {
+		case entryType.IsRegular():
+			// Regular files need FileInfo for size and permissions.
+			info, err = entry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("getting info for %s: %w", childPath, err)
+			}
+
+			mode = info.Mode()
+		case entryType.IsDir() || entryType&os.ModeSymlink != 0:
+			mode = entryType
+		default:
+			// DT_UNKNOWN: fall back to lstat.
+			info, err = entry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("getting info for %s: %w", childPath, err)
+			}
+
+			mode = info.Mode()
+		}
+
+		child, err := walkNode(childPath, narName, mode, info)
+		if err != nil {
+			return nil, err
+		}
+
+		node.children = append(node.children, child)
+	}
+
+	return node, nil
+}
+
+// shouldPrefetch reports whether a regular file is read ahead by the worker
+// pool. The enqueuer and writer call this independently and must agree, so it
+// is a pure function of node metadata.
+func shouldPrefetch(n *narNode) bool {
+	return n.kind == 'f' && n.size <= prefetchMaxFileSize
+}
+
+// enqueuePrefetch walks the node tree in the same DFS order the writer uses
+// and registers small regular files with the prefetcher.
+func enqueuePrefetch(p *prefetcher, n *narNode) {
+	if shouldPrefetch(n) {
+		p.enqueue(n.path, n.size)
+
+		return
+	}
+
+	for _, c := range n.children {
+		enqueuePrefetch(p, c)
+	}
+}
+
+func writeNode(nw *narWriter, p *prefetcher, n *narNode) (NarListingEntry, error) {
 	if err := nw.writeStatic(typeEncoded); err != nil {
 		return NarListingEntry{}, err
 	}
 
-	mode := info.Mode()
-	switch {
-	case mode.IsRegular():
-		return dumpRegularFile(nw, path, info)
-	case mode.IsDir():
-		return dumpDirectory(nw, path)
-	case mode&os.ModeSymlink != 0:
-		return dumpSymlink(nw, path)
+	switch n.kind {
+	case 'f':
+		return writeRegularFile(nw, p, n)
+	case 'd':
+		return writeDirectory(nw, p, n)
+	case 'l':
+		return writeSymlink(nw, n)
 	default:
-		return NarListingEntry{}, fmt.Errorf("unsupported file type for %s: %v", path, mode)
+		return NarListingEntry{}, fmt.Errorf("unknown node kind %q for %s", n.kind, n.path)
 	}
 }
 
-func dumpRegularFile(nw *narWriter, path string, info os.FileInfo) (NarListingEntry, error) {
+func writeRegularFile(nw *narWriter, p *prefetcher, n *narNode) (NarListingEntry, error) {
 	if err := nw.writeStatic(regularEncoded); err != nil {
 		return NarListingEntry{}, err
 	}
 
-	isExecutable := info.Mode()&0o111 != 0
-	if isExecutable {
+	if n.executable {
 		if err := nw.writeStatic(executableEncoded); err != nil {
 			return NarListingEntry{}, err
 		}
@@ -268,47 +500,49 @@ func dumpRegularFile(nw *narWriter, path string, info os.FileInfo) (NarListingEn
 		return NarListingEntry{}, err
 	}
 
-	// info.Size() returns int64 from os.FileInfo; safe to convert to uint64 as file sizes are non-negative
-	fileSize := uint64(info.Size()) //nolint:gosec // file size from os.FileInfo is always non-negative
+	var (
+		contentOffset uint64
+		err           error
+	)
 
-	contentOffset, err := nw.writeFileContents(path, fileSize)
+	if shouldPrefetch(n) {
+		// The enqueuer feeds files in the same DFS order, so the next item
+		// on the queue is always this node's contents.
+		prefetched := <-p.queue
+		contentOffset, err = nw.writeFileContentsPrefetched(prefetched)
+		p.release(prefetched)
+	} else {
+		contentOffset, err = nw.writeFileContentsStreaming(n.path, n.size)
+	}
+
 	if err != nil {
 		return NarListingEntry{}, err
 	}
+
+	fileSize := n.size
 
 	entry := NarListingEntry{
 		Type:      "regular",
 		Size:      &fileSize,
 		NarOffset: &contentOffset,
 	}
-	if isExecutable {
+
+	if n.executable {
+		isExecutable := true
 		entry.Executable = &isExecutable
 	}
 
 	return entry, nil
 }
 
-func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
+func writeDirectory(nw *narWriter, p *prefetcher, n *narNode) (NarListingEntry, error) {
 	if err := nw.writeStatic(directoryEncoded); err != nil {
 		return NarListingEntry{}, err
 	}
 
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return NarListingEntry{}, fmt.Errorf("reading directory %s: %w", path, err)
-	}
+	listingEntries := make(map[string]NarListingEntry, len(n.children))
 
-	// Sort entries by name (NAR requirement)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
-	listingEntries := make(map[string]NarListingEntry)
-
-	for _, entry := range entries {
-		name := entry.Name()
-		narName := stripCaseHackSuffix(name)
-
+	for _, child := range n.children {
 		if err := nw.writeStatic(entryEncoded); err != nil {
 			return NarListingEntry{}, err
 		}
@@ -321,7 +555,7 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 			return NarListingEntry{}, err
 		}
 
-		if err := nw.writeString(narName); err != nil {
+		if err := nw.writeString(child.name); err != nil {
 			return NarListingEntry{}, err
 		}
 
@@ -333,64 +567,12 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 			return NarListingEntry{}, err
 		}
 
-		childPath := filepath.Join(path, name)
-
-		var childEntry NarListingEntry
-
-		if err := nw.writeStatic(typeEncoded); err != nil {
-			return NarListingEntry{}, err
-		}
-
-		// Use entry.Type() to avoid an extra stat syscall when possible
-		// Fallback to entry.Info() if Type() returns DT_UNKNOWN (can happen on some filesystems)
-		var err error
-
-		entryType := entry.Type()
-
-		// Check if we can classify the entry from Type() alone
-		if entryType.IsRegular() || entryType.IsDir() || (entryType&os.ModeSymlink != 0) {
-			// Type is known, handle normally
-			switch {
-			case entryType.IsRegular():
-				// Regular files need FileInfo for size and permissions
-				info, infoErr := entry.Info()
-				if infoErr != nil {
-					return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
-				}
-
-				childEntry, err = dumpRegularFile(nw, childPath, info)
-			case entryType.IsDir():
-				// Directories don't need FileInfo, recurse directly
-				childEntry, err = dumpDirectory(nw, childPath)
-			case entryType&os.ModeSymlink != 0:
-				// Symlinks don't need FileInfo
-				childEntry, err = dumpSymlink(nw, childPath)
-			}
-		} else {
-			// Type is DT_UNKNOWN or unclassifiable, fall back to Info() to get mode
-			info, infoErr := entry.Info()
-			if infoErr != nil {
-				return NarListingEntry{}, fmt.Errorf("getting info for %s: %w", childPath, infoErr)
-			}
-
-			mode := info.Mode()
-			switch {
-			case mode.IsRegular():
-				childEntry, err = dumpRegularFile(nw, childPath, info)
-			case mode.IsDir():
-				childEntry, err = dumpDirectory(nw, childPath)
-			case mode&os.ModeSymlink != 0:
-				childEntry, err = dumpSymlink(nw, childPath)
-			default:
-				err = fmt.Errorf("unsupported file type for %s: %v", childPath, mode)
-			}
-		}
-
+		childEntry, err := writeNode(nw, p, child)
 		if err != nil {
 			return NarListingEntry{}, err
 		}
 
-		listingEntries[narName] = childEntry
+		listingEntries[child.name] = childEntry
 
 		if err := nw.writeStatic(closeParenEncoded); err != nil {
 			return NarListingEntry{}, err
@@ -407,7 +589,7 @@ func dumpDirectory(nw *narWriter, path string) (NarListingEntry, error) {
 	}, nil
 }
 
-func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
+func writeSymlink(nw *narWriter, n *narNode) (NarListingEntry, error) {
 	if err := nw.writeStatic(symlinkEncoded); err != nil {
 		return NarListingEntry{}, err
 	}
@@ -416,14 +598,11 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 		return NarListingEntry{}, err
 	}
 
-	target, err := os.Readlink(path)
-	if err != nil {
-		return NarListingEntry{}, fmt.Errorf("reading symlink %s: %w", path, err)
-	}
-
-	if err := nw.writeString(target); err != nil {
+	if err := nw.writeString(n.target); err != nil {
 		return NarListingEntry{}, err
 	}
+
+	target := n.target
 
 	return NarListingEntry{
 		Type:   "symlink",
@@ -435,12 +614,10 @@ func dumpSymlink(nw *narWriter, path string) (NarListingEntry, error) {
 // This matches Nix's compression approach and provides better performance than brotli.
 // It reuses the existing zstdEncoderPool from nar_upload.go.
 func CompressListingWithZstd(listing *NarListing) ([]byte, error) {
-	// Marshal to JSON
 	jsonData, err := json.Marshal(listing)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling listing to JSON: %w", err)
 	}
 
-	// Use the existing zstd pool (defined in metadata_tasks.go)
 	return compressWithZstd(jsonData)
 }
