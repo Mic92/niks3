@@ -37,6 +37,10 @@
           inherit pkgs;
           selfPackages = inputs.self.packages.${pkgs.system};
           selfDevShells = inputs.self.devShells.${pkgs.system} or { };
+          treefmtCheck = (import ./nix/formatter {
+            inherit pkgs;
+            inherit (inputs) treefmt-nix;
+          }).check inputs.self;
         }
       );
 
@@ -50,10 +54,10 @@
 
       formatter = forAllSystems (
         pkgs:
-        import ./nix/formatter {
+        (import ./nix/formatter {
           inherit pkgs;
           inherit (inputs) treefmt-nix;
-        }
+        }).wrapper
       );
     };
 }
