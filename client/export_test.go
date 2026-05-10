@@ -9,6 +9,11 @@ import (
 // ParsePathInfoJSON exports parsePathInfoJSON for testing.
 var ParsePathInfoJSON = parsePathInfoJSON
 
+// HTTPClient exposes the underlying http.Client for testing.
+func (c *Client) HTTPClient() *http.Client {
+	return c.httpClient
+}
+
 // NewTestClient creates a Client for testing with a custom HTTP client and retry config.
 func NewTestClient(httpClient *http.Client, retry RetryConfig) *Client {
 	return &Client{

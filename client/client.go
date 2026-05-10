@@ -3,12 +3,15 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 
 	"github.com/Mic92/niks3/ratelimit"
@@ -131,6 +134,55 @@ func (c *Client) SetDebugHTTP(enabled bool) {
 			c.httpClient.Transport = lt.transport
 		}
 	}
+}
+
+// SetClientTLS configures the HTTP client with a client certificate for mTLS.
+// If caFile is non-empty the server certificate is verified against that CA;
+// otherwise the system certificate pool is used.
+func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("loading client certificate: %w", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	if caFile != "" {
+		caCert, err := os.ReadFile(caFile)
+		if err != nil {
+			return fmt.Errorf("loading CA certificate: %w", err)
+		}
+
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caCert) {
+			return fmt.Errorf("parsing CA certificate %q: no PEM certificates found", caFile)
+		}
+
+		tlsConfig.RootCAs = certPool
+	}
+
+	// Build a fresh transport so we never mutate http.DefaultTransport. If
+	// SetDebugHTTP has already wrapped the transport in a loggingTransport,
+	// preserve that wrapper around the new transport.
+	var newTransport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		newTransport = dt.Clone()
+	} else {
+		newTransport = &http.Transport{}
+	}
+
+	newTransport.TLSClientConfig = tlsConfig
+
+	if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
+		lt.transport = newTransport
+	} else {
+		c.httpClient.Transport = newTransport
+	}
+
+	return nil
 }
 
 func deferCloseBody(resp *http.Response) {
