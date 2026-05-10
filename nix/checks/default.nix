@@ -6,7 +6,7 @@
 }:
 let
   lib = pkgs.lib;
-  system = pkgs.system;
+  system = pkgs.stdenv.hostPlatform.system;
   packages = lib.mapAttrs' (n: lib.nameValuePair "package-${n}") selfPackages;
   devShells = lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") selfDevShells;
 in

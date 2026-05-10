@@ -18,9 +18,7 @@
         "aarch64-darwin"
       ];
 
-      lib = nixpkgs.lib;
-
-      forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
       nixosModules = {
@@ -29,31 +27,33 @@
         default = ./nix/nixosModules/niks3.nix;
       };
 
-      packages = forAllSystems (pkgs: import ./nix/packages { inherit pkgs; });
+      packages = forAllSystems (_: pkgs: import ./nix/packages { inherit pkgs; });
 
       checks = forAllSystems (
-        pkgs:
+        system: pkgs:
         import ./nix/checks {
           inherit pkgs;
-          selfPackages = inputs.self.packages.${pkgs.system};
-          selfDevShells = inputs.self.devShells.${pkgs.system} or { };
-          treefmtCheck = (import ./nix/formatter {
-            inherit pkgs;
-            inherit (inputs) treefmt-nix;
-          }).check inputs.self;
+          selfPackages = inputs.self.packages.${system};
+          selfDevShells = inputs.self.devShells.${system} or { };
+          treefmtCheck =
+            (import ./nix/formatter {
+              inherit pkgs;
+              inherit (inputs) treefmt-nix;
+            }).check
+              inputs.self;
         }
       );
 
       devShells = forAllSystems (
-        pkgs:
+        system: pkgs:
         import ./nix/devshells {
           inherit pkgs;
-          selfPackages = inputs.self.packages.${pkgs.system};
+          selfPackages = inputs.self.packages.${system};
         }
       );
 
       formatter = forAllSystems (
-        pkgs:
+        _: pkgs:
         (import ./nix/formatter {
           inherit pkgs;
           inherit (inputs) treefmt-nix;
