@@ -7,7 +7,10 @@ import (
 	"crypto/x509/pkix"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+
+	"github.com/Mic92/niks3/server"
 )
 
 // TestService_NativeMTLS exercises the direct-TLS auth path that reads
@@ -72,4 +75,46 @@ func TestService_NativeMTLS(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("native mTLS must ignore proxy headers, got %d", w.Code)
 	}
+}
+
+func TestServerTLSConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no client CA", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := server.ServerTLSConfig("")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if cfg.ClientAuth != tls.NoClientCert {
+			t.Errorf("ClientAuth = %v, want NoClientCert", cfg.ClientAuth)
+		}
+
+		if cfg.ClientCAs != nil {
+			t.Error("ClientCAs should be nil without a CA")
+		}
+	})
+
+	t.Run("missing CA file", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := server.ServerTLSConfig("/nonexistent/ca.pem"); err == nil {
+			t.Error("expected error for missing CA file")
+		}
+	})
+
+	t.Run("not a PEM file", func(t *testing.T) {
+		t.Parallel()
+
+		f := t.TempDir() + "/garbage.pem"
+		if err := os.WriteFile(f, []byte("not pem"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := server.ServerTLSConfig(f); err == nil {
+			t.Error("expected error for non-PEM CA file")
+		}
+	})
 }
