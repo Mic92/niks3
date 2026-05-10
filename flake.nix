@@ -3,33 +3,57 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
-    flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
 
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
-
-    process-compose.url = "github:Platonic-Systems/process-compose-flake";
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
+    inputs@{ nixpkgs, ... }:
+    let
       systems = [
         "x86_64-linux"
         "aarch64-linux"
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      imports = [
-        ./nix/packages/flake-module.nix
-        ./nix/checks/flake-module.nix
-        ./nix/nixosModules/flake-module.nix
-        ./nix/benchmark/flake-module.nix
-      ]
-      ++ inputs.nixpkgs.lib.optional (
-        inputs.process-compose ? flakeModule
-      ) ./nix/devshells/flake-module.nix
-      ++ inputs.nixpkgs.lib.optional (inputs.treefmt-nix ? flakeModule) ./nix/formatter/flake-module.nix;
+
+      lib = nixpkgs.lib;
+
+      forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
+    {
+      nixosModules = {
+        niks3 = ./nix/nixosModules/niks3.nix;
+        niks3-auto-upload = ./nix/nixosModules/niks3-auto-upload.nix;
+        default = ./nix/nixosModules/niks3.nix;
+      };
+
+      packages = forAllSystems (pkgs: import ./nix/packages { inherit pkgs; });
+
+      checks = forAllSystems (
+        pkgs:
+        import ./nix/checks {
+          inherit pkgs;
+          selfPackages = inputs.self.packages.${pkgs.system};
+          selfDevShells = inputs.self.devShells.${pkgs.system} or { };
+        }
+      );
+
+      devShells = forAllSystems (
+        pkgs:
+        import ./nix/devshells {
+          inherit pkgs;
+          selfPackages = inputs.self.packages.${pkgs.system};
+        }
+      );
+
+      formatter = forAllSystems (
+        pkgs:
+        import ./nix/formatter {
+          inherit pkgs;
+          inherit (inputs) treefmt-nix;
+        }
+      );
     };
 }
