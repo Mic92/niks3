@@ -413,7 +413,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 		})
 	}
 
-	return g.Wait()
+	return g.Wait() //nolint:wrapcheck // errgroup returns the first task's already-wrapped error
 }
 
 // PushPaths uploads store paths and their closures to the server.

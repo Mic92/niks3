@@ -222,7 +222,8 @@ type RealisationInfo struct {
 
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
 func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []string) (map[string]*PathInfo, error) {
-	args := []string{"--extra-experimental-features", "nix-command", "path-info", "--recursive", "--json", "--"}
+	args := make([]string, 0, 6+len(storePaths))
+	args = append(args, "--extra-experimental-features", "nix-command", "path-info", "--recursive", "--json", "--")
 	args = append(args, storePaths...)
 
 	cmd := exec.CommandContext(ctx, "nix", args...)

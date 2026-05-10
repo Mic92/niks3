@@ -207,7 +207,7 @@ func runServe() error {
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = *maxConcurrent

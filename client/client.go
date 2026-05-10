@@ -17,6 +17,10 @@ import (
 	"github.com/Mic92/niks3/ratelimit"
 )
 
+// compressionZstd is the algorithm name used in Content-Encoding headers
+// and narinfo Compression fields.
+const compressionZstd = "zstd"
+
 // Client handles uploads to the niks3 server.
 type Client struct {
 	baseURL                 *url.URL
@@ -49,7 +53,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Perform request
 	resp, err := t.transport.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // RoundTripper contract: pass error through unwrapped
 	}
 
 	// Log response

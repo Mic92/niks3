@@ -239,7 +239,7 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		}
 
 		// Execute request
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.httpClient.Do(req) //nolint:gosec // G704: req.URL is the configured server endpoint, not attacker input
 
 		// Update rate limiter regardless of whether we retry
 		if err == nil {
@@ -347,7 +347,7 @@ func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelim
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: req.URL is the configured server endpoint, not attacker input
 	if err != nil {
 		return nil, fmt.Errorf("executing request: %w", err)
 	}

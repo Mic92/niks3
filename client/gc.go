@@ -119,7 +119,7 @@ func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, fai
 	for status.State == api.GCTaskStateRunning {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, ctx.Err() //nolint:wrapcheck // ctx.Err() is the canonical sentinel for cancellation
 		case <-time.After(gcPollInterval):
 		}
 

@@ -112,7 +112,7 @@ func run() error {
 		cmdutil.SetupLogger(*cf.Debug)
 
 		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
 		ts, err := cf.TokenSource(pushCmd)
@@ -152,7 +152,7 @@ func run() error {
 		cmdutil.SetupLogger(*cf.Debug)
 
 		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
 		ts, err := cf.TokenSource(gcCmd)
@@ -181,7 +181,7 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = maxConcurrent
@@ -208,7 +208,7 @@ func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderT
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	if debug {

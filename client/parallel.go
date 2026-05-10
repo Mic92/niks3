@@ -123,7 +123,7 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 
 	// Wait for phase 1 to complete
 	if err := g.Wait(); err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // errgroup returns the first task's already-wrapped error
 	}
 
 	// Phase 2: Collect narinfo metadata for successfully uploaded NARs
@@ -163,7 +163,7 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 		metadata := NarinfoMetadata{
 			StorePath:   pathInfo.Path,
 			URL:         narURL,
-			Compression: "zstd",
+			Compression: compressionZstd,
 			NarHash:     narHash,
 			NarSize:     pathInfo.NarSize,
 			References:  pathInfo.References,

@@ -164,6 +164,7 @@ func TestDumpPathSingleFile(t *testing.T) {
 	}
 
 	f := filepath.Join(tmp, "single")
+	//nolint:gosec // 0o755 is intentional: NAR encoding records the executable bit
 	if err := os.WriteFile(f, bytes.Repeat([]byte("x"), 12345), 0o755); err != nil {
 		t.Fatalf("write: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 // ParsePathInfoJSON exports parsePathInfoJSON for testing.
-var ParsePathInfoJSON = parsePathInfoJSON
+var ParsePathInfoJSON = parsePathInfoJSON //nolint:gochecknoglobals // test-only re-export
 
 // ShellSplit re-exports shellSplit for the external test package.
 var ShellSplit = shellSplit //nolint:gochecknoglobals // test-only re-export
