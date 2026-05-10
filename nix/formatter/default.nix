@@ -18,4 +18,7 @@ let
     programs.rustfmt.edition = "2021";
   };
 in
-treefmtEval.config.build.wrapper
+{
+  wrapper = treefmtEval.config.build.wrapper;
+  check = treefmtEval.config.build.check;
+}

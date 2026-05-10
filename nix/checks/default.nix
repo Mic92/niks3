@@ -2,6 +2,7 @@
   pkgs,
   selfPackages,
   selfDevShells ? { },
+  treefmtCheck ? null,
 }:
 let
   lib = pkgs.lib;
@@ -12,6 +13,7 @@ in
 packages
 // devShells
 // {
+  treefmt = treefmtCheck;
   golangci-lint = selfPackages.niks3-tests.overrideAttrs (old: {
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
     buildPhase = ''
