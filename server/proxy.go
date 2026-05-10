@@ -8,10 +8,36 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
+
+const (
+	// proxyMinThroughput is the slowest client we still serve before timing
+	// out. 100 kB/s tolerates congested mobile and conference WiFi; slower
+	// is indistinguishable from a stalled connection. This bounds how long a
+	// slowloris attacker can hold one connection per byte sent, but the real
+	// resource bound is connection/fd limits, not the timeout.
+	proxyMinThroughput = 100_000 // bytes/sec
+
+	// proxyTimeoutSlack absorbs TLS handshake, S3 first-byte latency, and
+	// TCP slow start. Dominates for small objects (narinfos, listings).
+	proxyTimeoutSlack = 5 * time.Minute
+)
+
+// ProxyWriteTimeout returns the per-request write deadline for streaming an
+// object of the given size. The global server WriteTimeout is short to bound
+// slowloris on API endpoints; large NAR streams need a budget proportional to
+// their size.
+func ProxyWriteTimeout(size int64) time.Duration {
+	if size < 0 {
+		size = 0
+	}
+
+	return proxyTimeoutSlack + time.Duration(size/proxyMinThroughput)*time.Second
+}
 
 // zstdDecoderPool pools zstd decoders to reduce memory allocations.
 // Each decoder holds ~130KB of window state; pooling avoids re-allocating
@@ -219,6 +245,13 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		s.serveDecompressedNarinfo(w, obj, &objInfo)
 
 		return
+	}
+
+	// Override the global short WriteTimeout: large NARs need a budget
+	// proportional to their size.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(ProxyWriteTimeout(objInfo.Size))); err != nil {
+		slog.Debug("Failed to extend write deadline", "key", key, "error", err)
 	}
 
 	setProxyHeaders(w, &objInfo)
