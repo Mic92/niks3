@@ -25,7 +25,7 @@ func validateBoundClaims(claims map[string]any, boundClaims map[string][]string)
 		matched := false
 		for _, v := range values {
 			for _, pattern := range allowedPatterns {
-				if matchGlob(pattern, v) {
+				if GlobMatch(pattern, v) {
 					matched = true
 					break
 				}
@@ -54,7 +54,7 @@ func validateBoundSubject(claims map[string]any, boundSubject []string) error {
 	}
 
 	for _, pattern := range boundSubject {
-		if matchGlob(pattern, sub) {
+		if GlobMatch(pattern, sub) {
 			return nil
 		}
 	}
@@ -112,14 +112,8 @@ func normalizeToStringSlice(value any) []string {
 	}
 }
 
-// matchGlob performs glob pattern matching.
-// Supports * (matches any sequence of characters) and ? (matches any single character).
-func matchGlob(pattern, value string) bool {
-	return globMatch(pattern, value)
-}
-
-// globMatch implements glob matching with * and ? wildcards.
-func globMatch(pattern, str string) bool {
+// GlobMatch implements glob matching with * and ? wildcards.
+func GlobMatch(pattern, str string) bool {
 	// Empty pattern only matches empty string
 	if pattern == "" {
 		return str == ""

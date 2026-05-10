@@ -115,7 +115,7 @@ func run() error {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
-		ts, err := cf.TokenSource(pushCmd)
+		ts, err := cf.TokenSource(pushCmd, tf)
 		if err != nil {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
@@ -155,7 +155,7 @@ func run() error {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
-		ts, err := cf.TokenSource(gcCmd)
+		ts, err := cf.TokenSource(gcCmd, tf)
 		if err != nil {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}

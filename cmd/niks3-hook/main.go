@@ -166,7 +166,7 @@ func runServe() error {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
-	ts, err := cf.TokenSource(fs)
+	ts, err := cf.TokenSource(fs, tf)
 	if err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}

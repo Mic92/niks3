@@ -63,7 +63,9 @@ func envAuthTokenPath() string {
 // sources (--auth-token-path, NIKS3_AUTH_TOKEN_FILE, the XDG default) get
 // the same FileToken behavior with periodic re-reads, so an external
 // refresher rotating the file works regardless of how the path was supplied.
-func ResolveTokenSource(flagToken, flagTokenPath, flagTokenScript string) (client.TokenSource, error) {
+// hasMTLS reports whether a client certificate is configured — in which
+// case the transport carries the credential and no bearer token is needed.
+func ResolveTokenSource(flagToken, flagTokenPath, flagTokenScript string, hasMTLS bool) (client.TokenSource, error) {
 	switch {
 	case flagTokenScript != "":
 		return client.ScriptToken(flagTokenScript), nil
@@ -75,6 +77,10 @@ func ResolveTokenSource(flagToken, flagTokenPath, flagTokenScript string) (clien
 
 	if p := envAuthTokenPath(); p != "" {
 		return client.FileToken(p), nil
+	}
+
+	if hasMTLS {
+		return client.NoToken(), nil
 	}
 
 	return nil, errors.New("auth token is required (use --auth-token-path, --auth-token-script, NIKS3_AUTH_TOKEN_FILE, or $XDG_CONFIG_HOME/niks3/auth-token)")
@@ -111,14 +117,17 @@ func AddCommonFlags(fs *flag.FlagSet) CommonFlags {
 // the deprecated --auth-token flag was set explicitly on the command line
 // (as opposed to being filled in from NIKS3_AUTH_TOKEN_FILE or the XDG
 // default). fs must be the FlagSet the flags were registered on.
-func (cf CommonFlags) TokenSource(fs *flag.FlagSet) (client.TokenSource, error) {
+// tf may be the zero value if the command has no TLS flags.
+func (cf CommonFlags) TokenSource(fs *flag.FlagSet, tf TLSFlags) (client.TokenSource, error) {
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "auth-token" {
 			slog.Warn("--auth-token is deprecated: tokens on the command line are visible in /proc and shell history; use --auth-token-path or --auth-token-script")
 		}
 	})
 
-	return ResolveTokenSource(*cf.AuthToken, *cf.AuthTokenPath, *cf.AuthTokenScript)
+	hasMTLS := tf.ClientCert != nil && *tf.ClientCert != ""
+
+	return ResolveTokenSource(*cf.AuthToken, *cf.AuthTokenPath, *cf.AuthTokenScript, hasMTLS)
 }
 
 // RequireServerURL returns an error if the URL is empty.
@@ -176,11 +185,11 @@ func AddTLSFlags(fs *flag.FlagSet) TLSFlags {
 func (tf TLSFlags) Configure(c *client.Client) error {
 	certFile, keyFile, caFile := *tf.ClientCert, *tf.ClientKey, *tf.CACert
 
-	if certFile == "" && keyFile == "" {
+	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil
 	}
 
-	if certFile == "" || keyFile == "" {
+	if (certFile == "") != (keyFile == "") {
 		return errors.New("both --client-cert and --client-key must be provided for mTLS")
 	}
 

@@ -19,6 +19,12 @@ import (
 // result.
 type TokenSource func(ctx context.Context) (string, error)
 
+// NoToken returns a TokenSource that yields no token. Use when the
+// transport itself carries the credential, e.g. an mTLS client cert.
+func NoToken() TokenSource {
+	return func(context.Context) (string, error) { return "", nil }
+}
+
 // StaticToken returns a TokenSource that always yields tok and never refreshes.
 // An empty tok is valid: it represents anonymous access.
 func StaticToken(tok string) TokenSource {

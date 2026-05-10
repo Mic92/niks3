@@ -299,6 +299,52 @@ in
         default = true;
         description = "Whether to force SSL for the domain.";
       };
+
+      mtls = {
+        enable = lib.mkEnableOption "mTLS client certificate authentication";
+
+        clientCAFile = lib.mkOption {
+          type = lib.types.path;
+          example = "/etc/niks3/client-ca.pem";
+          description = ''
+            CA bundle nginx uses to verify client certificates.
+            Requests presenting a valid cert are accepted by niks3 without
+            a bearer token.
+          '';
+        };
+
+        require = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            Require a client certificate (`ssl_verify_client on`). The
+            default `optional` lets clients fall back to bearer-token auth.
+          '';
+        };
+
+        boundSubjects = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "CN=ci-runner,*" ];
+          description = ''
+            Restrict mTLS write auth to certs whose subject DN matches one
+            of these glob patterns (`*` and `?` supported). Empty = any
+            verified cert.
+          '';
+        };
+
+        boundSubjectsRead = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "CN=*,O=Acme" ];
+          description = ''
+            Gate the built-in read proxy behind mTLS: only certs whose
+            subject DN matches one of these globs may read. Empty = the
+            read proxy is public (default). Implies `require = true` so
+            nginx demands a cert on every connection.
+          '';
+        };
+      };
     };
 
     gc = {
@@ -427,6 +473,21 @@ in
               lib.optionalString (cfg.oidc.providers != { }) ''
                 \
                             --oidc-config "${oidcConfigJson}"''
+            }${
+              lib.optionalString cfg.nginx.mtls.enable (
+                ''
+                  \
+                                    --mtls-proxy-header X-SSL-Client-Verify''
+                + lib.concatMapStrings (s: ''
+                  \
+                                    --mtls-bound-subject ${lib.escapeShellArg s}'') cfg.nginx.mtls.boundSubjects
+                +
+                  lib.concatMapStrings
+                    (s: ''
+                      \
+                                        --mtls-bound-subject-read ${lib.escapeShellArg s}'')
+                    cfg.nginx.mtls.boundSubjectsRead
+              )
             }${lib.optionalString cfg.readProxy.enable ''
               \
                           --enable-read-proxy''}${
@@ -540,12 +601,25 @@ in
       virtualHosts.${cfg.nginx.domain} = {
         forceSSL = cfg.nginx.forceSSL;
         enableACME = cfg.nginx.enableACME;
+        extraConfig = lib.optionalString cfg.nginx.mtls.enable ''
+          ssl_client_certificate ${cfg.nginx.mtls.clientCAFile};
+          ssl_verify_client ${
+            if cfg.nginx.mtls.require || cfg.nginx.mtls.boundSubjectsRead != [ ] then "on" else "optional"
+          };
+        '';
         locations."/" = {
           proxyPass = "http://${cfg.httpAddr}";
           extraConfig = ''
             proxy_connect_timeout ${cfg.nginx.proxyTimeout};
             proxy_send_timeout ${cfg.nginx.proxyTimeout};
             proxy_read_timeout ${cfg.nginx.proxyTimeout};
+          ''
+          + lib.optionalString cfg.nginx.mtls.enable ''
+            # niks3 trusts these headers iff --mtls-proxy-header is set.
+            # Always set them (overriding any inbound value) so a client
+            # can't smuggle a fake SUCCESS through a misconfigured proxy.
+            proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+            proxy_set_header X-SSL-Client-Dn $ssl_client_s_dn;
           '';
         };
       };

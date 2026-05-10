@@ -91,6 +91,58 @@ testers.nixosTest {
           };
         };
 
+        # mTLS reverse proxy. Trusted, so requests with a verified client
+        # cert skip bearer-token auth. Certs are generated at test runtime
+        # (see testScript) so they never go stale.
+        services.niks3.nginx = {
+          enable = true;
+          domain = "server";
+          enableACME = false;
+          mtls = {
+            enable = true;
+            clientCAFile = "/etc/niks3-test-certs/ca.pem";
+            boundSubjects = [ "CN=niks3 test client" ];
+          };
+        };
+
+        services.nginx.virtualHosts."server" = {
+          sslCertificate = "/etc/niks3-test-certs/server.pem";
+          sslCertificateKey = "/etc/niks3-test-certs/server.key";
+        };
+
+        # Certs are written by the testScript before nginx needs them.
+        systemd.services.nginx = {
+          wants = [ "niks3-test-certs.service" ];
+          after = [ "niks3-test-certs.service" ];
+        };
+
+        systemd.services.niks3-test-certs = {
+          description = "Generate test mTLS certs";
+          before = [ "nginx.service" ];
+          wantedBy = [ "multi-user.target" ];
+          path = [ pkgs.openssl ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            set -euo pipefail
+            mkdir -p /etc/niks3-test-certs
+            cd /etc/niks3-test-certs
+            openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+              -keyout ca.key -out ca.pem -subj "/CN=niks3 test CA"
+            openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+              -keyout server.key -out server.csr -subj "/CN=server" -addext "subjectAltName=DNS:server"
+            openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+              -days 1 -copy_extensions copy -out server.pem
+            openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+              -keyout client.key -out client.csr -subj "/CN=niks3 test client"
+            openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+              -days 1 -out client.pem
+            chmod 644 *.pem *.key
+          '';
+        };
+
         # Mock OIDC server for testing
         systemd.services.mock-oidc = {
           description = "Mock OIDC server for testing";
@@ -180,6 +232,7 @@ testers.nixosTest {
         environment.etc."niks3-test/symlink-wrapper".source = symlinkWrapper;
 
         networking.firewall.allowedTCPPorts = [
+          443
           5751
           8080
           8081
@@ -242,6 +295,29 @@ testers.nixosTest {
     # Test with invalid auth token file (should fail)
     server.succeed("echo -n 'invalid-token' > /tmp/test-config/invalid-token")
     server.fail(f"NIKS3_SERVER_URL={server_url} NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/invalid-token {niks3_cmd} push {test_path}")
+
+    # ---- mTLS via nginx vhost ----
+    server.wait_for_unit("nginx.service")
+    server.wait_for_open_port(443)
+
+    https_url = "https://server"
+    certs = "/etc/niks3-test-certs"
+    mtls_args = f"--ca-cert {certs}/ca.pem --client-cert {certs}/client.pem --client-key {certs}/client.key"
+
+    # With a verified client cert, no bearer token required.
+    server.succeed(f"{niks3_cmd} push --server-url {https_url} {mtls_args} {test_path}")
+
+    # Without a client cert, anonymous TLS still gets 401 from niks3.
+    server.fail(f"{niks3_cmd} push --server-url {https_url} --ca-cert {certs}/ca.pem {test_path}")
+
+    # Without a cert but with a valid bearer token, still works (mTLS is optional).
+    server.succeed(f"NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token {niks3_cmd} push --server-url {https_url} --ca-cert {certs}/ca.pem {test_path}")
+
+    # Cert with a non-allowed subject is rejected by --mtls-bound-subject.
+    openssl = "${pkgs.openssl}/bin/openssl"
+    server.succeed(f"cd {certs} && {openssl} req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout other.key -out other.csr -subj '/CN=other client'")
+    server.succeed(f"cd {certs} && {openssl} x509 -req -in other.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -out other.pem")
+    server.fail(f"{niks3_cmd} push --server-url {https_url} --ca-cert {certs}/ca.pem --client-cert {certs}/other.pem --client-key {certs}/other.key {test_path}")
 
     # Test pulling from the binary cache using S3 protocol
     server.succeed("mkdir -p /tmp/test-store")

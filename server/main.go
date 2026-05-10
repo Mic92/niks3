@@ -101,6 +101,20 @@ func parseArgs() (*options, error) {
 		"Maximum concurrent S3 operations (default: 100)")
 	flag.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
 		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
+	flag.StringVar(&opts.MTLSProxyHeader, "mtls-proxy-header", getEnvOrDefault("NIKS3_MTLS_PROXY_HEADER", ""),
+		"Header set to SUCCESS by the reverse proxy after mTLS client cert verification (e.g. X-SSL-Client-Verify); requests with it skip bearer auth")
+	flag.StringVar(&opts.MTLSSubjectHeader, "mtls-subject-header", getEnvOrDefault("NIKS3_MTLS_SUBJECT_HEADER", "X-SSL-Client-Dn"),
+		"Header carrying the verified cert's subject DN, used with --mtls-bound-subject")
+
+	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjects), "mtls-bound-subject",
+		"Restrict mTLS write auth to certs whose subject DN matches this glob; repeat for multiple patterns")
+	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjectsRead), "mtls-bound-subject-read",
+		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob; repeat for multiple patterns. Empty = public reads")
+	flag.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
+		"TLS certificate; when set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
+	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
+	flag.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
+		"CA bundle for native mTLS client cert verification; subjects checked against --mtls-bound-subject")
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
@@ -179,6 +193,18 @@ func parseArgs() (*options, error) {
 	// API token is always required (for GC and admin operations)
 	if opts.APIToken == "" {
 		return nil, errors.New("missing required flag: --api-token or --api-token-path")
+	}
+
+	if (opts.TLSCert == "") != (opts.TLSKey == "") {
+		return nil, errors.New("--tls-cert and --tls-key must be set together")
+	}
+
+	if opts.TLSClientCA != "" && opts.TLSCert == "" {
+		return nil, errors.New("--tls-client-ca requires --tls-cert and --tls-key")
+	}
+
+	if opts.TLSClientCA != "" && opts.MTLSProxyHeader != "" {
+		return nil, errors.New("--tls-client-ca and --mtls-proxy-header are mutually exclusive")
 	}
 
 	if len(opts.APIToken) < minAPITokenLength {
