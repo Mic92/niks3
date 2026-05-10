@@ -203,11 +203,9 @@ func (w *Worker) drain() {
 			continue
 		}
 
-		drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		uploaded, err := w.push(drainCtx, existing)
-
-		cancel()
-
+		// No timeout: the supervisor (systemd / CI post step) enforces the
+		// shutdown budget and SIGKILLs on expiry.
+		uploaded, err := w.push(context.Background(), existing)
 		if err != nil {
 			slog.Error("Drain upload failed, paths remain in queue for next start", "error", err, "count", len(existing))
 
