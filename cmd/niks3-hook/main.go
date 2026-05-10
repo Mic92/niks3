@@ -67,6 +67,7 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Concurrent upload limit (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify S3 objects before skipping")
+	fmt.Fprintln(os.Stderr, cmdutil.TLSHelp)
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -148,6 +149,7 @@ func runServe() error {
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
 	maxConcurrent := fs.Int("max-concurrent-uploads", 30, "Concurrent upload limit")
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+	tf := cmdutil.AddTLSFlags(fs)
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -211,6 +213,10 @@ func runServe() error {
 	c, err := client.NewClient(ctx, *cf.ServerURL, token)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if err := tf.Configure(c); err != nil {
+		return err
 	}
 
 	c.MaxConcurrentNARUploads = *maxConcurrent

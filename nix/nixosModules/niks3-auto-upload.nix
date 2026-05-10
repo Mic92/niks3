@@ -75,6 +75,35 @@ in
       default = false;
       description = "Enable debug logging.";
     };
+
+    mtls = {
+      enable = lib.mkEnableOption "mTLS client authentication against the niks3 server";
+
+      clientCert = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Path to the client certificate file.
+          Use a runtime path (e.g. from sops-nix or agenix), not a Nix store path.
+        '';
+        example = "/run/secrets/niks3/client.crt";
+      };
+
+      clientKey = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Path to the client private key file.
+          Use a runtime path (e.g. from sops-nix or agenix), not a Nix store path.
+        '';
+        example = "/run/secrets/niks3/client.key";
+      };
+
+      caCert = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Path to a CA certificate to verify the server against (optional).";
+        example = "/run/secrets/niks3/ca.crt";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -126,6 +155,16 @@ in
             ]
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
+            ++ lib.optionals cfg.mtls.enable [
+              "--client-cert"
+              (lib.escapeShellArg cfg.mtls.clientCert)
+              "--client-key"
+              (lib.escapeShellArg cfg.mtls.clientKey)
+            ]
+            ++ lib.optionals (cfg.mtls.enable && cfg.mtls.caCert != null) [
+              "--ca-cert"
+              (lib.escapeShellArg cfg.mtls.caCert)
+            ]
           );
         Restart = "on-failure";
         RestartSec = "5s";
