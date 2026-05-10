@@ -502,3 +502,29 @@ func TestService_verifyS3Integrity(t *testing.T) {
 		t.Errorf("expected narinfo %s to be in pending objects", narinfoKey)
 	}
 }
+
+// TestCompleteMultipartUnregistered ensures complete refuses an upload that
+// was never registered, so clients cannot finalize multipart uploads outside
+// the pending-closure book-keeping.
+func TestCompleteMultipartUnregistered(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"object_key": narKeyFor("00000000000000000000000000000000"),
+		"upload_id":  "does-not-exist",
+		"parts":      []map[string]any{{"part_number": 1, "etag": "x"}},
+	})
+	ok(t, err)
+
+	checkNotFound := checkStatusCode(http.StatusNotFound)
+	testRequest(t, &TestRequest{
+		method:        "POST",
+		path:          "/api/multipart/complete",
+		body:          body,
+		handler:       service.CompleteMultipartUploadHandler,
+		checkResponse: &checkNotFound,
+	})
+}

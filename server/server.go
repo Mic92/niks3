@@ -260,9 +260,15 @@ func runServer(opts *options) error {
 	}
 
 	server := &http.Server{
-		Addr:              opts.HTTPAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 1 * time.Second,
+		Addr:    opts.HTTPAddr,
+		Handler: mux,
+		// Bound slowloris on API endpoints. Bodies are JSON (<128 MB) and
+		// responses are small. The read proxy extends its own write deadline
+		// per-request via ProxyWriteTimeout for large NAR streams.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)

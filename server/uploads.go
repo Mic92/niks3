@@ -16,6 +16,39 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
+const (
+	// MaxClosureRequestBody bounds POST /api/pending_closures.
+	// Measured ~190 B/object; 128 MB ≈ 670k objects, ~10× the largest
+	// observed CI bulk upload. Memory guard, not a quota — S3Concurrency
+	// and S3RateLimit bound the actual amplification cost.
+	MaxClosureRequestBody = 128 << 20
+
+	// maxAPIRequestBody bounds small JSON endpoints (complete, request-parts).
+	// Worst case: complete with 10,000 parts (S3 hard max) ≈ 700 kB. 12× headroom.
+	maxAPIRequestBody = 8 << 20
+)
+
+// decodeJSONBody decodes a size-limited JSON request body. It writes a
+// 413/400 response and returns false on error.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", maxErr.Limit), http.StatusRequestEntityTooLarge)
+
+			return false
+		}
+
+		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
+
+		return false
+	}
+
+	return true
+}
+
 type objectWithRefs struct {
 	Key     string   `json:"key"`
 	Type    string   `json:"type"`
@@ -60,9 +93,7 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	}()
 
 	req := &createPendingClosureRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, MaxClosureRequestBody, req) {
 		return
 	}
 
@@ -153,9 +184,7 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 	}()
 
 	req := &requestPartsRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
 		return
 	}
 
@@ -262,9 +291,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	}()
 
 	req := &completeMultipartRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
 		return
 	}
 
@@ -289,6 +316,19 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 
 	if len(req.Parts) == 0 {
 		http.Error(w, "missing parts", http.StatusBadRequest)
+
+		return
+	}
+
+	// Verify the upload is registered before touching S3, so clients cannot
+	// finalize multipart uploads outside the pending-closure book-keeping.
+	queries := pg.New(s.Pool)
+	if _, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
+		UploadID:  req.UploadID,
+		ObjectKey: req.ObjectKey,
+	}); err != nil {
+		slog.Error("Multipart upload not found", "error", err, "upload_id", req.UploadID, "object_key", req.ObjectKey)
+		http.Error(w, "multipart upload not found", http.StatusNotFound)
 
 		return
 	}
@@ -333,7 +373,6 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	s.S3RateLimiter.RecordSuccess()
 
 	// Delete the multipart upload tracking row
-	queries := pg.New(s.Pool)
 	if err := queries.DeleteMultipartUpload(r.Context(), req.UploadID); err != nil {
 		// Log the error but don't fail the request - the upload already succeeded in S3
 		slog.Error("Failed to delete multipart upload tracking row", "error", err, "upload_id", req.UploadID)
@@ -379,11 +418,10 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body with narinfo metadata
+	// Parse request body with narinfo metadata.
+	// Same scale as create: one entry per store path in the closure.
 	req := &signNarinfosRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, MaxClosureRequestBody, req) {
 		return
 	}
 

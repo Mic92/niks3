@@ -135,3 +135,36 @@ func TestUploadHandlersRejectInvalidKeys(t *testing.T) {
 		}
 	})
 }
+
+// TestUploadHandlersRejectOversizedBody ensures handlers cap request body
+// size before decoding, so a single request cannot exhaust server memory.
+func TestUploadHandlersRejectOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	svc := &server.Service{}
+
+	// Slightly over the largest configured limit. Stream of 'a' bytes inside
+	// a JSON string field so the decoder keeps reading until cut off.
+	oversize := server.MaxClosureRequestBody + 1
+	body := `{"closure":"` + strings.Repeat("a", oversize) + `"}`
+
+	handlers := map[string]http.HandlerFunc{
+		"create pending closure": svc.CreatePendingClosureHandler,
+		"complete multipart":     svc.CompleteMultipartUploadHandler,
+		"request more parts":     svc.RequestMorePartsHandler,
+	}
+
+	for name, h := range handlers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("expected 413, got %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
