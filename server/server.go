@@ -62,6 +62,17 @@ type options struct {
 	// these globs may read. Empty = read proxy is public (default).
 	MTLSBoundSubjectsRead []string
 
+	// TLSCert/TLSKey, when both set, make the server terminate TLS itself
+	// instead of expecting a reverse proxy.
+	TLSCert string
+	TLSKey  string
+
+	// TLSClientCA, when set with TLSCert/TLSKey, enables native mTLS:
+	// the server requests and verifies client certs against this CA bundle.
+	// The cert subject is checked against MTLSBoundSubjects directly —
+	// no proxy headers involved.
+	TLSClientCA string
+
 	Debug bool
 }
 
@@ -80,7 +91,13 @@ type Service struct {
 	MTLSSubjectHeader     string
 	MTLSBoundSubjects     []string
 	MTLSBoundSubjectsRead []string
-	GCTasks               *GCTaskStore
+
+	// NativeMTLS is set when the server terminates TLS itself with a
+	// client CA — mtlsCheck reads r.TLS.PeerCertificates directly
+	// instead of trusting proxy headers.
+	NativeMTLS bool
+
+	GCTasks *GCTaskStore
 }
 
 // Close closes the database connection pool.
@@ -311,6 +328,24 @@ func runServer(opts *options) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+
+	if opts.TLSCert != "" {
+		tlsCfg, err := serverTLSConfig(opts.TLSClientCA)
+		if err != nil {
+			return err
+		}
+
+		server.TLSConfig = tlsCfg
+		service.NativeMTLS = opts.TLSClientCA != ""
+
+		slog.Info("Starting HTTPS server", "address", opts.HTTPAddr, "mtls", service.NativeMTLS)
+
+		if err = server.ListenAndServeTLS(opts.TLSCert, opts.TLSKey); err != nil {
+			return fmt.Errorf("failed to start server: %w", err)
+		}
+
+		return nil
 	}
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
