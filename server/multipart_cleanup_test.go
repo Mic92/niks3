@@ -20,9 +20,9 @@ func TestMultipartCleanup(t *testing.T) {
 	defer service.Close()
 
 	// Create a pending closure with multipart upload
-	closureHash := "deadbeefdeadbeefdeadbeefdeadbeef"
+	closureHash := "dadb44fdadb44fdadb44fdadb44f0000"
 	closureKey := closureHash + ".narinfo"
-	narKey := "nar/" + closureHash + ".nar.zst"
+	narKey := narKeyFor(closureHash)
 
 	// Use a large NarSize to ensure multipart upload is used
 	largeNarSize := uint64(100 * 1024 * 1024) // 100MB
