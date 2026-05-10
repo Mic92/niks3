@@ -1,6 +1,10 @@
 package server
 
-import "github.com/Mic92/niks3/api"
+import (
+	"crypto/tls"
+
+	"github.com/Mic92/niks3/api"
+)
 
 // Test-only exports for gcTask methods, callable from server_test package.
 
@@ -21,3 +25,8 @@ func ParseSingleRange(spec string, size int64) (*ByteRange, error) {
 
 func (br ByteRange) Start() int64 { return br.start }
 func (br ByteRange) End() int64   { return br.end }
+
+// ServerTLSConfig is an export of serverTLSConfig for tests.
+func ServerTLSConfig(clientCA string) (*tls.Config, error) {
+	return serverTLSConfig(clientCA)
+}
