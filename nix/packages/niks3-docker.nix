@@ -26,6 +26,12 @@ let
     crossPkgs.dockerTools.buildLayeredImage {
       name = niks3-server.pname;
       tag = "${niks3-server.version}-${crossSystem}";
+      # The per-arch tarball is an intermediate that regctl decompresses
+      # immediately. Skip compression: pigz with -p$NIX_BUILD_CORES has
+      # been observed to segfault (likely OOM) on busy CI runners, and
+      # compressing here only to decompress in the next step is wasted CPU.
+      # The final multi-arch image is compressed by regctl on export.
+      compressor = "none";
       contents = [
         (niks3-server.overrideAttrs (old: {
           env = old.env // {
