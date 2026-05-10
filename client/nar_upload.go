@@ -33,6 +33,10 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 	name := filepath.Base(storePath)
 	slog.Info(fmt.Sprintf("Uploading %s (%s)", name, formatBytes(narSize)))
 
+	if multipartInfo == nil {
+		return nil, errors.New("NAR files require multipart upload info")
+	}
+
 	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
 	pr, pw := io.Pipe()
 
@@ -85,10 +89,6 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 
 		listingChan <- listing
 	}()
-
-	if multipartInfo == nil {
-		return nil, errors.New("NAR files require multipart upload info")
-	}
 
 	err := c.uploadMultipart(ctx, pr, multipartInfo, objectKey)
 	// If upload failed, signal compressor to stop and wait for it to exit
