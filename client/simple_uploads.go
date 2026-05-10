@@ -47,7 +47,7 @@ func (c *Client) UploadListingToPresignedURL(ctx context.Context, presignedURL s
 
 	// Upload with Content-Encoding header
 	headers := map[string]string{
-		"Content-Encoding": "zstd",
+		"Content-Encoding": compressionZstd,
 	}
 
 	return c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, compressed, headers)
@@ -113,7 +113,7 @@ func (c *Client) UploadBuildLogToPresignedURL(ctx context.Context, presignedURL 
 
 	// Set headers
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	req.Header.Set("Content-Encoding", "zstd")
+	req.Header.Set("Content-Encoding", compressionZstd)
 
 	// Upload
 	resp, err := c.DoS3Request(ctx, req)

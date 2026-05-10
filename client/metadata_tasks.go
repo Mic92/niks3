@@ -97,7 +97,7 @@ func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisa
 
 	// Upload with Content-Encoding header
 	headers := map[string]string{
-		"Content-Encoding": "zstd",
+		"Content-Encoding": compressionZstd,
 	}
 
 	if err := c.UploadBytesToPresignedURLWithHeaders(ctx, task.obj.PresignedURL, compressed, headers); err != nil {

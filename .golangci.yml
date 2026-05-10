@@ -31,6 +31,12 @@ linters:
       - third_party$
       - builtin$
       - examples$
+    rules:
+      # goconst flags repeated test fixture literals (hashes, paths,
+      # HTTP methods). Hoisting them to consts makes tests harder to
+      # read for no correctness gain.
+      - linters: [goconst]
+        path: _test\.go$
 formatters:
   enable:
     - gci

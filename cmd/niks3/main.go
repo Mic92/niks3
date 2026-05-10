@@ -38,6 +38,8 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
@@ -57,6 +59,7 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
 	fmt.Fprintln(os.Stderr, "  --older-than string")
 	fmt.Fprintln(os.Stderr, "        Delete closures older than this duration (default: '720h' for 30 days)")
 	fmt.Fprintln(os.Stderr, "  --failed-uploads-older-than string")
@@ -84,17 +87,10 @@ func run() error {
 		os.Exit(0)
 	}
 
-	// Get default auth token from environment/XDG (after help check so
-	// --help never reads auth files or produces auth errors).
-	defaultAuthToken, err := cmdutil.GetAuthToken()
-	if err != nil {
-		return err
-	}
-
 	switch os.Args[1] {
 	case "push":
 		pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
-		cf := cmdutil.AddCommonFlags(pushCmd, defaultAuthToken)
+		cf := cmdutil.AddCommonFlags(pushCmd)
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 		tf := cmdutil.AddTLSFlags(pushCmd)
@@ -116,11 +112,12 @@ func run() error {
 		cmdutil.SetupLogger(*cf.Debug)
 
 		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
-		if err := cmdutil.RequireAuthToken(*cf.AuthToken); err != nil {
-			return err
+		ts, err := cf.TokenSource(pushCmd)
+		if err != nil {
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
 		paths := pushCmd.Args()
@@ -128,12 +125,11 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*cf.ServerURL, *cf.AuthToken, paths, *maxConcurrent, *verifyS3Integrity, *cf.Debug, tf)
+		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity, *cf.Debug, tf)
 
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
-		cf := cmdutil.AddCommonFlags(gcCmd, defaultAuthToken)
-		authTokenPath := gcCmd.String("auth-token-path", "", "Path to auth token file")
+		cf := cmdutil.AddCommonFlags(gcCmd)
 		olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration")
 		pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration")
 		force := gcCmd.Bool("force", false, "Force immediate deletion without grace period")
@@ -156,26 +152,22 @@ func run() error {
 		cmdutil.SetupLogger(*cf.Debug)
 
 		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
-		token, err := cmdutil.ResolveAuthToken(*cf.AuthToken, *authTokenPath)
+		ts, err := cf.TokenSource(gcCmd)
 		if err != nil {
-			return err
+			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
 
-		if err := cmdutil.RequireAuthToken(token); err != nil {
-			return err
-		}
-
-		return gcCommand(*cf.ServerURL, token, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
+		return gcCommand(*cf.ServerURL, ts, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
 }
 
-func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, debug bool, tf cmdutil.TLSFlags) error {
+func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, verifyS3Integrity bool, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -183,13 +175,13 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 		maxConcurrent = 1
 	}
 
-	c, err := client.NewClient(ctx, serverURL, authToken)
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = maxConcurrent
@@ -206,17 +198,17 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	return nil
 }
 
-func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool, debug bool, tf cmdutil.TLSFlags) error {
+func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderThan string, force bool, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c, err := client.NewClient(ctx, serverURL, authToken)
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	if debug {
@@ -235,7 +227,8 @@ func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force b
 		return fmt.Errorf("running garbage collection: %w", err)
 	}
 
-	slog.Info("Garbage collection completed successfully",
+	slog.Info(
+		"Garbage collection completed successfully",
 		"failed-uploads-deleted", stats.FailedUploadsDeleted,
 		"old-closures-deleted", stats.OldClosuresDeleted,
 		"objects-marked-for-deletion", stats.ObjectsMarkedForDeletion,

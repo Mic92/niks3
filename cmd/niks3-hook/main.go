@@ -56,6 +56,7 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
 	fmt.Fprintf(os.Stderr, "  --socket string\n        Unix socket path (default: %s)\n", hook.DefaultSocketPath)
 	fmt.Fprintln(os.Stderr, "  --db-path string")
 	fmt.Fprintln(os.Stderr, "        SQLite database path (default: /var/lib/niks3-hook/upload-queue.db)")
@@ -135,14 +136,8 @@ func runSend() error {
 }
 
 func runServe() error {
-	defaultAuthToken, err := cmdutil.GetAuthToken()
-	if err != nil {
-		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	cf := cmdutil.AddCommonFlags(fs, defaultAuthToken)
-	authTokenPath := fs.String("auth-token-path", "", "Path to auth token file")
+	cf := cmdutil.AddCommonFlags(fs)
 	socket := fs.String("socket", hook.DefaultSocketPath, "Unix socket path")
 	dbPath := fs.String("db-path", "/var/lib/niks3-hook/upload-queue.db", "SQLite database path")
 	batchSize := fs.Int("batch-size", 50, "Paths per upload batch")
@@ -171,12 +166,8 @@ func runServe() error {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
-	token, err := cmdutil.ResolveAuthToken(*cf.AuthToken, *authTokenPath)
+	ts, err := cf.TokenSource(fs)
 	if err != nil {
-		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	if err := cmdutil.RequireAuthToken(token); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
@@ -210,13 +201,13 @@ func runServe() error {
 	defer stop()
 
 	// Create the niks3 client.
-	c, err := client.NewClient(ctx, *cf.ServerURL, token)
+	c, err := client.NewClientWithTokenSource(ctx, *cf.ServerURL, ts)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 
 	if err := tf.Configure(c); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = *maxConcurrent
@@ -263,7 +254,8 @@ func runServe() error {
 		defer func() { _ = os.Remove(*socket) }()
 	}
 
-	slog.Info("niks3-hook serve starting",
+	slog.Info(
+		"niks3-hook serve starting",
 		"socket", *socket,
 		"socket-activated", activated,
 		"db-path", *dbPath,
