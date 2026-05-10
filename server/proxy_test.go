@@ -454,3 +454,90 @@ func TestReadProxyDisabled(t *testing.T) {
 		t.Errorf("expected 404 when proxy disabled, got %d", resp.StatusCode)
 	}
 }
+
+// TestReadProxyRangeRequest ensures the proxy honors Range headers so an
+// interrupted NAR download can resume instead of restarting from zero.
+func TestReadProxyRangeRequest(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	narContent := bytes.Repeat([]byte("0123456789"), 1024) // 10 KiB
+	key := "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst"
+	putTestObject(ctx, t, service, key, narContent,
+		minio.PutObjectOptions{ContentType: "application/x-nix-nar"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	get := func(rangeHeader string) *http.Response {
+		t.Helper()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/"+key, nil)
+		ok(t, err)
+
+		if rangeHeader != "" {
+			req.Header.Set("Range", rangeHeader)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		ok(t, err)
+
+		return resp
+	}
+
+	// HEAD advertises Accept-Ranges.
+	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, ts.URL+"/"+key, nil)
+	ok(t, err)
+
+	headResp, err := http.DefaultClient.Do(headReq)
+	ok(t, err)
+	_ = headResp.Body.Close()
+
+	if got := headResp.Header.Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("HEAD Accept-Ranges = %q, want bytes", got)
+	}
+
+	// Closed range -> 206.
+	resp := get("bytes=100-199")
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("partial: status = %d, want 206", resp.StatusCode)
+	}
+
+	if got := resp.Header.Get("Content-Range"); got != "bytes 100-199/10240" {
+		t.Errorf("partial: Content-Range = %q, want bytes 100-199/10240", got)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	ok(t, err)
+	_ = resp.Body.Close()
+
+	if !bytes.Equal(body, narContent[100:200]) {
+		t.Errorf("partial: got %d bytes, want narContent[100:200]", len(body))
+	}
+
+	// Open-ended range -> 206.
+	resp = get("bytes=10000-")
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("open-ended: status = %d, want 206", resp.StatusCode)
+	}
+
+	body, err = io.ReadAll(resp.Body)
+	ok(t, err)
+	_ = resp.Body.Close()
+
+	if len(body) != 240 {
+		t.Errorf("open-ended: body length = %d, want 240", len(body))
+	}
+
+	// Range past EOF -> 416.
+	resp = get("bytes=99999-")
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("unsatisfiable: status = %d, want 416", resp.StatusCode)
+	}
+}

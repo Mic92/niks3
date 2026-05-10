@@ -1,11 +1,13 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,94 @@ func ProxyWriteTimeout(size int64) time.Duration {
 	}
 
 	return proxyTimeoutSlack + time.Duration(size/proxyMinThroughput)*time.Second
+}
+
+// byteRange is a single parsed Range header span, inclusive.
+type byteRange struct {
+	start, end int64
+}
+
+func (br byteRange) length() int64 { return br.end - br.start + 1 }
+
+// errUnsatisfiableRange marks a Range that cannot be served (RFC 7233 §4.4).
+var errUnsatisfiableRange = errors.New("unsatisfiable range")
+
+// parseSingleRange parses a single-span "bytes=" Range header against an
+// object of the given size. Returns nil when no Range header is present
+// (serve full object) or when the spec is multi-range / malformed (RFC 7233
+// allows ignoring such requests). Returns errUnsatisfiableRange for ranges
+// entirely past EOF.
+func parseSingleRange(spec string, size int64) (*byteRange, error) {
+	if spec == "" || size <= 0 {
+		return nil, nil //nolint:nilnil // no Range header
+	}
+
+	const prefix = "bytes="
+	if !strings.HasPrefix(spec, prefix) {
+		return nil, nil //nolint:nilnil // unknown range unit, ignore per RFC 7233
+	}
+
+	spec = strings.TrimPrefix(spec, prefix)
+	if strings.Contains(spec, ",") {
+		// Multi-range needs multipart/byteranges responses; not worth the
+		// complexity for binary cache traffic. Serve full object.
+		return nil, nil //nolint:nilnil // multi-range, ignore per RFC 7233
+	}
+
+	startStr, endStr, ok := strings.Cut(spec, "-")
+	if !ok {
+		return nil, nil //nolint:nilnil // malformed Range header, ignore per RFC 7233
+	}
+
+	startStr = strings.TrimSpace(startStr)
+	endStr = strings.TrimSpace(endStr)
+
+	var br byteRange
+
+	switch {
+	case startStr == "" && endStr == "":
+		return nil, nil //nolint:nilnil // malformed Range header, ignore per RFC 7233
+
+	case startStr == "":
+		// Suffix range: last N bytes.
+		n, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, nil //nolint:nilnil,nilerr // malformed Range header, ignore per RFC 7233
+		}
+
+		if n > size {
+			n = size
+		}
+
+		br = byteRange{start: size - n, end: size - 1}
+
+	default:
+		start, err := strconv.ParseInt(startStr, 10, 64)
+		if err != nil || start < 0 {
+			return nil, nil //nolint:nilnil,nilerr // malformed Range header, ignore per RFC 7233
+		}
+
+		if start >= size {
+			return nil, errUnsatisfiableRange
+		}
+
+		end := size - 1
+
+		if endStr != "" {
+			end, err = strconv.ParseInt(endStr, 10, 64)
+			if err != nil || end < start {
+				return nil, nil //nolint:nilnil,nilerr // malformed Range header, ignore per RFC 7233
+			}
+
+			if end >= size {
+				end = size - 1
+			}
+		}
+
+		br = byteRange{start: start, end: end}
+	}
+
+	return &br, nil
 }
 
 // zstdDecoderPool pools zstd decoders to reduce memory allocations.
@@ -178,6 +268,7 @@ func (s *Service) handleProxyHead(w http.ResponseWriter, r *http.Request, key st
 	// For narinfos we decompress on GET, so the compressed Content-Length
 	// from S3 would be wrong. Omit it — HTTP allows HEAD without Content-Length.
 	if !strings.HasSuffix(key, ".narinfo") {
+		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", objInfo.Size))
 	} else {
 		w.Header().Set("Content-Type", "text/x-nix-narinfo")
@@ -199,12 +290,10 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 	s.S3RateLimiter.RecordSuccess()
 
 	// Handle conditional requests (If-None-Match)
-	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
-		if ifNoneMatch == objInfo.ETag {
-			w.WriteHeader(http.StatusNotModified)
+	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" && ifNoneMatch == objInfo.ETag {
+		w.WriteHeader(http.StatusNotModified)
 
-			return
-		}
+		return
 	}
 
 	// Handle conditional requests (If-Modified-Since)
@@ -217,6 +306,26 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		}
 	}
 
+	isNarinfo := strings.HasSuffix(key, ".narinfo")
+
+	// Range support is for resuming large NAR downloads on flaky links. We
+	// translate the Range header into an S3 range request rather than using
+	// http.ServeContent: the latter seeks within minio.Object, which aborts
+	// and re-issues the underlying S3 stream.
+	var rng *byteRange
+
+	if !isNarinfo {
+		var rangeErr error
+
+		rng, rangeErr = parseSingleRange(r.Header.Get("Range"), objInfo.Size)
+		if errors.Is(rangeErr, errUnsatisfiableRange) {
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(objInfo.Size, 10))
+			http.Error(w, "Requested Range Not Satisfiable", http.StatusRequestedRangeNotSatisfiable)
+
+			return
+		}
+	}
+
 	// Wait for rate limiter again for the actual GET
 	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -224,7 +333,16 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	obj, err := s.MinioClient.GetObject(r.Context(), s.Bucket, key, minio.GetObjectOptions{})
+	getOpts := minio.GetObjectOptions{}
+	if rng != nil {
+		if err := getOpts.SetRange(rng.start, rng.end); err != nil {
+			http.Error(w, "invalid range", http.StatusBadRequest)
+
+			return
+		}
+	}
+
+	obj, err := s.MinioClient.GetObject(r.Context(), s.Bucket, key, getOpts)
 	if err != nil {
 		s.handleProxyS3Error(w, err, key)
 
@@ -241,7 +359,7 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 
 	// Narinfos are stored zstd-compressed in S3, but Nix's HTTP binary cache
 	// client expects plain text. Decompress on the fly (narinfos are ~500 bytes).
-	if strings.HasSuffix(key, ".narinfo") {
+	if isNarinfo {
 		s.serveDecompressedNarinfo(w, obj, &objInfo)
 
 		return
@@ -255,8 +373,16 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 	}
 
 	setProxyHeaders(w, &objInfo)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", objInfo.Size))
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	if rng != nil {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, objInfo.Size))
+		w.Header().Set("Content-Length", strconv.FormatInt(rng.length(), 10))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(objInfo.Size, 10))
+		w.WriteHeader(http.StatusOK)
+	}
 
 	if _, err := io.Copy(w, obj); err != nil {
 		slog.Debug("Failed to stream S3 object to client", "key", key, "error", err)
