@@ -26,6 +26,7 @@ func TestIsValidUploadKey(t *testing.T) {
 		{"nar plain", "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar", "nar", true},
 		{"listing", "26xbg1ndr7hbcncrlf9nhx5is2b25d13.ls", "listing", true},
 		{"build log", "log/abcd1234-hello-1.0.drv", "build_log", true},
+		{"build log home-manager file", "log/abcd1234-hm_..zlogout.drv", "build_log", true},
 		{"realisation", "realisations/sha256:abc123!out.doi", "realisation", true},
 
 		// Server-owned files: never client-writable

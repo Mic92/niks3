@@ -16,7 +16,8 @@ func IsValidUploadKey(key, objType string) bool {
 		return false
 	}
 
-	if strings.HasPrefix(key, "/") || strings.Contains(key, "..") {
+	if strings.HasPrefix(key, "/") || strings.HasPrefix(key, "../") ||
+		strings.HasSuffix(key, "/..") || strings.Contains(key, "/../") {
 		return false
 	}
 
