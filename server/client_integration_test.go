@@ -506,7 +506,8 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 
 	// Set up environment for AWS credentials
 	// Use the same env vars as Nix's tests
-	nixEnv = append(nixEnv,
+	nixEnv = append(
+		nixEnv,
 		"AWS_ACCESS_KEY_ID=rustfsadmin",
 		"AWS_SECRET_ACCESS_KEY="+testRustfsServer.secret,
 	)

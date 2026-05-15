@@ -195,7 +195,8 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestGetListenerSocketActivation$", "-test.v") //nolint:gosec // test binary
 
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"GO_TEST_SOCKET_ACTIVATION=1",
 		"GO_TEST_SOCKET_PATH="+socketPath,
 	)

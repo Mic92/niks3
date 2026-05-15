@@ -197,7 +197,8 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 		return
 	}
 
-	slog.Info("Garbage collection completed",
+	slog.Info(
+		"Garbage collection completed",
 		"failed-uploads-deleted", stats.FailedUploadsDeleted,
 		"old-closures-deleted", stats.OldClosuresDeleted,
 		"objects-marked-for-deletion", stats.ObjectsMarkedForDeletion,
