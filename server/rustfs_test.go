@@ -157,9 +157,15 @@ func startRustfsServer(ctx context.Context) (*rustfsServer, error) {
 		return nil, fmt.Errorf("failed to create data dir: %w", err)
 	}
 
+	consolePort, err := randPort(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find free console port: %w", err)
+	}
+
 	//nolint:gosec
 	rustfsProc := exec.CommandContext(ctx, "rustfs",
 		"--address", fmt.Sprintf("127.0.0.1:%d", port),
+		"--console-address", fmt.Sprintf("127.0.0.1:%d", consolePort),
 		"--access-key", "rustfsadmin",
 		"--secret-key", secret,
 		dataDir)

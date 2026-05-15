@@ -186,7 +186,7 @@ func (ca *ContentAddress) String() string {
 			return "text:" + nix32Hash
 		case "flat":
 			return "fixed:" + nix32Hash
-		case "nar":
+		case string(ObjectTypeNAR):
 			return "fixed:r:" + nix32Hash
 		case "git":
 			return "fixed:git:" + nix32Hash
