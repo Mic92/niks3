@@ -90,7 +90,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 		listingChan <- listing
 	}()
 
-	err := c.uploadMultipart(ctx, pr, multipartInfo, objectKey)
+	err := c.uploadMultipart(ctx, pr, multipartInfo, objectKey, partSizeForNAR(narSize))
 	// If upload failed, signal compressor to stop and wait for it to exit
 	if err != nil {
 		_ = pw.CloseWithError(err)
