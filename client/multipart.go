@@ -14,8 +14,34 @@ import (
 )
 
 const (
-	multipartPartSize = 10 * 1024 * 1024 // 10MB parts for balance between overhead and throughput
+	multipartPartSize = 10 * 1024 * 1024       // default/minimum part size
+	maxPartSize       = 5 * 1024 * 1024 * 1024 // S3 max part size
+	// S3 allows at most 10000 parts. Aim for 9000: zstd can emit a bit more
+	// than the input on incompressible data, and rounding to a 16 MiB step
+	// gives no slack right at a boundary. The headroom only costs a
+	// slightly bigger part size.
+	targetMaxParts = 9000
 )
+
+// partSizeForNAR returns a part size that keeps the compressed upload under
+// S3's 10000-part limit. We don't know the compressed size up front, but the
+// uncompressed NAR size is a safe upper bound. Rounded up to 16 MiB steps
+// (same as minio-go), clamped to the default 10 MiB and S3's 5 GiB max.
+func partSizeForNAR(narSize uint64) int {
+	const step = 16 << 20
+
+	size := (narSize + targetMaxParts - 1) / targetMaxParts
+	if size <= multipartPartSize {
+		return multipartPartSize
+	}
+
+	size = (size + step - 1) / step * step
+	if size > maxPartSize {
+		return maxPartSize
+	}
+
+	return int(size)
+}
 
 // formatBytes formats bytes in human-readable form (KB/MB/GB).
 func formatBytes(bytes uint64) string {
@@ -33,13 +59,27 @@ func formatBytes(bytes uint64) string {
 	return fmt.Sprintf("%.1f%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// uploadBufferPool pools 10MB buffers for multipart uploads to reduce memory allocations.
+// uploadBufferPool pools default-sized part buffers to reduce allocations.
+// Larger NARs get a one-off buffer (rare, not worth pooling).
 var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() any {
 		buf := make([]byte, multipartPartSize)
 
 		return &buf
 	},
+}
+
+func getPartBuffer(partSize int) ([]byte, func()) {
+	if partSize > multipartPartSize {
+		return make([]byte, partSize), func() {}
+	}
+
+	ptr, ok := uploadBufferPool.Get().(*[]byte)
+	if !ok {
+		return make([]byte, multipartPartSize), func() {}
+	}
+
+	return *ptr, func() { uploadBufferPool.Put(ptr) }
 }
 
 // MultipartUploadInfo contains multipart upload information.
@@ -171,20 +211,13 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 }
 
 // uploadMultipart uploads a stream in parts using presigned URLs (sequential).
-func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string) error {
-	slog.Debug("Uploading", "object_key", objectKey)
+func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
+	slog.Debug("Uploading", "object_key", objectKey, "part_size", partSize)
 
 	var completedParts []CompletedPart
 
-	// Get buffer from pool
-	bufferPtr, ok := uploadBufferPool.Get().(*[]byte)
-	if !ok {
-		return errors.New("failed to get buffer from pool")
-	}
-
-	defer uploadBufferPool.Put(bufferPtr)
-
-	buffer := *bufferPtr
+	buffer, release := getPartBuffer(partSize)
+	defer release()
 
 	partNumber := 1
 	partURLs := multipartInfo.PartURLs
@@ -210,7 +243,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			slog.Info("Received additional part URLs", "count", len(newPartURLs), "total_parts", len(partURLs))
 		}
 
-		// Read up to multipartPartSize for this part
+		// Read up to partSize for this part
 		n, readErr := io.ReadFull(r, buffer)
 		if errors.Is(readErr, io.EOF) {
 			// Done reading
