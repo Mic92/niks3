@@ -157,11 +157,12 @@ var (
 	// ls: {32-char nix-base32 hash}.ls
 	lsRe = regexp.MustCompile(`^[` + nixBase32Alphabet + `]{32}\.ls$`)
 
-	// log: log/{name}.drv — name can contain alphanumerics, hyphens, dots, underscores
-	logRe = regexp.MustCompile(`^log/[a-zA-Z0-9._-]+\.drv$`)
+	// log: log/{name}.drv — name alphabet matches nix's nameRegexStr
+	// in src/libstore/path.cc: [A-Za-z0-9+\-._?=]
+	logRe = regexp.MustCompile(`^log/[a-zA-Z0-9+._?=-]+\.drv$`)
 
 	// realisations: realisations/{hash-algo}:{hex}!{output}.doi
-	realisationsRe = regexp.MustCompile(`^realisations/[a-z0-9]+:[a-zA-Z0-9+/=]+![a-zA-Z0-9_-]+\.doi$`)
+	realisationsRe = regexp.MustCompile(`^realisations/[a-z0-9]+:[a-zA-Z0-9+/=]+![a-zA-Z0-9+._?=-]+\.doi$`)
 )
 
 // IsValidCachePath checks whether a path matches a known Nix binary cache object pattern.
@@ -176,8 +177,10 @@ func IsValidCachePath(path string) bool {
 		return false
 	}
 
-	// Reject path traversal
-	if strings.Contains(path, "..") {
+	// Reject ".." path segments. Don't use a plain Contains check here:
+	// store-path names can legitimately contain ".." (e.g. hm_..zlogout.drv).
+	if strings.HasPrefix(path, "../") || strings.HasSuffix(path, "/..") ||
+		strings.Contains(path, "/../") || path == ".." {
 		return false
 	}
 

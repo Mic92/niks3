@@ -27,7 +27,11 @@ func TestIsValidUploadKey(t *testing.T) {
 		{"listing", "26xbg1ndr7hbcncrlf9nhx5is2b25d13.ls", "listing", true},
 		{"build log", "log/abcd1234-hello-1.0.drv", "build_log", true},
 		{"build log home-manager file", "log/abcd1234-hm_..zlogout.drv", "build_log", true},
+		{"build log plus in name", "log/z96xgwn1b618qdygp6j59ij07wjhvdl0-events_history_sdk-1.1.3.post19+t202603130851.tar.gz.drv", "build_log", true},
+		{"build log question mark", "log/abcd1234-foo?bar.drv", "build_log", true},
+		{"build log equals", "log/abcd1234-foo=bar.drv", "build_log", true},
 		{"realisation", "realisations/sha256:abc123!out.doi", "realisation", true},
+		{"realisation plus in output", "realisations/sha256:abc123!out+dev.doi", "realisation", true},
 
 		// Server-owned files: never client-writable
 		{"nix-cache-info", "nix-cache-info", "narinfo", false},
