@@ -528,3 +528,55 @@ func TestCompleteMultipartUnregistered(t *testing.T) {
 		checkResponse: &checkNotFound,
 	})
 }
+
+// TestCreatePendingClosure_SmallNARUsesSimplePUT ensures NARs at or below the
+// multipart part size get a single presigned PUT URL instead of a multipart
+// upload, which saves S3 API calls (relevant for providers with strict rate
+// limits, e.g. Backblaze B2).
+func TestCreatePendingClosure_SmallNARUsesSimplePUT(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	closureHash := "dddddddddddddddddddddddddddddd01"
+	narinfoKey := closureHash + ".narinfo"
+	smallNarKey := narKeyFor(closureHash)
+	largeNarKey := narKeyFor("dddddddddddddddddddddddddddddd02")
+
+	body, err := json.Marshal(map[string]any{
+		"closure": narinfoKey,
+		"objects": []map[string]any{
+			{"key": narinfoKey, "type": "narinfo", "refs": []string{smallNarKey, largeNarKey}},
+			{"key": smallNarKey, "type": "nar", "refs": []string{}, "nar_size": 1024},
+			{"key": largeNarKey, "type": "nar", "refs": []string{}, "nar_size": 20 * 1024 * 1024},
+		},
+	})
+	ok(t, err)
+
+	rr := testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/pending_closures",
+		body:    body,
+		handler: service.CreatePendingClosureHandler,
+	})
+
+	var resp server.PendingClosureResponse
+
+	err = json.Unmarshal(rr.Body.Bytes(), &resp)
+	ok(t, err)
+
+	small := resp.PendingObjects[smallNarKey]
+	if small.MultipartInfo != nil {
+		t.Errorf("small NAR should not use multipart upload")
+	}
+
+	if small.PresignedURL == "" {
+		t.Errorf("small NAR should have a presigned URL")
+	}
+
+	large := resp.PendingObjects[largeNarKey]
+	if large.MultipartInfo == nil {
+		t.Errorf("large NAR should use multipart upload")
+	}
+}

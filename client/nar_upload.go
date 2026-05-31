@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,16 +28,65 @@ var zstdEncoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should b
 	},
 }
 
-// CompressAndUploadNAR compresses a NAR and uploads it using multipart upload.
+// compressAndSimpleUploadNAR uploads a small NAR with a single presigned PUT.
+// The compressed NAR is stored as opaque bytes with no Content-Encoding (like multipart part upload);
+// nix-daemon decompresses it per the narinfo Compression field.
+func (c *Client) compressAndSimpleUploadNAR(ctx context.Context, storePath, presignedURL, objectKey string) (*NarListing, error) {
+	encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
+	if !ok {
+		return nil, errors.New("failed to get zstd encoder from pool")
+	}
+	defer zstdEncoderPool.Put(encoder)
+
+	var buf bytes.Buffer
+
+	encoder.Reset(&buf)
+
+	listing, err := DumpPathWithListing(encoder, storePath)
+	if err != nil {
+		return nil, fmt.Errorf("serializing NAR: %w", err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("closing zstd encoder: %w", err)
+	}
+
+	if err := c.UploadBytesToPresignedURLWithHeaders(ctx, presignedURL, buf.Bytes(), nil); err != nil {
+		return nil, fmt.Errorf("uploading NAR %s: %w", objectKey, err)
+	}
+
+	return listing, nil
+}
+
+// CompressAndUploadNAR compresses a NAR and uploads it.
+// Small NARs are sent with a single presigned PUT, larger ones via multipart upload.
 // It also generates a directory listing during serialization.
-func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, multipartInfo *MultipartUploadInfo, objectKey string) (*NarListing, error) {
+func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, narSize uint64, obj PendingObject, objectKey string) (*NarListing, error) {
 	name := filepath.Base(storePath)
 	slog.Info(fmt.Sprintf("Uploading %s (%s)", name, formatBytes(narSize)))
 
-	if multipartInfo == nil {
-		return nil, errors.New("NAR files require multipart upload info")
+	var (
+		listing *NarListing
+		err     error
+	)
+
+	if obj.MultipartInfo != nil {
+		listing, err = c.compressAndMultipartUploadNAR(ctx, storePath, narSize, obj.MultipartInfo, objectKey)
+	} else {
+		listing, err = c.compressAndSimpleUploadNAR(ctx, storePath, obj.PresignedURL, objectKey)
 	}
 
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Debug("Uploaded NAR", "object_key", objectKey)
+
+	return listing, nil
+}
+
+// compressAndMultipartUploadNAR streams a compressed NAR through a multipart upload.
+func (c *Client) compressAndMultipartUploadNAR(ctx context.Context, storePath string, narSize uint64, multipartInfo *MultipartUploadInfo, objectKey string) (*NarListing, error) {
 	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
 	pr, pw := io.Pipe()
 
@@ -105,9 +155,5 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 		return nil, compressErr
 	}
 
-	listing := <-listingChan
-
-	slog.Debug("Uploaded NAR", "object_key", objectKey)
-
-	return listing, nil
+	return <-listingChan, nil
 }

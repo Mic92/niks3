@@ -14,6 +14,14 @@ const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
 )
 
+// useSimpleUpload reports whether a NAR of the given uncompressed size should
+// be uploaded with a single presigned PUT instead of a multipart upload.
+// NARs that fit into one part gain nothing from multipart but cost extra S3
+// API calls. Size 0 (unknown) uses multipart.
+func useSimpleUpload(narSize uint64) bool {
+	return narSize > 0 && narSize <= multipartPartSize
+}
+
 type MultipartUploadInfo struct {
 	UploadID string   `json:"upload_id"`
 	PartURLs []string `json:"part_urls"`

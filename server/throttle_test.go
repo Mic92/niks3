@@ -126,7 +126,7 @@ func TestCompleteMultipartUploadHandler_RateLimitTriggersThrottle(t *testing.T) 
 		"closure": narinfoKey,
 		"objects": []map[string]any{
 			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
-			{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 10 * 1024 * 1024}, // 10MB to trigger multipart
+			{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 20 * 1024 * 1024}, // above simple-upload threshold to trigger multipart
 		},
 	})
 	ok(t, err)

@@ -17,7 +17,7 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("missing PathInfo for NAR %s", narTask.key)
 	}
 
-	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj.MultipartInfo, narTask.key)
+	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj, narTask.key)
 	if err != nil {
 		return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
 	}
