@@ -287,9 +287,12 @@ func (s *Service) createPendingObjects(
 				narSize = *obj.NarSize
 			}
 
-			narTasks = append(narTasks, narTask{key: pendingObject.Key, narSize: narSize})
+			// Small NARs fall through to a presigned PUT like the other small objects.
+			if !useSimpleUpload(narSize) {
+				narTasks = append(narTasks, narTask{key: pendingObject.Key, narSize: narSize})
 
-			continue
+				continue
+			}
 		}
 
 		po, err := s.makePresignedURL(ctx, pendingObject.Key, obj.Type)
