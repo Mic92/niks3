@@ -1,4 +1,4 @@
-package api
+package api //nolint:revive // api is a conventional name for API types shared between client and server
 
 import "time"
 

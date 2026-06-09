@@ -29,7 +29,8 @@ func (e *ValidationError) Error() string {
 	if e.Provider != "" {
 		return fmt.Sprintf("OIDC validation failed for provider %q: %s", e.Provider, e.Reason)
 	}
-	return fmt.Sprintf("OIDC validation failed: %s", e.Reason)
+
+	return "OIDC validation failed: " + e.Reason
 }
 
 // Unwrap allows errors.Is to work with ErrTokenValidationFailed.
@@ -110,7 +111,7 @@ func (v *Validator) AudienceForIssuer(issuer string) (string, bool) {
 // ValidateToken validates a JWT token and returns the validated claims.
 // On failure, returns a *ValidationError with detailed information about why validation failed.
 func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*ValidatedClaims, error) {
-	var triedProviders []string
+	triedProviders := make([]string, 0, len(v.verifiers))
 
 	// Try each provider's verifier
 	// go-oidc will check issuer claim matches the provider
@@ -120,6 +121,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 		idToken, err := pv.verifier.Verify(ctx, tokenString)
 		if err != nil {
 			slog.Debug("OIDC token verification failed", "provider", pv.config.Name(), "error", err)
+
 			continue
 		}
 
@@ -127,6 +129,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 		var claims map[string]any
 		if err := idToken.Claims(&claims); err != nil {
 			slog.Debug("Failed to extract claims", "provider", pv.config.Name(), "error", err)
+
 			return nil, &ValidationError{
 				Reason:         fmt.Sprintf("failed to extract claims: %v", err),
 				Provider:       pv.config.Name(),
@@ -138,6 +141,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 		// Validate bound claims (our custom authorization logic)
 		if err := validateBoundClaims(claims, pv.config.BoundClaims); err != nil {
 			slog.Debug("Bound claims validation failed", "provider", pv.config.Name(), "error", err)
+
 			return nil, &ValidationError{
 				Reason:         fmt.Sprintf("bound claims validation failed: %v", err),
 				Provider:       pv.config.Name(),
@@ -149,6 +153,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 		// Validate bound subject
 		if err := validateBoundSubject(claims, pv.config.BoundSubject); err != nil {
 			slog.Debug("Bound subject validation failed", "provider", pv.config.Name(), "error", err)
+
 			return nil, &ValidationError{
 				Reason:         fmt.Sprintf("bound subject validation failed: %v", err),
 				Provider:       pv.config.Name(),

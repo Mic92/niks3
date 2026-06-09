@@ -5,6 +5,8 @@ import (
 )
 
 func TestGlobMatch(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		pattern string
 		value   string
@@ -48,6 +50,8 @@ func TestGlobMatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_"+tt.value, func(t *testing.T) {
+			t.Parallel()
+
 			if got := GlobMatch(tt.pattern, tt.value); got != tt.want {
 				t.Errorf("GlobMatch(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 			}

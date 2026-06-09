@@ -296,6 +296,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	// Create test service with OIDC validator
 	service := createTestService(t)
 	defer service.Close()
+
 	service.Pool.Close() // health check works without DB
 	service.OIDCValidator = validator
 	service.APIToken = "static-api-token-at-least-36-chars-long"
@@ -305,31 +306,40 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		if _, ok := claims["iss"]; !ok {
 			claims["iss"] = m.Issuer()
 		}
+
 		if _, ok := claims["aud"]; !ok {
 			claims["aud"] = m.Config().ClientID
 		}
+
 		if _, ok := claims["sub"]; !ok {
 			claims["sub"] = "test-subject"
 		}
+
 		if _, ok := claims["iat"]; !ok {
 			claims["iat"] = m.Now().Unix()
 		}
+
 		if _, ok := claims["exp"]; !ok {
 			claims["exp"] = m.Now().Add(time.Hour).Unix()
 		}
+
 		token, err := m.Keypair.SignJWT(claims)
 		ok(t, err)
+
 		return token
 	}
 
 	checkUnauthorized := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
+
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("Expected status code %d, got %d", http.StatusUnauthorized, w.Code)
 		}
 	}
 
 	t.Run("valid OIDC token", func(t *testing.T) {
+		t.Parallel()
+
 		token := signToken(jwt.MapClaims{
 			"sub":              "repo:myorg/myrepo:ref:refs/heads/main",
 			"repository_owner": "myorg",
@@ -346,6 +356,8 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	})
 
 	t.Run("OIDC token with wrong org rejected", func(t *testing.T) {
+		t.Parallel()
+
 		token := signToken(jwt.MapClaims{
 			"sub":              "repo:otherorg/repo:ref:refs/heads/main",
 			"repository_owner": "otherorg",
@@ -363,6 +375,8 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	})
 
 	t.Run("malformed token rejected", func(t *testing.T) {
+		t.Parallel()
+
 		testRequest(t, &TestRequest{
 			method:        "GET",
 			path:          "/health",
@@ -375,6 +389,8 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	})
 
 	t.Run("static token still works with OIDC configured", func(t *testing.T) {
+		t.Parallel()
+
 		testRequest(t, &TestRequest{
 			method:  "GET",
 			path:    "/health",
