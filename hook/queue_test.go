@@ -1,8 +1,10 @@
 package hook_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/Mic92/niks3/hook"
@@ -158,5 +160,54 @@ func TestQueueFetchRemoveLifecycle(t *testing.T) {
 
 	if count != 0 {
 		t.Errorf("expected 0 after remove, got %d", count)
+	}
+}
+
+// TestQueueConcurrentWriters reproduces the SQLITE_BUSY failures from issue #409;
+// it only passes when busy_timeout is applied to every pooled connection.
+func TestQueueConcurrentWriters(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	const writers = 8
+
+	const perWriter = 50
+
+	var wg sync.WaitGroup
+
+	errs := make(chan error, writers)
+
+	for w := range writers {
+		wg.Add(1)
+
+		go func(w int) {
+			defer wg.Done()
+
+			for i := range perWriter {
+				p := fmt.Sprintf("/nix/store/path-%d-%d", w, i)
+				if err := q.Enqueue([]string{p}); err != nil {
+					errs <- err
+
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("Enqueue under concurrency: %v", err)
+	}
+
+	count, err := q.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+
+	if count != writers*perWriter {
+		t.Errorf("expected %d, got %d", writers*perWriter, count)
 	}
 }
