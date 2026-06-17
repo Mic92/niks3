@@ -24,26 +24,17 @@ func OpenQueue(dbPath string) (*Queue, error) {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	// Pragmas go in the DSN so they apply to every pooled connection; a one-off
+	// ExecContext only configures the single connection serving that call,
+	// leaving other connections without busy_timeout and failing with SQLITE_BUSY.
+	dsn := "file:" + dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
 	ctx := context.Background()
-
-	// WAL mode for better concurrent read/write performance.
-	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-
-		return nil, fmt.Errorf("setting WAL mode: %w", err)
-	}
-
-	// Busy timeout so concurrent access retries instead of failing immediately.
-	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
-		_ = db.Close()
-
-		return nil, fmt.Errorf("setting busy timeout: %w", err)
-	}
 
 	// Create the queue table.
 	if _, err := db.ExecContext(ctx, `
