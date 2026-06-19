@@ -119,6 +119,16 @@ SELECT pending_closure_id, object_key, upload_id
 FROM multipart_uploads
 WHERE upload_id = $1 AND object_key = $2;
 
+-- name: GetActiveMultipartUploadByObjectKey :one
+-- Returns the most recently registered (still-uncommitted) multipart upload
+-- for the given object key, if any. Used to deduplicate CreateMultipartUpload
+-- when concurrent pending_closures reference the same NAR.
+SELECT upload_id
+FROM multipart_uploads
+WHERE object_key = $1
+ORDER BY pending_closure_id DESC
+LIMIT 1;
+
 -- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now

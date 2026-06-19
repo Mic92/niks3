@@ -114,6 +114,24 @@ func (q *Queries) DeletePin(ctx context.Context, name string) error {
 	return err
 }
 
+const getActiveMultipartUploadByObjectKey = `-- name: GetActiveMultipartUploadByObjectKey :one
+SELECT upload_id
+FROM multipart_uploads
+WHERE object_key = $1
+ORDER BY pending_closure_id DESC
+LIMIT 1
+`
+
+// Returns the most recently registered (still-uncommitted) multipart upload
+// for the given object key, if any. Used to deduplicate CreateMultipartUpload
+// when concurrent pending_closures reference the same NAR.
+func (q *Queries) GetActiveMultipartUploadByObjectKey(ctx context.Context, objectKey string) (string, error) {
+	row := q.db.QueryRow(ctx, getActiveMultipartUploadByObjectKey, objectKey)
+	var upload_id string
+	err := row.Scan(&upload_id)
+	return upload_id, err
+}
+
 const getClosure = `-- name: GetClosure :one
 SELECT updated_at FROM closures
 WHERE key = $1 LIMIT 1
