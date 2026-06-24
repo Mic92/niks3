@@ -25,15 +25,16 @@ type options struct {
 	DBConnectionString string
 	HTTPAddr           string
 
-	S3Endpoint    string
-	S3AccessKey   string
-	S3SecretKey   string
-	S3UseSSL      bool
-	S3UseIAM      bool
-	S3Bucket      string
-	S3Region      string
-	S3Concurrency int
-	S3RateLimit   float64
+	S3Endpoint     string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3UseSSL       bool
+	S3UseIAM       bool
+	S3Bucket       string
+	S3Region       string
+	S3BucketLookup minio.BucketLookupType
+	S3Concurrency  int
+	S3RateLimit    float64
 
 	APIToken string
 
@@ -189,9 +190,10 @@ func runServer(opts *options) error {
 	}
 
 	minioClient, err := minio.New(opts.S3Endpoint, &minio.Options{
-		Creds:  creds,
-		Secure: opts.S3UseSSL,
-		Region: opts.S3Region,
+		Creds:        creds,
+		Secure:       opts.S3UseSSL,
+		Region:       opts.S3Region,
+		BucketLookup: opts.S3BucketLookup,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
