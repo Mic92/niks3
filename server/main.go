@@ -8,7 +8,26 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	minio "github.com/minio/minio-go/v7"
 )
+
+// parseBucketLookup maps a string ("auto", "dns", "path") to a
+// minio.BucketLookupType. "dns" forces virtual-host-style addressing
+// (<bucket>.<endpoint>), required by some S3-compatible providers
+// (e.g. CoreWeave) that reject path-style requests.
+func parseBucketLookup(value string) (minio.BucketLookupType, error) {
+	switch strings.ToLower(value) {
+	case "", "auto":
+		return minio.BucketLookupAuto, nil
+	case "dns":
+		return minio.BucketLookupDNS, nil
+	case "path":
+		return minio.BucketLookupPath, nil
+	default:
+		return minio.BucketLookupAuto, fmt.Errorf("invalid bucket lookup %q: want auto, dns, or path", value)
+	}
+}
 
 func getEnvOrDefault(key, defaultValue string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -75,6 +94,7 @@ func parseArgs() (*options, error) {
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
 	apiTokenPath := ""
+	s3BucketLookup := ""
 
 	flag.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIKS3_DB", ""),
 		"Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters")
@@ -87,6 +107,8 @@ func parseArgs() (*options, error) {
 		"Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.) instead of static keys")
 	flag.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
 	flag.StringVar(&opts.S3Region, "s3-region", getEnvOrDefault("NIKS3_S3_REGION", ""), "S3 region override (e.g., us-east-1, auto)")
+	flag.StringVar(&s3BucketLookup, "s3-bucket-lookup", getEnvOrDefault("NIKS3_S3_BUCKET_LOOKUP", "auto"),
+		"S3 bucket addressing style: auto (default), dns (virtual-host, e.g. CoreWeave), or path")
 	flag.StringVar(&s3AccessKeyPath, "s3-access-key-path", getEnvOrDefault("NIKS3_S3_ACCESS_KEY_PATH", ""),
 		"Path to file containing S3 access key")
 	flag.StringVar(&s3SecretKeyPath, "s3-secret-key-path", getEnvOrDefault("NIKS3_S3_SECRET_KEY_PATH", ""),
@@ -146,6 +168,10 @@ func parseArgs() (*options, error) {
 	}
 
 	var err error
+
+	if opts.S3BucketLookup, err = parseBucketLookup(s3BucketLookup); err != nil {
+		return nil, err
+	}
 
 	var secret string
 
