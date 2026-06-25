@@ -54,6 +54,7 @@ See the [Private S3 Buckets](https://github.com/Mic92/niks3/wiki/Private-S3-Buck
 
 niks3 implements the [Nix binary cache specification](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-help-stores.html#s3-binary-cache-store) with the following features:
 
+- **Cryptographic signing**: NAR signatures using Ed25519 keys (compatible with `nix key generate-secret`)
 - **NAR files** (`nar/`): Compressed with zstd, stored in S3
 - **Narinfo files** (`.narinfo`): Metadata with cryptographic signatures
   - StorePath, URL, Compression, NarHash, NarSize
@@ -67,8 +68,6 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
 ### Advanced Features
 
-- **Cryptographic signing**: NAR signatures using Ed25519 keys (compatible with `nix key generate-secret`)
-- **Content-addressed derivations**: Full CA support with realisation info
 - **Multipart uploads**: Efficient handling of large NARs (>100MB)
 - **Transactional uploads**: Atomic closure uploads with rollback on failure
 - **Garbage collection**: Reference-tracking GC with configurable retention
