@@ -9,7 +9,7 @@ let
 in
 pkgs.buildGoModule {
   pname = "niks3";
-  version = "1.6.1";
+  version = "1.7.0";
   inherit (common) vendorHash;
 
   src = lib.fileset.toSource {
