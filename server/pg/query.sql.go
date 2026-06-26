@@ -115,18 +115,30 @@ func (q *Queries) DeletePin(ctx context.Context, name string) error {
 }
 
 const getActiveMultipartUploadByObjectKey = `-- name: GetActiveMultipartUploadByObjectKey :one
-SELECT upload_id
-FROM multipart_uploads
-WHERE object_key = $1
-ORDER BY pending_closure_id DESC
+SELECT mu.upload_id
+FROM multipart_uploads mu
+INNER JOIN pending_closures pc ON mu.pending_closure_id = pc.id
+WHERE mu.object_key = $1
+  AND pc.started_at > timezone('UTC', now()) - interval '1 second' * $2::int
+ORDER BY pc.started_at DESC
 LIMIT 1
 `
 
-// Returns the most recently registered (still-uncommitted) multipart upload
-// for the given object key, if any. Used to deduplicate CreateMultipartUpload
-// when concurrent pending_closures reference the same NAR.
-func (q *Queries) GetActiveMultipartUploadByObjectKey(ctx context.Context, objectKey string) (string, error) {
-	row := q.db.QueryRow(ctx, getActiveMultipartUploadByObjectKey, objectKey)
+type GetActiveMultipartUploadByObjectKeyParams struct {
+	ObjectKey     string `json:"object_key"`
+	MaxAgeSeconds int32  `json:"max_age_seconds"`
+}
+
+// Returns the most recently registered multipart upload for the given object
+// key whose owning pending_closure was started within the last
+// $2 seconds. Used as an exclusive lock so concurrent pending_closures cannot
+// open a second multipart upload for the same NAR while one is plausibly still
+// in flight. Sharing the upload_id across clients is unsafe because compression
+// output is not byte-stable across uploaders, so callers treat a hit as a
+// conflict (HTTP 409) rather than a reusable handle. Older rows are ignored
+// here and left to GetOldMultipartUploads/cleanupPendingClosures to abort.
+func (q *Queries) GetActiveMultipartUploadByObjectKey(ctx context.Context, arg GetActiveMultipartUploadByObjectKeyParams) (string, error) {
+	row := q.db.QueryRow(ctx, getActiveMultipartUploadByObjectKey, arg.ObjectKey, arg.MaxAgeSeconds)
 	var upload_id string
 	err := row.Scan(&upload_id)
 	return upload_id, err

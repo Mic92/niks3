@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	pgx "github.com/jackc/pgx/v5"
@@ -15,7 +15,24 @@ import (
 
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
+
+	// multipartLockWindow bounds how long a registered multipart upload is
+	// treated as in-flight for the exclusive-lock check in
+	// createMultipartUpload. Within this window a second pending_closure
+	// targeting the same NAR gets HTTP 409 and is expected to retry; past
+	// it the previous upload is assumed dead (crashed client) and a fresh
+	// one is opened, leaving the stale row to cleanupPendingClosures.
+	// Sized to cover a max-parts NAR (~1 GiB) over a slow home-network
+	// upload while keeping a crashed-client lockout short enough that a
+	// retrying CI job finishes within ordinary timeouts.
+	multipartLockWindow = 10 * time.Minute
 )
+
+// errMultipartUploadInProgress signals that another pending_closure is still
+// uploading the same object key. Surfaced as HTTP 409 by the handler so the
+// client can back off and retry instead of opening a second multipart upload
+// (compression output is not byte-stable across uploaders).
+var errMultipartUploadInProgress = errors.New("multipart upload already in progress for this object")
 
 // useSimpleUpload reports whether a NAR of the given uncompressed size should
 // be uploaded with a single presigned PUT instead of a multipart upload.
@@ -87,54 +104,47 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	queries := pg.New(s.Pool)
 	coreClient := minio.Core{Client: s.MinioClient}
 
-	// Reuse an in-flight S3 multipart upload if one is already registered for
-	// this object key. Parallel CI workflows often share a NAR via multiple
-	// pending_closures; without this check each closure would initiate its
-	// own NewMultipartUpload, and only one of those gets completed by a
-	// client — the rest become orphaned multipart uploads that bloat the S3
-	// backend's metadata store. Part URLs are always regenerated because
-	// presigned URLs are time-bounded; reusing the upload ID is sufficient.
-	uploadID, err := queries.GetActiveMultipartUploadByObjectKey(ctx, objectKey)
-	freshUpload := false
+	// Refuse to open a second multipart upload while another pending_closure
+	// is plausibly still uploading the same NAR. Parallel CI workflows often
+	// race on the same dependency closure; without this check each closure
+	// opened its own NewMultipartUpload and only one ever got completed,
+	// leaving the rest as orphans that bloated the S3 backend's metadata
+	// store. We must not share the upload_id across clients either:
+	// compression output is not byte-stable across multi-threaded
+	// uploaders, so concatenating parts from two clients produces a corrupt
+	// archive. So we treat a recent registration as an exclusive lock and
+	// expect the client to back off; rows older than multipartLockWindow
+	// are ignored here and cleaned up by cleanupPendingClosures.
+	_, err := queries.GetActiveMultipartUploadByObjectKey(ctx, pg.GetActiveMultipartUploadByObjectKeyParams{
+		ObjectKey:     objectKey,
+		MaxAgeSeconds: int32(multipartLockWindow.Seconds()),
+	})
+	if err == nil {
+		return PendingObject{}, errMultipartUploadInProgress
+	}
 
-	switch {
-	case err == nil:
-		slog.Debug("reusing existing multipart upload", "object_key", objectKey, "upload_id", uploadID)
-	case errors.Is(err, pgx.ErrNoRows):
-		uploadID, err = s.initiateMultipartUpload(ctx, coreClient, objectKey)
-		if err != nil {
-			return PendingObject{}, err
-		}
-
-		freshUpload = true
-	default:
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return PendingObject{}, fmt.Errorf("failed to look up existing multipart upload: %w", err)
 	}
 
-	// Bookkeep this closure's reference to the upload. The primary key is
-	// (pending_closure_id, object_key), so reusing an upload_id across two
-	// closures yields two rows pointing at the same S3 mpu — both get
-	// cleaned up via DeleteMultipartUpload on completion.
+	uploadID, err := s.initiateMultipartUpload(ctx, coreClient, objectKey)
+	if err != nil {
+		return PendingObject{}, err
+	}
+
 	if err := queries.InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
 	}); err != nil {
-		if freshUpload {
-			_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
-		}
+		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
 
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
-	// Generate presigned URLs for each part (starting from part 1)
 	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
 	if err != nil {
-		// Only abort if we just opened this upload; we must not abort an
-		// upload that another in-flight closure is relying on.
-		if freshUpload {
-			_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
-		}
+		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
 
 		return PendingObject{}, err
 	}
