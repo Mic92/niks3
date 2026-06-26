@@ -1,7 +1,18 @@
+# Local development data (e.g. PRJ_DATA_DIR / PGDATA from .envrc)
 .data
+
+# Build outputs
 /niks3
 /niks3.test
-/result
 /server/server.test
-
 /client/target
+
+# Ignore build outputs from performing a nix-build or `nix build` command
+result
+result-*
+
+# Ignore automatically generated direnv output
+.direnv
+
+# Ignore NixOS interactive test driver history
+**/.nixos-test-history
