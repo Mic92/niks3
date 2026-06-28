@@ -100,6 +100,7 @@ type Service struct {
 	NativeMTLS bool
 
 	GCTasks *GCTaskStore
+	Metrics *Metrics
 }
 
 // Close closes the database connection pool.
@@ -212,6 +213,7 @@ func runServer(opts *options) error {
 		MTLSBoundSubjectsRead: opts.MTLSBoundSubjectsRead,
 		CacheURL:              opts.CacheURL,
 		GCTasks:               NewGCTaskStore(),
+		Metrics:               NewMetrics(),
 	}
 
 	// Initialize OIDC validator if configured
@@ -261,8 +263,13 @@ func runServer(opts *options) error {
 		return fmt.Errorf("failed to initialize bucket: %w", err)
 	}
 
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	defer stopMetrics()
+	service.StartInventoryRefresh(metricsCtx)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
+	mux.Handle("GET /metrics", service.Metrics.Handler())
 	mux.HandleFunc("GET /api/cache-config", service.CacheConfigHandler)
 
 	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
