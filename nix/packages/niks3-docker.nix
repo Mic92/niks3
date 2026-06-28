@@ -15,15 +15,6 @@ let
       GOARCH = "arm64";
     };
   };
-  # On macOS, building the cross-arch Linux image segfaults the Python
-  # layer streamer intermittently. Restrict darwin builds to the native
-  # arch so CI on Apple Silicon still smoke-tests the package; the publish
-  # workflow runs on x86_64-linux and produces the full multi-arch index.
-  supportedPlatforms =
-    if pkgs.stdenv.hostPlatform.isDarwin then
-      lib.filterAttrs (n: _: lib.hasPrefix "${pkgs.stdenv.hostPlatform.parsed.cpu.name}-" n) allPlatforms
-    else
-      allPlatforms;
   platforms = lib.mapAttrs (
     crossSystem:
     { GOOS, GOARCH }:
@@ -71,7 +62,7 @@ let
         };
       };
     }
-  ) supportedPlatforms;
+  ) allPlatforms;
 in
 pkgs.stdenvNoCC.mkDerivation {
   name = "${niks3-server.pname}-docker";
