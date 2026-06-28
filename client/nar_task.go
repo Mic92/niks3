@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -19,6 +20,13 @@ func (c *Client) uploadNARWithListing(
 
 	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj, narTask.key)
 	if err != nil {
+		if errors.Is(err, ErrUploadSuperseded) {
+			// A peer already uploaded this NAR (and its listing); nothing to do.
+			slog.Debug("Skipping NAR superseded by concurrent upload", "key", narTask.key)
+
+			return nil
+		}
+
 		return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
 	}
 

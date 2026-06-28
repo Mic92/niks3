@@ -206,6 +206,18 @@ func deferCloseBody(resp *http.Response) {
 	}
 }
 
+// HTTPStatusError carries the status code of an unexpected HTTP response so
+// callers can branch on it (e.g. a 404 mid-multipart means a peer already
+// finished the NAR and the upload was aborted).
+type HTTPStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("server returned %d: %s", e.StatusCode, e.Body)
+}
+
 func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
 	if slices.Contains(acceptedStatuses, resp.StatusCode) {
 		return nil
@@ -213,7 +225,7 @@ func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
 
 	body, _ := io.ReadAll(resp.Body)
 
-	return fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+	return &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
 }
 
 func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.Response, error) {

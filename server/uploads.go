@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -378,9 +379,85 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 		slog.Error("Failed to delete multipart upload tracking row", "error", err, "upload_id", req.UploadID)
 	}
 
+	// The NAR now exists in S3; abort any duplicate uploads peers opened for
+	// the same key instead of waiting for garbage collection.
+	s.abortRedundantMultipartUploads(r.Context(), req.ObjectKey, req.UploadID)
+
 	slog.Info("Completed multipart upload", "object_key", req.ObjectKey, "upload_id", req.UploadID, "parts", len(req.Parts))
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ObjectExistsHandler handles HEAD /api/objects/{key...}: 204 if objectKey is
+// in S3, 404 otherwise. Lets a client confirm a NAR is present before skipping
+// an upload a peer aborted.
+func (s *Service) ObjectExistsHandler(w http.ResponseWriter, r *http.Request) {
+	objectKey := r.PathValue("key")
+	if objectKey == "" {
+		http.Error(w, "missing object key", http.StatusBadRequest)
+
+		return
+	}
+
+	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
+		http.Error(w, "rate limiter context canceled", http.StatusServiceUnavailable)
+
+		return
+	}
+
+	_, err := s.MinioClient.StatObject(r.Context(), s.Bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
+		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+			w.WriteHeader(http.StatusNotFound)
+
+			return
+		}
+
+		slog.Error("Failed to stat object", "error", err, "object_key", objectKey)
+		http.Error(w, "failed to stat object", http.StatusInternalServerError)
+
+		return
+	}
+
+	s.S3RateLimiter.RecordSuccess()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// abortRedundantMultipartUploads aborts multipart uploads other pending_closures
+// opened for objectKey, excluding keepUploadID. Best-effort: the winning upload
+// already succeeded and stragglers are also reaped by cleanupPendingClosures.
+func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey, keepUploadID string) {
+	queries := pg.New(s.Pool)
+
+	uploadIDs, err := queries.GetRedundantMultipartUploads(ctx, pg.GetRedundantMultipartUploadsParams{
+		ObjectKey: objectKey,
+		UploadID:  keepUploadID,
+	})
+	if err != nil {
+		slog.Error("Failed to list redundant multipart uploads", "error", err, "object_key", objectKey)
+
+		return
+	}
+
+	coreClient := minio.Core{Client: s.MinioClient}
+
+	for _, uploadID := range uploadIDs {
+		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); err != nil {
+			if minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
+				slog.Warn("Failed to abort redundant multipart upload",
+					"object_key", objectKey, "upload_id", uploadID, "error", err)
+			}
+		}
+
+		if err := queries.DeleteMultipartUpload(ctx, uploadID); err != nil {
+			slog.Error("Failed to delete redundant multipart upload row",
+				"error", err, "upload_id", uploadID)
+		}
+	}
 }
 
 type signNarinfosRequest struct {
