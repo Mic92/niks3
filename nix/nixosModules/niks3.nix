@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 
@@ -80,6 +81,66 @@ let
       }
     )
   );
+
+  serverArgs = [
+    "--db"
+    cfg.database.connectionString
+    # Fallback bind address; ignored when systemd passes the socket via
+    # socket activation.
+    "--http-addr"
+    cfg.httpAddr
+    "--s3-endpoint"
+    cfg.s3.endpoint
+    "--s3-bucket"
+    cfg.s3.bucket
+    "--s3-use-ssl=${lib.boolToString cfg.s3.useSSL}"
+    "--s3-bucket-lookup"
+    cfg.s3.bucketLookup
+    "--api-token-path"
+    (toString cfg.apiTokenFile)
+  ]
+  ++ lib.optionals (cfg.s3.region != "") [
+    "--s3-region"
+    cfg.s3.region
+  ]
+  ++ (
+    if cfg.s3.useIAM then
+      [ "--s3-use-iam" ]
+    else
+      [
+        "--s3-access-key-path"
+        (toString cfg.s3.accessKeyFile)
+        "--s3-secret-key-path"
+        (toString cfg.s3.secretKeyFile)
+      ]
+  )
+  ++ lib.optionals (cfg.oidc.providers != { }) [
+    "--oidc-config"
+    (toString oidcConfigJson)
+  ]
+  ++ lib.optionals cfg.nginx.mtls.enable (
+    [
+      "--mtls-proxy-header"
+      "X-SSL-Client-Verify"
+    ]
+    ++ lib.concatMap (s: [
+      "--mtls-bound-subject"
+      s
+    ]) cfg.nginx.mtls.boundSubjects
+    ++ lib.concatMap (s: [
+      "--mtls-bound-subject-read"
+      s
+    ]) cfg.nginx.mtls.boundSubjectsRead
+  )
+  ++ lib.optional cfg.readProxy.enable "--enable-read-proxy"
+  ++ lib.optionals (cfg.cacheUrl != null) [
+    "--cache-url"
+    cfg.cacheUrl
+  ]
+  ++ lib.concatMap (f: [
+    "--sign-key-path"
+    (toString f)
+  ]) cfg.signKeyFiles;
 in
 {
   options.services.niks3 = {
@@ -486,61 +547,7 @@ in
         Type = "notify";
         NotifyAccess = "main";
         WatchdogSec = "30s";
-        # --http-addr is the fallback bind address; ignored when the socket is
-        # passed via socket activation.
-        ExecStart = ''
-          ${lib.getExe' cfg.serverPackage "niks3-server"} \
-            --db "${cfg.database.connectionString}" \
-            --http-addr "${cfg.httpAddr}" \
-            --s3-endpoint "${cfg.s3.endpoint}" \
-            --s3-bucket "${cfg.s3.bucket}" \
-            --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}" \
-            --s3-bucket-lookup "${cfg.s3.bucketLookup}"${
-              lib.optionalString (cfg.s3.region != "") ''
-                \
-                           --s3-region "${cfg.s3.region}"''
-            } \
-            ${
-              if cfg.s3.useIAM then
-                "--s3-use-iam"
-              else
-                ''
-                  --s3-access-key-path "${cfg.s3.accessKeyFile}" \
-                              --s3-secret-key-path "${cfg.s3.secretKeyFile}"''
-            } \
-            --api-token-path "${cfg.apiTokenFile}"${
-              lib.optionalString (cfg.oidc.providers != { }) ''
-                \
-                            --oidc-config "${oidcConfigJson}"''
-            }${
-              lib.optionalString cfg.nginx.mtls.enable (
-                ''
-                  \
-                                    --mtls-proxy-header X-SSL-Client-Verify''
-                + lib.concatMapStrings (s: ''
-                  \
-                                    --mtls-bound-subject ${lib.escapeShellArg s}'') cfg.nginx.mtls.boundSubjects
-                +
-                  lib.concatMapStrings
-                    (s: ''
-                      \
-                                        --mtls-bound-subject-read ${lib.escapeShellArg s}'')
-                    cfg.nginx.mtls.boundSubjectsRead
-              )
-            }${lib.optionalString cfg.readProxy.enable ''
-              \
-                          --enable-read-proxy''}${
-              lib.optionalString (cfg.cacheUrl != null) ''
-                \
-                            --cache-url "${cfg.cacheUrl}"''
-            }${
-              lib.optionalString (cfg.signKeyFiles != [ ]) ''
-                \
-                           ${lib.concatMapStringsSep " \\\n            " (
-                             file: "--sign-key-path \"${file}\""
-                           ) cfg.signKeyFiles}''
-            }
-        '';
+        ExecStart = "${lib.getExe' cfg.serverPackage "niks3-server"} ${utils.escapeSystemdExecArgs serverArgs}";
         User = cfg.user;
         Group = cfg.group;
         Restart = "always";
