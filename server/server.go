@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -324,31 +326,58 @@ func runServer(opts *options) error {
 			return err
 		}
 
+		// Load the keypair up front so a missing/invalid cert fails startup
+		// before we signal readiness, rather than inside ServeTLS afterwards.
+		cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+		if err != nil {
+			return fmt.Errorf("loading TLS keypair: %w", err)
+		}
+
+		tlsCfg.Certificates = []tls.Certificate{cert}
 		server.TLSConfig = tlsCfg
 		service.NativeMTLS = opts.TLSClientCA != ""
 	}
 
-	return serveWithGracefulShutdown(server, opts, useTLS)
+	// DB pool ping is the watchdog liveness signal.
+	return serveWithGracefulShutdown(server, opts, useTLS, service.Pool.Ping)
 }
 
 // serveWithGracefulShutdown runs the HTTP server until a SIGINT/SIGTERM
 // arrives, then drains in-flight requests within shutdownTimeout.
-func serveWithGracefulShutdown(server *http.Server, opts *options, useTLS bool) error {
+func serveWithGracefulShutdown(server *http.Server, opts *options, useTLS bool, healthCheck func(context.Context) error) error {
+	ln, err := makeListener(opts)
+	if err != nil {
+		return err
+	}
+
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return serve(sigCtx, server, opts, useTLS)
+	return serve(sigCtx, server, ln, useTLS, healthCheck)
 }
 
-// serve runs the HTTP server until shutdownCtx is done, then drains in-flight
-// requests within shutdownTimeout. Split out from serveWithGracefulShutdown so
-// tests can drive shutdown without sending real signals.
-func serve(shutdownCtx context.Context, server *http.Server, opts *options, useTLS bool) error {
+// serve runs the HTTP server on ln until shutdownCtx is done, then drains
+// in-flight requests within shutdownTimeout. Split out from
+// serveWithGracefulShutdown so tests can supply their own listener and drive
+// shutdown without sending real signals.
+func serve(shutdownCtx context.Context, server *http.Server, ln net.Listener, useTLS bool, healthCheck func(context.Context) error) error {
 	serveErr := make(chan error, 1)
 
 	go func() {
-		serveErr <- listenAndServe(server, opts, useTLS)
+		serveErr <- serveListener(server, ln, useTLS)
 	}()
+
+	// Listener is bound, so we are ready to accept connections.
+	notifySystemd("READY=1")
+
+	if interval := watchdogInterval(); interval > 0 && healthCheck != nil {
+		slog.Info("systemd watchdog enabled", "interval", interval)
+
+		wdCtx, wdCancel := context.WithCancel(shutdownCtx)
+		defer wdCancel()
+
+		go runWatchdog(wdCtx, interval, healthCheck)
+	}
 
 	select {
 	case err := <-serveErr:
@@ -359,22 +388,34 @@ func serve(shutdownCtx context.Context, server *http.Server, opts *options, useT
 		return nil
 	case <-shutdownCtx.Done():
 		slog.Info("Shutdown signal received, draining in-flight requests", "timeout", shutdownTimeout)
+		notifySystemd("STOPPING=1")
 	}
 
 	//nolint:contextcheck // drain context is intentionally independent of the shutdown signal
 	return drain(server)
 }
 
-func listenAndServe(server *http.Server, opts *options, useTLS bool) error {
-	if useTLS {
-		slog.Info("Starting HTTPS server", "address", opts.HTTPAddr, "mtls", server.TLSConfig.ClientAuth != 0)
-
-		return server.ListenAndServeTLS(opts.TLSCert, opts.TLSKey) //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
+// makeListener binds the configured HTTP address.
+func makeListener(opts *options) (net.Listener, error) {
+	ln, err := net.Listen("tcp", opts.HTTPAddr) //nolint:noctx // listener lives for the whole server lifetime
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen on %s: %w", opts.HTTPAddr, err)
 	}
 
-	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
+	return ln, nil
+}
 
-	return server.ListenAndServe() //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
+func serveListener(server *http.Server, ln net.Listener, useTLS bool) error {
+	if useTLS {
+		slog.Info("Starting HTTPS server", "address", ln.Addr(), "mtls", server.TLSConfig.ClientAuth != 0)
+
+		// Certificates were loaded into TLSConfig before readiness was signalled.
+		return server.ServeTLS(ln, "", "") //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
+	}
+
+	slog.Info("Starting HTTP server", "address", ln.Addr())
+
+	return server.Serve(ln) //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
 }
 
 // drain gives in-flight requests up to shutdownTimeout to finish, then

@@ -466,7 +466,11 @@ in
       requires = lib.optional cfg.database.createLocally "postgresql.service";
 
       serviceConfig = {
-        Type = "simple";
+        # niks3-server sends sd_notify READY=1 once the listener is bound and
+        # WATCHDOG=1 heartbeats (gated on a DB ping) while WatchdogSec is set.
+        Type = "notify";
+        NotifyAccess = "main";
+        WatchdogSec = "30s";
         ExecStart = ''
           ${lib.getExe' cfg.serverPackage "niks3-server"} \
             --db "${cfg.database.connectionString}" \
