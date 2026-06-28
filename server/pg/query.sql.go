@@ -346,6 +346,39 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 	return i, err
 }
 
+const getRedundantMultipartUploads = `-- name: GetRedundantMultipartUploads :many
+SELECT upload_id
+FROM multipart_uploads
+WHERE object_key = $1 AND upload_id <> $2
+`
+
+type GetRedundantMultipartUploadsParams struct {
+	ObjectKey string `json:"object_key"`
+	UploadID  string `json:"upload_id"`
+}
+
+// Upload IDs other pending_closures opened for object_key, used to abort
+// duplicates once one upload of the NAR completes.
+func (q *Queries) GetRedundantMultipartUploads(ctx context.Context, arg GetRedundantMultipartUploadsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, getRedundantMultipartUploads, arg.ObjectKey, arg.UploadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var upload_id string
+		if err := rows.Scan(&upload_id); err != nil {
+			return nil, err
+		}
+		items = append(items, upload_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3)

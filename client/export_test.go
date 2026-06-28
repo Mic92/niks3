@@ -1,7 +1,10 @@
 package client
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -45,4 +48,22 @@ func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts Token
 // NewTestClientWithStoreDir creates a Client with only storeDir set, for path resolution tests.
 func NewTestClientWithStoreDir(storeDir string) *Client {
 	return &Client{storeDir: storeDir}
+}
+
+// NewTestClientForServer returns a Client whose server requests target serverURL.
+func NewTestClientForServer(serverURL string) (*Client, error) {
+	baseURL, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // test helper
+	}
+
+	c := NewTestClient(&http.Client{}, DefaultRetryConfig())
+	c.baseURL = baseURL
+
+	return c, nil
+}
+
+// UploadMultipart re-exports uploadMultipart for the external test package.
+func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *MultipartUploadInfo, objectKey string, partSize int) error {
+	return c.uploadMultipart(ctx, r, info, objectKey, partSize)
 }
