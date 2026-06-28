@@ -69,6 +69,17 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 	return err
 }
 
+const countPendingClosures = `-- name: CountPendingClosures :one
+SELECT count(*) FROM pending_closures
+`
+
+func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingClosures)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteClosures = `-- name: DeleteClosures :execrows
 DELETE FROM closures
 WHERE closures.updated_at < $1

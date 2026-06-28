@@ -37,6 +37,15 @@ func TestMetricsInventory(t *testing.T) {
 
 	service.StartInventoryRefresh(ctx)
 
+	// Drive a request through the middleware so the HTTP metrics populate.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	service.Metrics.Instrument(mux).ServeHTTP(
+		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil),
+	)
+
 	rec := httptest.NewRecorder()
 	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
@@ -50,6 +59,9 @@ func TestMetricsInventory(t *testing.T) {
 	for _, want := range []string{
 		"niks3_cache_objects 2",
 		"niks3_cache_logical_bytes 4096",
+		"niks3_pending_closures 0",
+		"niks3_db_connections_max",
+		`niks3_http_requests_total{method="GET",route="GET /health",status="200"} 1`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("metrics output missing %q", want)

@@ -298,7 +298,7 @@ func runServer(opts *options) error {
 
 	server := &http.Server{
 		Addr:    opts.HTTPAddr,
-		Handler: mux,
+		Handler: service.Metrics.Instrument(mux),
 		// Bound slowloris on API endpoints. Bodies are JSON (<128 MB) and
 		// responses are small. The read proxy extends its own write deadline
 		// per-request via ProxyWriteTimeout for large NAR streams.
