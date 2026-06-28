@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
@@ -110,6 +112,12 @@ func (s *Service) Close() {
 
 const (
 	dbConnectionTimeout = 10 * time.Second
+
+	// shutdownTimeout bounds how long we wait for in-flight requests to
+	// finish on SIGINT/SIGTERM before forcing the connections closed. Kept
+	// short so orchestrators don't escalate to SIGKILL; large NAR streams
+	// that exceed it are dropped rather than holding up the shutdown.
+	shutdownTimeout = 10 * time.Second
 )
 
 func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -309,7 +317,8 @@ func runServer(opts *options) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	if opts.TLSCert != "" {
+	useTLS := opts.TLSCert != ""
+	if useTLS {
 		tlsCfg, err := serverTLSConfig(opts.TLSClientCA)
 		if err != nil {
 			return err
@@ -317,20 +326,72 @@ func runServer(opts *options) error {
 
 		server.TLSConfig = tlsCfg
 		service.NativeMTLS = opts.TLSClientCA != ""
+	}
 
-		slog.Info("Starting HTTPS server", "address", opts.HTTPAddr, "mtls", service.NativeMTLS)
+	return serveWithGracefulShutdown(server, opts, useTLS)
+}
 
-		if err = server.ListenAndServeTLS(opts.TLSCert, opts.TLSKey); err != nil {
+// serveWithGracefulShutdown runs the HTTP server until a SIGINT/SIGTERM
+// arrives, then drains in-flight requests within shutdownTimeout.
+func serveWithGracefulShutdown(server *http.Server, opts *options, useTLS bool) error {
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	return serve(sigCtx, server, opts, useTLS)
+}
+
+// serve runs the HTTP server until shutdownCtx is done, then drains in-flight
+// requests within shutdownTimeout. Split out from serveWithGracefulShutdown so
+// tests can drive shutdown without sending real signals.
+func serve(shutdownCtx context.Context, server *http.Server, opts *options, useTLS bool) error {
+	serveErr := make(chan error, 1)
+
+	go func() {
+		serveErr <- listenAndServe(server, opts, useTLS)
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("failed to start server: %w", err)
 		}
 
 		return nil
+	case <-shutdownCtx.Done():
+		slog.Info("Shutdown signal received, draining in-flight requests", "timeout", shutdownTimeout)
+	}
+
+	//nolint:contextcheck // drain context is intentionally independent of the shutdown signal
+	return drain(server)
+}
+
+func listenAndServe(server *http.Server, opts *options, useTLS bool) error {
+	if useTLS {
+		slog.Info("Starting HTTPS server", "address", opts.HTTPAddr, "mtls", server.TLSConfig.ClientAuth != 0)
+
+		return server.ListenAndServeTLS(opts.TLSCert, opts.TLSKey) //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
 	}
 
 	slog.Info("Starting HTTP server", "address", opts.HTTPAddr)
 
-	if err = server.ListenAndServe(); err != nil {
-		return fmt.Errorf("failed to start server: %w", err)
+	return server.ListenAndServe() //nolint:wrapcheck // classified by caller (ErrServerClosed vs real failure)
+}
+
+// drain gives in-flight requests up to shutdownTimeout to finish, then
+// force-closes anything left so the process exits promptly. The drain context
+// is detached on purpose so it survives the cancelled shutdown signal.
+func drain(server *http.Server) error {
+	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(drainCtx); err == nil {
+		return nil
+	}
+
+	slog.Warn("Graceful shutdown timed out, forcing close")
+
+	if err := server.Close(); err != nil {
+		return fmt.Errorf("failed to force-close server: %w", err)
 	}
 
 	return nil

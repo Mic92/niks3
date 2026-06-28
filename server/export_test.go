@@ -1,11 +1,19 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
+	"net/http"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 )
+
+// ServeForTest exposes the graceful-shutdown serve loop to tests, driven by a
+// caller-supplied context instead of OS signals.
+func ServeForTest(shutdownCtx context.Context, server *http.Server, addr string) error {
+	return serve(shutdownCtx, server, &options{HTTPAddr: addr}, false)
+}
 
 // GCAdvisoryLockKey exposes the GC advisory lock key to tests.
 const GCAdvisoryLockKey = gcAdvisoryLockKey
