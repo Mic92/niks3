@@ -235,6 +235,22 @@ func (q *Queries) GetMultipartUpload(ctx context.Context, arg GetMultipartUpload
 	return i, err
 }
 
+const getObjectStats = `-- name: GetObjectStats :one
+SELECT object_count, total_bytes FROM object_stats WHERE id
+`
+
+type GetObjectStatsRow struct {
+	ObjectCount int64 `json:"object_count"`
+	TotalBytes  int64 `json:"total_bytes"`
+}
+
+func (q *Queries) GetObjectStats(ctx context.Context) (GetObjectStatsRow, error) {
+	row := q.db.QueryRow(ctx, getObjectStats)
+	var i GetObjectStatsRow
+	err := row.Scan(&i.ObjectCount, &i.TotalBytes)
+	return i, err
+}
+
 const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
 SELECT key
 FROM objects
@@ -409,9 +425,10 @@ func (q *Queries) InsertPendingClosure(ctx context.Context, key string) (Pending
 }
 
 type InsertPendingObjectsParams struct {
-	PendingClosureID int64    `json:"pending_closure_id"`
-	Key              string   `json:"key"`
-	Refs             []string `json:"refs"`
+	PendingClosureID int64       `json:"pending_closure_id"`
+	Key              string      `json:"key"`
+	Refs             []string    `json:"refs"`
+	Size             pgtype.Int8 `json:"size"`
 }
 
 const listPins = `-- name: ListPins :many

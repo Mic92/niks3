@@ -21,8 +21,8 @@ BEGIN
     end if;
 
     -- Commit the pending objects with their references
-    INSERT INTO objects (key, refs)
-    SELECT key, refs FROM pending_objects
+    INSERT INTO objects (key, refs, size)
+    SELECT key, refs, size FROM pending_objects
     WHERE pending_closure_id = closure_id
     ON CONFLICT (key)
     DO UPDATE SET
@@ -34,6 +34,8 @@ BEGIN
                 )
             )
         ),
+        -- Keep an existing size; set it only when currently unknown.
+        size = COALESCE(objects.size, EXCLUDED.size),
         -- Resurrect previously tombstoned objects
         deleted_at = NULL,
         first_deleted_at = NULL;

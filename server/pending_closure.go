@@ -13,6 +13,7 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/sync/errgroup"
@@ -21,6 +22,16 @@ import (
 const (
 	maxSignedURLDuration = time.Duration(5) * time.Hour
 )
+
+// optionalSize maps a reported size to a nullable column; nil stays NULL and is
+// excluded from byte totals.
+func optionalSize(size *uint64) pgtype.Int8 {
+	if size == nil {
+		return pgtype.Int8{}
+	}
+
+	return pgtype.Int8{Int64: int64(*size), Valid: true}
+}
 
 type PendingObject struct {
 	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, realisation, nar)
@@ -234,6 +245,7 @@ func createPendingClosureInner(
 			PendingClosureID: pendingClosure.ID,
 			Key:              objectKey,
 			Refs:             obj.Refs,
+			Size:             optionalSize(obj.NarSize),
 		})
 	}
 
@@ -392,6 +404,7 @@ func (s *Service) createPendingClosure(
 				PendingClosureID: pendingClosure.id,
 				Key:              objectKey,
 				Refs:             obj.Refs,
+				Size:             optionalSize(obj.NarSize),
 			})
 		}
 
