@@ -64,6 +64,7 @@ func createTestService(tb testing.TB) *server.Service {
 		S3Concurrency: 100,
 		S3RateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "s3-test"), // Start unlimited for tests
 		GCTasks:       server.NewGCTaskStore(),
+		Metrics:       server.NewMetrics(),
 	}
 }
 
