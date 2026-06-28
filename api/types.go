@@ -65,6 +65,15 @@ type GCConflictResponse struct {
 	ActiveTask GCTaskStatus `json:"active_task"`
 }
 
+// CacheStats is returned by GET /api/cache-stats for the landing page widget.
+type CacheStats struct {
+	// Objects is the number of live objects in the cache.
+	Objects int64 `json:"objects"`
+
+	// LogicalBytes is the uncompressed size of live objects in bytes.
+	LogicalBytes int64 `json:"logical_bytes"`
+}
+
 // CacheConfig is returned by GET /api/cache-config and tells CI integrations
 // how to configure Nix (substituter, trusted keys) and which OIDC audience
 // to request when fetching a token.

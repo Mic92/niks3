@@ -23,9 +23,11 @@ const landingPageTemplate = `<!DOCTYPE html>
             --bg: #ffffff;
             --surface: #f5f5f5;
             --text: #24292e;
-            --text-secondary: #586069;
+            --text-secondary: #57606a;
             --border: #e1e4e8;
-            --code-bg: #f6f8fa;
+            --code-bg: #eef1f4;
+            --note-accent: #d9a400;
+            --space: 24px;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -33,9 +35,10 @@ const landingPageTemplate = `<!DOCTYPE html>
                 --bg: #0d1117;
                 --surface: #161b22;
                 --text: #c9d1d9;
-                --text-secondary: #8b949e;
+                --text-secondary: #9da7b3;
                 --border: #30363d;
-                --code-bg: #161b22;
+                --code-bg: #0b0f15;
+                --note-accent: #ffc83d;
             }
         }
 
@@ -43,6 +46,10 @@ const landingPageTemplate = `<!DOCTYPE html>
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
         }
 
         body {
@@ -60,13 +67,13 @@ const landingPageTemplate = `<!DOCTYPE html>
 
         header {
             text-align: center;
-            padding: 40px 0;
+            padding: var(--space) 0;
             border-bottom: 1px solid var(--border);
         }
 
         .logo {
-            max-width: 400px;
-            margin: 0 auto 20px auto;
+            max-width: 220px;
+            margin: 0 auto 16px auto;
         }
 
         .logo svg {
@@ -75,7 +82,7 @@ const landingPageTemplate = `<!DOCTYPE html>
         }
 
         h1 {
-            font-size: 2.5rem;
+            font-size: clamp(1.8rem, 5vw, 2.5rem);
             margin-bottom: 10px;
             color: var(--text);
         }
@@ -86,8 +93,8 @@ const landingPageTemplate = `<!DOCTYPE html>
         }
 
         section {
-            margin: 40px 0;
-            padding: 30px;
+            margin: var(--space) 0;
+            padding: var(--space);
             background: var(--surface);
             border-radius: 8px;
             border: 1px solid var(--border);
@@ -110,6 +117,8 @@ const landingPageTemplate = `<!DOCTYPE html>
             padding: 16px;
             border-radius: 6px;
             overflow-x: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
             border: 1px solid var(--border);
             margin: 10px 0;
         }
@@ -137,7 +146,7 @@ const landingPageTemplate = `<!DOCTYPE html>
 
         .note {
             background: rgba(255, 200, 61, 0.1);
-            border-left: 4px solid #ffc83d;
+            border-left: 4px solid var(--note-accent);
             padding: 12px 16px;
             margin: 15px 0;
             border-radius: 4px;
@@ -145,15 +154,44 @@ const landingPageTemplate = `<!DOCTYPE html>
 
         .note p {
             margin: 5px 0;
-            color: var(--text-secondary);
+            color: var(--text);
         }
 
         footer {
             text-align: center;
-            padding: 40px 0;
+            padding: var(--space) 0;
             color: var(--text-secondary);
             border-top: 1px solid var(--border);
-            margin-top: 40px;
+            margin-top: var(--space);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+        }
+
+        .stat-tile {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.2rem;
+            font-weight: 600;
+            color: var(--primary);
+            line-height: 1.2;
+        }
+
+        .stat-label {
+            margin-top: 6px;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
         }
 
         a {
@@ -164,6 +202,12 @@ const landingPageTemplate = `<!DOCTYPE html>
         a:hover {
             text-decoration: underline;
         }
+
+        a:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
     </style>
 </head>
 <body>
@@ -172,6 +216,20 @@ const landingPageTemplate = `<!DOCTYPE html>
             <div class="logo">{{ .Logo }}</div>
             <p class="subtitle">Fast and reliable binary cache for Nix packages</p>
         </header>
+
+        <section id="cache-stats" style="display: none;">
+            <h2>Cache Stats</h2>
+            <div class="stats-grid">
+                <div class="stat-tile">
+                    <div class="stat-value" id="stat-objects">–</div>
+                    <div class="stat-label">Objects</div>
+                </div>
+                <div class="stat-tile">
+                    <div class="stat-value" id="stat-size">–</div>
+                    <div class="stat-label">Size (uncompressed)</div>
+                </div>
+            </div>
+        </section>
 
         <section>
             <h2>Public Keys</h2>
@@ -239,7 +297,7 @@ extra-trusted-public-keys = {{ .PublicKeysJoined }}</code></pre>
             <p>This binary cache is powered by <a href="https://github.com/Mic92/niks3" target="_blank">niks3</a>, a garbage-collected Nix binary cache backed by S3-compatible storage.</p>
 
             <h3>Features</h3>
-            <ul style="margin-left: 20px; color: var(--text-secondary);">
+            <ul style="margin-left: 20px; color: var(--text);">
                 <li>Cryptographically signed packages</li>
                 <li>Reference-tracking garbage collection</li>
                 <li>High availability via S3</li>
@@ -251,6 +309,28 @@ extra-trusted-public-keys = {{ .PublicKeysJoined }}</code></pre>
             <p>Powered by <a href="https://github.com/Mic92/niks3">niks3</a></p>
         </footer>
     </div>
+    <script>
+        (function () {
+            function humanBytes(n) {
+                var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+                var i = 0;
+                while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+                return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+            }
+            // Abort a slow or unreachable niks3; the section stays hidden on failure.
+            var ctrl = new AbortController();
+            var timer = setTimeout(function () { ctrl.abort(); }, 3000);
+            fetch("api/cache-stats", { signal: ctrl.signal })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (s) {
+                    document.getElementById("stat-objects").textContent = s.objects.toLocaleString();
+                    document.getElementById("stat-size").textContent = humanBytes(s.logical_bytes);
+                    document.getElementById("cache-stats").style.display = "";
+                })
+                .catch(function () { /* stats unavailable; leave hidden */ })
+                .finally(function () { clearTimeout(timer); });
+        })();
+    </script>
 </body>
 </html>
 `
