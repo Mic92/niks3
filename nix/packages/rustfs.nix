@@ -5,20 +5,16 @@
 
 pkgs.rustPlatform.buildRustPackage rec {
   pname = "rustfs";
-  version = "1.0.0-alpha.72";
+  version = "1.0.0-beta.7";
 
   src = pkgs.fetchFromGitHub {
     owner = "rustfs";
     repo = "rustfs";
     rev = version;
-    hash = "sha256-iWaZgvy40RW67oqyVttaWyrFrAVy17UJz5JydI51uDM=";
+    hash = "sha256-abDQdD0Ws4brB4xbF2XFyb0M6sKUZ6GwNMAdV4/sC3c=";
   };
 
-  patches = [
-    ./rustfs-content-encoding.patch
-  ];
-
-  cargoHash = "sha256-ApVUUpeLXpMwqRnuNI/Q20/FTEvUyPTtDSpmPsDco2I=";
+  cargoHash = "sha256-YNtpiAfq+6Ynd444fPA/6RDNWbnrnA8i4AXsjLCbKhs=";
 
   nativeBuildInputs = with pkgs; [
     pkg-config
@@ -28,6 +24,10 @@ pkgs.rustPlatform.buildRustPackage rec {
   buildInputs = with pkgs; [
     openssl
   ];
+
+  # Upstream .cargo/config.toml enables tokio_unstable for io-uring support;
+  # buildRustPackage overrides cargo config, so set it explicitly here.
+  RUSTFLAGS = "--cfg tokio_unstable";
 
   # Only build the main rustfs binary
   cargoBuildFlags = [
