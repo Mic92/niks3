@@ -160,6 +160,23 @@ in
         description = "Whether to use SSL for S3 connections.";
       };
 
+      bucketLookup = lib.mkOption {
+        type = lib.types.enum [
+          "auto"
+          "dns"
+          "path"
+        ];
+        default = "auto";
+        description = ''
+          S3 bucket addressing style. "auto" lets the client pick (virtual-host
+          for AWS/GCS/Aliyun, path-style otherwise). Set "dns" to force
+          virtual-host style (<bucket>.<endpoint>), required by providers that
+          reject path-style requests (e.g. CoreWeave). Set "path" to force
+          path-style.
+        '';
+        example = "dns";
+      };
+
       accessKeyFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
@@ -456,7 +473,8 @@ in
             --http-addr "${cfg.httpAddr}" \
             --s3-endpoint "${cfg.s3.endpoint}" \
             --s3-bucket "${cfg.s3.bucket}" \
-            --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}"${
+            --s3-use-ssl="${if cfg.s3.useSSL then "true" else "false"}" \
+            --s3-bucket-lookup "${cfg.s3.bucketLookup}"${
               lib.optionalString (cfg.s3.region != "") ''
                 \
                            --s3-region "${cfg.s3.region}"''
