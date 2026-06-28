@@ -10,9 +10,14 @@ import (
 )
 
 // ServeForTest exposes the graceful-shutdown serve loop to tests, driven by a
-// caller-supplied context instead of OS signals.
-func ServeForTest(shutdownCtx context.Context, server *http.Server, addr string) error {
-	return serve(shutdownCtx, server, &options{HTTPAddr: addr}, false)
+// caller-supplied context and listener instead of OS signals.
+func ServeForTest(shutdownCtx context.Context, server *http.Server, ln net.Listener) error {
+	return serve(shutdownCtx, server, ln, false, nil)
+}
+
+// RunWatchdogForTest exposes runWatchdog to tests.
+func RunWatchdogForTest(ctx context.Context, interval time.Duration, check func(context.Context) error) {
+	runWatchdog(ctx, interval, check)
 }
 
 // GCAdvisoryLockKey exposes the GC advisory lock key to tests.

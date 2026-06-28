@@ -18,14 +18,12 @@ import (
 func TestGracefulShutdownDrainsInflight(t *testing.T) {
 	t.Parallel()
 
-	// Bind first so we know the address before the server starts.
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	ok(t, err)
 
 	addr := ln.Addr().String()
-	ok(t, ln.Close())
 
 	shutdownCtx, triggerShutdown := context.WithCancel(t.Context())
 
@@ -39,19 +37,18 @@ func TestGracefulShutdownDrainsInflight(t *testing.T) {
 		_, _ = w.Write([]byte("done"))
 	})
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
 
 	var (
 		serveErr error
 		wg       sync.WaitGroup
 	)
 
+	// serve takes ownership of the already-bound listener, so there is no
+	// bind/close/rebind race.
 	wg.Go(func() {
-		serveErr = server.ServeForTest(shutdownCtx, srv, addr)
+		serveErr = server.ServeForTest(shutdownCtx, srv, ln)
 	})
-
-	// Wait until the server accepts connections.
-	waitForListening(t, addr)
 
 	respCh := make(chan string, 1)
 
@@ -68,7 +65,15 @@ func TestGracefulShutdownDrainsInflight(t *testing.T) {
 		respCh <- string(body)
 	}()
 
-	<-requestStarted
+	// Wait for the request to reach the handler, but fail fast if the request
+	// errored out instead of hanging here forever.
+	select {
+	case <-requestStarted:
+	case body := <-respCh:
+		t.Fatalf("request did not reach handler: %q", body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached handler")
+	}
 
 	// Signal shutdown while the request is still in flight.
 	triggerShutdown()
@@ -92,29 +97,4 @@ func TestGracefulShutdownDrainsInflight(t *testing.T) {
 	if serveErr != nil {
 		t.Fatalf("serve returned error: %v", serveErr)
 	}
-}
-
-func waitForListening(t *testing.T, addr string) {
-	t.Helper()
-
-	var d net.Dialer
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-
-		conn, err := d.DialContext(ctx, "tcp", addr)
-
-		cancel()
-
-		if err == nil {
-			ok(t, conn.Close())
-
-			return
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatal("server never started listening")
 }
