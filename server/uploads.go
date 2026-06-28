@@ -361,17 +361,26 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// Complete multipart upload
 	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
 	if err != nil {
-		if s.handleS3Error(w, err, "complete multipart upload") {
+		// The completion may have succeeded despite the error (lost response, or
+		// a retry hitting an already-finalized upload). Accept it if the object
+		// is now present.
+		exists, statErr := s.objectExistsInS3(r.Context(), req.ObjectKey)
+		if statErr != nil || !exists {
+			if s.handleS3Error(w, err, "complete multipart upload") {
+				return
+			}
+
+			slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+			http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
+
 			return
 		}
 
-		slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
-		http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
-
-		return
+		slog.Warn("CompleteMultipartUpload errored but object exists; treating as success",
+			"error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+	} else {
+		s.S3RateLimiter.RecordSuccess()
 	}
-
-	s.S3RateLimiter.RecordSuccess()
 
 	// Delete the multipart upload tracking row
 	if err := queries.DeleteMultipartUpload(r.Context(), req.UploadID); err != nil {
@@ -399,32 +408,47 @@ func (s *Service) ObjectExistsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
-		http.Error(w, "rate limiter context canceled", http.StatusServiceUnavailable)
-
-		return
-	}
-
-	_, err := s.MinioClient.StatObject(r.Context(), s.Bucket, objectKey, minio.StatObjectOptions{})
+	exists, err := s.objectExistsInS3(r.Context(), objectKey)
 	if err != nil {
-		if isRateLimitError(err) {
-			s.S3RateLimiter.RecordThrottle()
-		}
-
-		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
-			w.WriteHeader(http.StatusNotFound)
-
-			return
-		}
-
 		slog.Error("Failed to stat object", "error", err, "object_key", objectKey)
 		http.Error(w, "failed to stat object", http.StatusInternalServerError)
 
 		return
 	}
 
-	s.S3RateLimiter.RecordSuccess()
+	if !exists {
+		w.WriteHeader(http.StatusNotFound)
+
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// objectExistsInS3 reports whether objectKey is present in the bucket.
+func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool, error) {
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return false, fmt.Errorf("rate limiter: %w", err)
+	}
+
+	_, err := s.MinioClient.StatObject(ctx, s.Bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
+		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+			s.S3RateLimiter.RecordSuccess()
+
+			return false, nil
+		}
+
+		return false, fmt.Errorf("stat object %q: %w", objectKey, err)
+	}
+
+	s.S3RateLimiter.RecordSuccess()
+
+	return true, nil
 }
 
 // abortRedundantMultipartUploads aborts multipart uploads other pending_closures
