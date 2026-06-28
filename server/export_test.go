@@ -3,11 +3,15 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 )
+
+// SystemdListenerForTest exposes systemdListener to tests.
+func SystemdListenerForTest() (net.Listener, error) { return systemdListener() }
 
 // ServeForTest exposes the graceful-shutdown serve loop to tests, driven by a
 // caller-supplied context and listener instead of OS signals.

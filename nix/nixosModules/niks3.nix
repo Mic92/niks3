@@ -459,11 +459,26 @@ in
       '';
     };
 
+    # Socket activation lets systemd own the listening socket: it stays open
+    # across server restarts, so connections during a redeploy queue in the
+    # backlog instead of being refused. niks3-server picks it up via LISTEN_FDS.
+    systemd.sockets.niks3 = {
+      description = "niks3 server socket";
+      wantedBy = [ "sockets.target" ];
+      socketConfig.ListenStream = cfg.httpAddr;
+    };
+
     systemd.services.niks3 = {
       description = "niks3 server";
+      # Start eagerly at boot (so bucket init and landing-page upload happen
+      # without waiting for the first request), but bind via the socket unit.
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ] ++ lib.optional cfg.database.createLocally "postgresql.service";
-      requires = lib.optional cfg.database.createLocally "postgresql.service";
+      after = [
+        "network.target"
+        "niks3.socket"
+      ]
+      ++ lib.optional cfg.database.createLocally "postgresql.service";
+      requires = [ "niks3.socket" ] ++ lib.optional cfg.database.createLocally "postgresql.service";
 
       serviceConfig = {
         # niks3-server sends sd_notify READY=1 once the listener is bound and
@@ -471,6 +486,8 @@ in
         Type = "notify";
         NotifyAccess = "main";
         WatchdogSec = "30s";
+        # --http-addr is the fallback bind address; ignored when the socket is
+        # passed via socket activation.
         ExecStart = ''
           ${lib.getExe' cfg.serverPackage "niks3-server"} \
             --db "${cfg.database.connectionString}" \
