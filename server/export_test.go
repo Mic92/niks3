@@ -7,6 +7,9 @@ import (
 	"github.com/Mic92/niks3/api"
 )
 
+// GCAdvisoryLockKey exposes the GC advisory lock key to tests.
+const GCAdvisoryLockKey = gcAdvisoryLockKey
+
 // RunGCForTest runs a full garbage collection synchronously and returns the
 // final task status.
 func (s *Service) RunGCForTest(age, pendingAge time.Duration, force bool) api.GCTaskStatus {

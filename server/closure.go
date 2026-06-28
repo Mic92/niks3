@@ -4,13 +4,56 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// gcAdvisoryLockKey serializes GC across replicas sharing one database.
+// GCTaskStore only dedupes within a process.
+const gcAdvisoryLockKey int64 = 0x6e696b73336763 // "niks3gc"
+
+var errGCAlreadyRunning = errors.New("another garbage collection is already running on this database")
+
+// acquireGCLock takes the GC advisory lock on a dedicated connection. The
+// returned func unlocks and releases the connection. Returns
+// errGCAlreadyRunning if the lock is held elsewhere.
+func acquireGCLock(ctx context.Context, pool *pgxpool.Pool) (func(), error) {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection for GC lock: %w", err)
+	}
+
+	var acquired bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", gcAdvisoryLockKey).Scan(&acquired); err != nil {
+		conn.Release()
+
+		return nil, fmt.Errorf("failed to query GC advisory lock: %w", err)
+	}
+
+	if !acquired {
+		conn.Release()
+
+		return nil, errGCAlreadyRunning
+	}
+
+	// Fresh context so unlock runs even if the GC context is done.
+	//nolint:contextcheck // detached on purpose
+	release := func() {
+		if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", gcAdvisoryLockKey); err != nil {
+			slog.Error("failed to release GC advisory lock", "error", err)
+		}
+
+		conn.Release()
+	}
+
+	return release, nil
+}
 
 // GetClosureHandler handles the GET /closures/<key> endpoint.
 func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +190,21 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 
 		s.Metrics.recordGC(result, time.Since(start), snap.Stats)
 	}()
+
+	release, err := acquireGCLock(ctx, s.Pool)
+	if err != nil {
+		if errors.Is(err, errGCAlreadyRunning) {
+			task.fail(*stats, err.Error())
+
+			return
+		}
+
+		task.fail(*stats, "failed to acquire GC lock: "+err.Error())
+
+		return
+	}
+
+	defer release()
 
 	task.setPhase(api.GCTaskPhaseCleanupPendingUploads)
 
