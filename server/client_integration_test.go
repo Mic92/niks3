@@ -611,6 +611,7 @@ func TestPinProtectsFromGC(t *testing.T) {
 		S3RateLimiter: service.S3RateLimiter,
 		S3Concurrency: service.S3Concurrency,
 		GCTasks:       server.NewGCTaskStore(),
+		Metrics:       service.Metrics,
 	}
 
 	// Initialize the bucket with nix-cache-info

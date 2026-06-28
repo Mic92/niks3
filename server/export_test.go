@@ -2,9 +2,21 @@ package server
 
 import (
 	"crypto/tls"
+	"time"
 
 	"github.com/Mic92/niks3/api"
 )
+
+// RunGCForTest runs a full garbage collection synchronously and returns the
+// final task status.
+func (s *Service) RunGCForTest(age, pendingAge time.Duration, force bool) api.GCTaskStatus {
+	result := s.GCTasks.Start(api.GCTaskParams{})
+	s.runGarbageCollection(result.Task, age, pendingAge, force)
+
+	snap, _ := s.GCTasks.Get()
+
+	return snap
+}
 
 // Test-only exports for gcTask methods, callable from server_test package.
 

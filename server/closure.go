@@ -137,6 +137,17 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	ctx := context.Background()
 	stats := &api.GCStats{}
 
+	start := time.Now()
+	defer func() {
+		snap := task.snapshot()
+		result := "succeeded"
+		if snap.State == api.GCTaskStateFailed {
+			result = "failed"
+		}
+
+		s.Metrics.recordGC(result, time.Since(start), snap.Stats)
+	}()
+
 	task.setPhase(api.GCTaskPhaseCleanupPendingUploads)
 
 	failedUploadsCount, err := s.cleanupPendingClosures(ctx, pendingAge)

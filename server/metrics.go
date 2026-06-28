@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -29,6 +30,10 @@ type Metrics struct {
 	httpRequests      *prometheus.CounterVec
 	httpDuration      *prometheus.HistogramVec
 	httpInFlight      prometheus.Gauge
+	gcRuns            *prometheus.CounterVec
+	gcDuration        prometheus.Histogram
+	gcObjectsDeleted  prometheus.Counter
+	gcLastRun         prometheus.Gauge
 }
 
 // NewMetrics builds a registry with the Go/process collectors and the cache
@@ -77,6 +82,35 @@ func NewMetrics() *Metrics {
 			Name: "niks3_http_requests_in_flight",
 			Help: "HTTP requests currently being served.",
 		}),
+		gcRuns: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "niks3_gc_runs_total",
+			Help: "Garbage collection runs by result.",
+		}, []string{"result"}),
+		gcDuration: factory.NewHistogram(prometheus.HistogramOpts{
+			Name: "niks3_gc_duration_seconds",
+			Help: "Garbage collection run duration.",
+			// GC can run from seconds to over an hour on a large cache.
+			Buckets: prometheus.ExponentialBuckets(1, 2, 13),
+		}),
+		gcObjectsDeleted: factory.NewCounter(prometheus.CounterOpts{
+			Name: "niks3_gc_objects_deleted_total",
+			Help: "Objects deleted from S3 and the database by garbage collection.",
+		}),
+		gcLastRun: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "niks3_gc_last_run_timestamp_seconds",
+			Help: "Unix time of the last successful garbage collection; absent until one completes after startup.",
+		}),
+	}
+}
+
+// recordGC records the outcome of a garbage collection run.
+func (m *Metrics) recordGC(result string, duration time.Duration, stats api.GCStats) {
+	m.gcRuns.WithLabelValues(result).Inc()
+	m.gcDuration.Observe(duration.Seconds())
+	m.gcObjectsDeleted.Add(float64(stats.ObjectsDeletedAfterGracePeriod))
+
+	if result == "succeeded" {
+		m.gcLastRun.SetToCurrentTime()
 	}
 }
 
