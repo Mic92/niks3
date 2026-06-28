@@ -29,6 +29,7 @@ type Client struct {
 	MaxConcurrentNARUploads int                            // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string                       // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig                    // Retry configuration for HTTP requests
+	ConflictRetry           RetryConfig                    // Backoff for HTTP 409 on POST /api/pending_closures
 	storeDir                string                         // Cached Nix store directory (e.g., "/nix/store")
 	VerifyS3Integrity       bool                           // Enable S3 integrity checking when creating pending closures
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
@@ -119,6 +120,7 @@ func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSou
 		},
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
+		ConflictRetry:           DefaultPendingClosureConflictRetry(),
 		storeDir:                storeDir,
 		S3RateLimiter:           ratelimit.NewAdaptiveRateLimiter(0, "s3"),
 		ServerRateLimiter:       ratelimit.NewAdaptiveRateLimiter(0, "server"),

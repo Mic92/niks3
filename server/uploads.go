@@ -130,6 +130,16 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 
 	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap, req.VerifyS3)
 	if err != nil {
+		if errors.Is(err, errMultipartUploadInProgress) {
+			// Another pending_closure is still uploading the same NAR.
+			// Surface as 409 so clients back off and retry instead of
+			// opening a duplicate multipart upload (compression output
+			// is not byte-stable across uploaders).
+			http.Error(w, err.Error(), http.StatusConflict)
+
+			return
+		}
+
 		if s.handleS3Error(w, err, "create pending closure") {
 			return
 		}

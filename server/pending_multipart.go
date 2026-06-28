@@ -2,17 +2,37 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
+	pgx "github.com/jackc/pgx/v5"
 	"github.com/minio/minio-go/v7"
 )
 
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
+
+	// multipartLockWindow bounds how long a registered multipart upload is
+	// treated as in-flight for the exclusive-lock check in
+	// createMultipartUpload. Within this window a second pending_closure
+	// targeting the same NAR gets HTTP 409 and is expected to retry; past
+	// it the previous upload is assumed dead (crashed client) and a fresh
+	// one is opened, leaving the stale row to cleanupPendingClosures.
+	// Sized to cover a max-parts NAR (~1 GiB) over a slow home-network
+	// upload while keeping a crashed-client lockout short enough that a
+	// retrying CI job finishes within ordinary timeouts.
+	multipartLockWindow = 10 * time.Minute
 )
+
+// errMultipartUploadInProgress signals that another pending_closure is still
+// uploading the same object key. Surfaced as HTTP 409 by the handler so the
+// client can back off and retry instead of opening a second multipart upload
+// (compression output is not byte-stable across uploaders).
+var errMultipartUploadInProgress = errors.New("multipart upload already in progress for this object")
 
 // useSimpleUpload reports whether a NAR of the given uncompressed size should
 // be uploaded with a single presigned PUT instead of a multipart upload.
@@ -81,30 +101,38 @@ func estimatePartsNeeded(narSize uint64) int {
 func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID int64, objectKey string, narSize uint64) (PendingObject, error) {
 	numParts := estimatePartsNeeded(narSize)
 
-	// Create Core client for multipart operations
+	queries := pg.New(s.Pool)
 	coreClient := minio.Core{Client: s.MinioClient}
 
-	// Wait for rate limiter
-	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+	// Refuse to open a second multipart upload while another pending_closure
+	// is plausibly still uploading the same NAR. Parallel CI workflows often
+	// race on the same dependency closure; without this check each closure
+	// opened its own NewMultipartUpload and only one ever got completed,
+	// leaving the rest as orphans that bloated the S3 backend's metadata
+	// store. We must not share the upload_id across clients either:
+	// compression output is not byte-stable across multi-threaded
+	// uploaders, so concatenating parts from two clients produces a corrupt
+	// archive. So we treat a recent registration as an exclusive lock and
+	// expect the client to back off; rows older than multipartLockWindow
+	// are ignored here and cleaned up by cleanupPendingClosures.
+	_, err := queries.GetActiveMultipartUploadByObjectKey(ctx, pg.GetActiveMultipartUploadByObjectKeyParams{
+		ObjectKey:     objectKey,
+		MaxAgeSeconds: int32(multipartLockWindow.Seconds()),
+	})
+	if err == nil {
+		return PendingObject{}, errMultipartUploadInProgress
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return PendingObject{}, fmt.Errorf("failed to look up existing multipart upload: %w", err)
+	}
+
+	uploadID, err := s.initiateMultipartUpload(ctx, coreClient, objectKey)
+	if err != nil {
 		return PendingObject{}, err
 	}
 
-	// Initiate multipart upload
-	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
-		ContentType: "application/octet-stream",
-	})
-	if err != nil {
-		if isRateLimitError(err) {
-			s.S3RateLimiter.RecordThrottle()
-		}
-
-		return PendingObject{}, fmt.Errorf("failed to initiate multipart upload: %w", err)
-	}
-
-	s.S3RateLimiter.RecordSuccess()
-
-	// Store upload ID in database
-	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
+	if err := queries.InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
@@ -114,10 +142,8 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
-	// Generate presigned URLs for each part (starting from part 1)
 	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
 	if err != nil {
-		// Cleanup: abort multipart upload
 		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
 
 		return PendingObject{}, err
@@ -129,6 +155,29 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 			PartURLs: partURLs,
 		},
 	}, nil
+}
+
+// initiateMultipartUpload calls S3 CreateMultipartUpload and returns the new
+// upload ID, honoring the adaptive rate limiter.
+func (s *Service) initiateMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey string) (string, error) {
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return "", err
+	}
+
+	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
+		ContentType: "application/octet-stream",
+	})
+	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
+		return "", fmt.Errorf("failed to initiate multipart upload: %w", err)
+	}
+
+	s.S3RateLimiter.RecordSuccess()
+
+	return uploadID, nil
 }
 
 // generatePartURLs generates presigned URLs for multipart upload parts.

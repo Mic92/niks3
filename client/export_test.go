@@ -2,6 +2,7 @@ package client
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -37,6 +38,7 @@ func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts Token
 		httpClient:        httpClient,
 		tokenSource:       ts,
 		Retry:             retry,
+		ConflictRetry:     DefaultPendingClosureConflictRetry(),
 		S3RateLimiter:     ratelimit.NewAdaptiveRateLimiter(0, "s3-test"),
 		ServerRateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "server-test"),
 	}
@@ -45,4 +47,23 @@ func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts Token
 // NewTestClientWithStoreDir creates a Client with only storeDir set, for path resolution tests.
 func NewTestClientWithStoreDir(storeDir string) *Client {
 	return &Client{storeDir: storeDir}
+}
+
+// NewTestClientForServer returns a Client wired to talk to a test HTTP server
+// at serverURL. conflictRetry sets the 409 backoff used by CreatePendingClosure.
+func NewTestClientForServer(serverURL string, conflictRetry RetryConfig) (*Client, error) {
+	baseURL, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // test helper
+	}
+
+	return &Client{
+		baseURL:           baseURL,
+		httpClient:        &http.Client{},
+		tokenSource:       StaticToken(""),
+		Retry:             DefaultRetryConfig(),
+		ConflictRetry:     conflictRetry,
+		S3RateLimiter:     ratelimit.NewAdaptiveRateLimiter(0, "s3-test"),
+		ServerRateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "server-test"),
+	}, nil
 }

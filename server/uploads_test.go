@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -578,5 +579,135 @@ func TestCreatePendingClosure_SmallNARUsesSimplePUT(t *testing.T) {
 	large := resp.PendingObjects[largeNarKey]
 	if large.MultipartInfo == nil {
 		t.Errorf("large NAR should use multipart upload")
+	}
+}
+
+// uploadSharedNar issues a POST /api/pending_closures for a narinfo whose only
+// object is sharedNarKey. Used to drive two distinct closures against the same
+// NAR in the conflict/stale-lock tests below.
+func uploadSharedNar(t *testing.T, service *server.Service, narinfoKey, sharedNarKey string, check *func(*testing.T, *httptest.ResponseRecorder)) *httptest.ResponseRecorder {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"closure": narinfoKey,
+		"objects": []map[string]any{
+			{"key": narinfoKey, "type": "narinfo", "refs": []string{sharedNarKey}},
+			{"key": sharedNarKey, "type": "nar", "refs": []string{}, "nar_size": 20 * 1024 * 1024},
+		},
+	})
+	ok(t, err)
+
+	return testRequest(t, &TestRequest{
+		method:        "POST",
+		path:          "/api/pending_closures",
+		body:          body,
+		handler:       service.CreatePendingClosureHandler,
+		checkResponse: check,
+	})
+}
+
+// TestCreatePendingClosure_DuplicateMultipartReturnsConflict locks down the
+// exclusive-lock behavior for concurrent uploads of the same NAR. Sharing
+// the upload_id across clients is unsafe (compression output is not
+// byte-stable across multi-threaded uploaders, so concatenating parts from
+// two clients corrupts the archive). Opening a second multipart upload
+// without checking is also bad: parallel CI workflows that race on a shared
+// dependency closure left tens of thousands of orphaned uploads piling up
+// in the S3 backend's metadata store. The server therefore refuses the
+// second registration with HTTP 409 while the first is plausibly still in
+// flight; clients back off and retry, by which point either the first
+// upload has completed (StatObject short-circuits) or its lock has aged
+// out.
+func TestCreatePendingClosure_DuplicateMultipartReturnsConflict(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	// Hashes are nix-base32 (no e/o/t/u), unique to this test to avoid
+	// collisions when running in parallel with other tests.
+	sharedNarKey := narKeyFor("gggggggggggggggggggggggggggggg01")
+	firstNarinfoKey := "gggggggggggggggggggggggggggggg10.narinfo"
+	secondNarinfoKey := "gggggggggggggggggggggggggggggg20.narinfo"
+
+	rr := uploadSharedNar(t, service, firstNarinfoKey, sharedNarKey, nil)
+
+	var firstResp server.PendingClosureResponse
+	err := json.Unmarshal(rr.Body.Bytes(), &firstResp)
+	ok(t, err)
+
+	firstNar := firstResp.PendingObjects[sharedNarKey]
+	if firstNar.MultipartInfo == nil {
+		t.Fatalf("first closure: shared NAR should use multipart upload")
+	}
+
+	if firstNar.MultipartInfo.UploadID == "" {
+		t.Fatalf("first closure: empty upload id")
+	}
+
+	conflict := checkStatusCode(http.StatusConflict)
+	uploadSharedNar(t, service, secondNarinfoKey, sharedNarKey, &conflict)
+}
+
+// TestCreatePendingClosure_StaleMultipartAllowsNewUpload covers the
+// crashed-client recovery path. Without this escape hatch a client that
+// dies mid-upload would keep returning 409 to every retry until the
+// hourly cleanup job runs. Instead, once the registered multipart upload
+// is older than multipartLockWindow it stops counting as held; a new
+// closure proceeds with its own fresh upload_id and the stale row is
+// left to GetOldMultipartUploads/cleanupPendingClosures to abort.
+func TestCreatePendingClosure_StaleMultipartAllowsNewUpload(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	sharedNarKey := narKeyFor("gggggggggggggggggggggggggggggg02")
+	firstNarinfoKey := "gggggggggggggggggggggggggggggg11.narinfo"
+	secondNarinfoKey := "gggggggggggggggggggggggggggggg21.narinfo"
+
+	rr := uploadSharedNar(t, service, firstNarinfoKey, sharedNarKey, nil)
+
+	var firstResp server.PendingClosureResponse
+	err := json.Unmarshal(rr.Body.Bytes(), &firstResp)
+	ok(t, err)
+
+	firstUploadID := firstResp.PendingObjects[sharedNarKey].MultipartInfo.UploadID
+	if firstUploadID == "" {
+		t.Fatalf("first closure: empty upload id")
+	}
+
+	// Simulate the first closure's mpu having gone stale (client crashed
+	// well before completing). Backdate started_at past the lock window so
+	// the in-flight check stops returning the row.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	firstClosureID, err := strconv.ParseInt(firstResp.ID, 10, 64)
+	ok(t, err)
+
+	_, err = service.Pool.Exec(ctx,
+		"UPDATE pending_closures SET started_at = timezone('UTC', now()) - interval '1 hour' WHERE id = $1",
+		firstClosureID)
+	ok(t, err)
+
+	rr = uploadSharedNar(t, service, secondNarinfoKey, sharedNarKey, nil)
+
+	var secondResp server.PendingClosureResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &secondResp)
+	ok(t, err)
+
+	secondNar := secondResp.PendingObjects[sharedNarKey]
+	if secondNar.MultipartInfo == nil {
+		t.Fatalf("second closure: shared NAR should use multipart upload")
+	}
+
+	if secondNar.MultipartInfo.UploadID == "" {
+		t.Fatalf("second closure: empty upload id")
+	}
+
+	if secondNar.MultipartInfo.UploadID == firstUploadID {
+		t.Errorf("second closure should open a fresh upload after the first went stale, got the same upload id %q",
+			firstUploadID)
 	}
 }

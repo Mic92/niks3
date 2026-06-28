@@ -119,6 +119,23 @@ SELECT pending_closure_id, object_key, upload_id
 FROM multipart_uploads
 WHERE upload_id = $1 AND object_key = $2;
 
+-- name: GetActiveMultipartUploadByObjectKey :one
+-- Returns the most recently registered multipart upload for the given object
+-- key whose owning pending_closure was started within the last
+-- $2 seconds. Used as an exclusive lock so concurrent pending_closures cannot
+-- open a second multipart upload for the same NAR while one is plausibly still
+-- in flight. Sharing the upload_id across clients is unsafe because compression
+-- output is not byte-stable across uploaders, so callers treat a hit as a
+-- conflict (HTTP 409) rather than a reusable handle. Older rows are ignored
+-- here and left to GetOldMultipartUploads/cleanupPendingClosures to abort.
+SELECT mu.upload_id
+FROM multipart_uploads mu
+INNER JOIN pending_closures pc ON mu.pending_closure_id = pc.id
+WHERE mu.object_key = sqlc.arg(object_key)
+  AND pc.started_at > timezone('UTC', now()) - interval '1 second' * sqlc.arg(max_age_seconds)::int
+ORDER BY pc.started_at DESC
+LIMIT 1;
+
 -- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now

@@ -7,7 +7,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 )
+
+// DefaultPendingClosureConflictRetry returns the default retry config used
+// for HTTP 409 responses from POST /api/pending_closures. The server holds a
+// per-NAR exclusive lock for multipartLockWindow (10 minutes) so a parallel
+// closure targeting the same NAR sees 409 until the holder finishes or the
+// lock ages out. These settings let us poll across that whole window with
+// gentle pacing: ~30s steady-state delay after the first few attempts,
+// totalling roughly 15 minutes of patience before giving up.
+func DefaultPendingClosureConflictRetry() RetryConfig {
+	return RetryConfig{
+		MaxRetries:     32,
+		InitialBackoff: 1 * time.Second,
+		MaxBackoff:     30 * time.Second,
+		Multiplier:     2.0,
+		Jitter:         0.2,
+	}
+}
 
 // createPendingClosureRequest is the request to create a pending closure.
 type createPendingClosureRequest struct {
@@ -31,6 +49,14 @@ type CreatePendingClosureResponse struct {
 }
 
 // CreatePendingClosure creates a pending closure and returns upload URLs.
+//
+// HTTP 409 from the server signals that another pending_closure is still
+// uploading the same NAR (the multipart upload is treated as an exclusive
+// lock; see server/pending_multipart.go for the rationale). We back off and
+// retry with exponential delay so the caller does not have to know about
+// the lock. Either the holder completes and GetExistingObjects short-circuits
+// the NAR on the next attempt, or the lock ages out past multipartLockWindow
+// and a fresh upload can open.
 func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objects []ObjectWithRefs, verifyS3 bool) (*CreatePendingClosureResponse, error) {
 	reqURL := c.baseURL.JoinPath("api/pending_closures")
 
@@ -45,18 +71,61 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+	conflictRetry := c.ConflictRetry
+	if conflictRetry.MaxRetries < 0 {
+		conflictRetry.MaxRetries = 0
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
 
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.DoServerRequest(ctx, req) //nolint:bodyclose // closed in decodePendingClosure on the success path, closeResponseBody on the 409 retry path
+		if err != nil {
+			return nil, fmt.Errorf("sending request: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusConflict && attempt < conflictRetry.MaxRetries {
+			backoff := conflictRetry.calculateBackoff(attempt)
+			if ra := retryAfterDuration(resp); ra > backoff {
+				backoff = ra
+			}
+
+			closeResponseBody(resp.Body)
+
+			slog.Warn("Server reported duplicate multipart upload, retrying",
+				"closure", closure,
+				"attempt", attempt+1,
+				"max_attempts", conflictRetry.MaxRetries+1,
+				"backoff", backoff)
+
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, fmt.Errorf("context canceled during 409 backoff: %w", ctx.Err())
+				case <-time.After(backoff):
+				}
+			}
+
+			continue
+		}
+
+		result, err := decodePendingClosure(resp)
+		if err != nil {
+			return nil, err
+		}
+
+		slog.Debug("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
+
+		return result, nil
 	}
+}
 
+func decodePendingClosure(resp *http.Response) (*CreatePendingClosureResponse, error) {
 	defer deferCloseBody(resp)
 
 	if err := checkResponse(resp, http.StatusOK, http.StatusCreated); err != nil {
@@ -67,8 +136,6 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
-
-	slog.Debug("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
 
 	return &result, nil
 }
