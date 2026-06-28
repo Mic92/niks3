@@ -395,8 +395,20 @@ func serve(shutdownCtx context.Context, server *http.Server, ln net.Listener, us
 	return drain(server)
 }
 
-// makeListener binds the configured HTTP address.
+// makeListener returns a socket-activated listener when systemd passed one,
+// otherwise it binds the configured HTTP address.
 func makeListener(opts *options) (net.Listener, error) {
+	sdListener, err := systemdListener()
+	if err != nil {
+		return nil, err
+	}
+
+	if sdListener != nil {
+		slog.Info("Using socket-activated listener", "address", sdListener.Addr())
+
+		return sdListener, nil
+	}
+
 	ln, err := net.Listen("tcp", opts.HTTPAddr) //nolint:noctx // listener lives for the whole server lifetime
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", opts.HTTPAddr, err)

@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,6 +25,30 @@ func newNotifySocket(t *testing.T) *net.UnixConn {
 	t.Setenv("NOTIFY_SOCKET", socketPath)
 
 	return conn
+}
+
+// TestSystemdListenerNotActivated verifies systemdListener returns nil when the
+// process was not socket-activated, and that it clears the activation
+// environment so children do not inherit it.
+func TestSystemdListenerNotActivated(t *testing.T) {
+	// LISTEN_PID for a different process must be ignored.
+	t.Setenv("LISTEN_PID", "1")
+	t.Setenv("LISTEN_FDS", "1")
+
+	listener, err := server.SystemdListenerForTest()
+	ok(t, err)
+
+	if listener != nil {
+		t.Fatal("expected no listener when not socket-activated")
+	}
+
+	if _, set := os.LookupEnv("LISTEN_PID"); set {
+		t.Fatal("LISTEN_PID should be unset after systemdListener")
+	}
+
+	if _, set := os.LookupEnv("LISTEN_FDS"); set {
+		t.Fatal("LISTEN_FDS should be unset after systemdListener")
+	}
 }
 
 func readNotify(t *testing.T, conn *net.UnixConn, timeout time.Duration) (string, bool) {

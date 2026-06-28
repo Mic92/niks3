@@ -8,8 +8,54 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// listenFdsStart is the first file descriptor systemd passes for socket
+// activation; see sd_listen_fds(3).
+const listenFdsStart = 3
+
+// systemdListener returns the listener systemd passed via socket activation
+// (LISTEN_FDS / LISTEN_PID), or nil when the process was not socket activated.
+// niks3 only has one HTTP socket, so any extra fds are ignored. The activation
+// environment variables are unset so children do not inherit them.
+func systemdListener() (net.Listener, error) {
+	defer func() {
+		_ = os.Unsetenv("LISTEN_PID")
+		_ = os.Unsetenv("LISTEN_FDS")
+		_ = os.Unsetenv("LISTEN_FDNAMES")
+	}()
+
+	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
+	if err != nil || pid != os.Getpid() {
+		return nil, nil //nolint:nilnil // not socket activated
+	}
+
+	count, err := strconv.Atoi(os.Getenv("LISTEN_FDS"))
+	if err != nil || count == 0 {
+		return nil, nil //nolint:nilnil // not socket activated
+	}
+
+	if count > 1 {
+		slog.Warn("Multiple socket-activated fds passed, using the first", "count", count)
+	}
+
+	syscall.CloseOnExec(listenFdsStart)
+
+	file := os.NewFile(uintptr(listenFdsStart), "LISTEN_FD")
+
+	ln, err := net.FileListener(file)
+
+	// FileListener dups the fd, so the original file is no longer needed.
+	_ = file.Close()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to use socket-activated fd %d: %w", listenFdsStart, err)
+	}
+
+	return ln, nil
+}
 
 // sdNotify sends a status update to systemd via the NOTIFY_SOCKET. It is a
 // no-op when the socket is not set (i.e. not running under systemd with
