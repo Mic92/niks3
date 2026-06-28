@@ -24,6 +24,13 @@ type Object struct {
 	Refs           []string         `json:"refs"`
 	DeletedAt      pgtype.Timestamp `json:"deleted_at"`
 	FirstDeletedAt pgtype.Timestamp `json:"first_deleted_at"`
+	Size           pgtype.Int8      `json:"size"`
+}
+
+type ObjectStat struct {
+	ID          bool  `json:"id"`
+	ObjectCount int64 `json:"object_count"`
+	TotalBytes  int64 `json:"total_bytes"`
 }
 
 type PendingClosure struct {
@@ -33,9 +40,10 @@ type PendingClosure struct {
 }
 
 type PendingObject struct {
-	PendingClosureID int64    `json:"pending_closure_id"`
-	Key              string   `json:"key"`
-	Refs             []string `json:"refs"`
+	PendingClosureID int64       `json:"pending_closure_id"`
+	Key              string      `json:"key"`
+	Refs             []string    `json:"refs"`
+	Size             pgtype.Int8 `json:"size"`
 }
 
 type Pin struct {

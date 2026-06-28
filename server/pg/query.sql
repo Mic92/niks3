@@ -4,7 +4,10 @@ VALUES (timezone('UTC', now()), $1)
 RETURNING *;
 
 -- name: InsertPendingObjects :copyfrom
-INSERT INTO pending_objects (pending_closure_id, key, refs) VALUES ($1, $2, $3);
+INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2, $3, $4);
+
+-- name: GetObjectStats :one
+SELECT object_count, total_bytes FROM object_stats WHERE id;
 
 -- name: GetPendingObjectKeys :many
 SELECT key FROM pending_objects

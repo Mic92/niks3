@@ -32,6 +32,7 @@ func (r iteratorForInsertPendingObjects) Values() ([]interface{}, error) {
 		r.rows[0].PendingClosureID,
 		r.rows[0].Key,
 		r.rows[0].Refs,
+		r.rows[0].Size,
 	}, nil
 }
 
@@ -40,5 +41,5 @@ func (r iteratorForInsertPendingObjects) Err() error {
 }
 
 func (q *Queries) InsertPendingObjects(ctx context.Context, arg []InsertPendingObjectsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"pending_objects"}, []string{"pending_closure_id", "key", "refs"}, &iteratorForInsertPendingObjects{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"pending_objects"}, []string{"pending_closure_id", "key", "refs", "size"}, &iteratorForInsertPendingObjects{rows: arg})
 }
