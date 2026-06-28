@@ -9,6 +9,9 @@ INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2
 -- name: GetObjectStats :one
 SELECT object_count, total_bytes FROM object_stats WHERE id;
 
+-- name: CountPendingClosures :one
+SELECT count(*) FROM pending_closures;
+
 -- name: GetPendingObjectKeys :many
 SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;
