@@ -271,6 +271,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
 	mux.Handle("GET /metrics", service.Metrics.Handler())
 	mux.HandleFunc("GET /api/cache-config", service.CacheConfigHandler)
+	mux.HandleFunc("GET /api/cache-stats", service.CacheStatsHandler)
 
 	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
 	mux.HandleFunc("DELETE /api/pending_closures", service.AuthMiddleware(service.CleanupPendingClosuresHandler))
