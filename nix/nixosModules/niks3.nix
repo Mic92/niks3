@@ -137,6 +137,10 @@ let
     "--cache-url"
     cfg.cacheUrl
   ]
+  ++ lib.optionals (cfg.serverUrl != null) [
+    "--server-url"
+    cfg.serverUrl
+  ]
   ++ lib.concatMap (f: [
     "--sign-key-path"
     (toString f)
@@ -328,6 +332,19 @@ in
         This is used to generate a landing page (index.html) with usage instructions
         and public keys, which is uploaded to the S3 bucket.
         Also used for redirecting requests to the niks3 server root to the public cache.
+      '';
+    };
+
+    serverUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "https://niks3.example.com";
+      description = ''
+        Public URL of the niks3 server itself (distinct from cacheUrl when reads
+        are served straight from S3/CDN). The generated landing page fetches
+        cache stats from {serverUrl}/api/cache-stats. If unset, the page uses a
+        same-origin relative path, which only works when the cache is served by
+        niks3 or a proxy that routes /api/cache-stats to it.
       '';
     };
 

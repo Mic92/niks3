@@ -44,6 +44,7 @@ type options struct {
 
 	SignKeyPaths    []string
 	CacheURL        string
+	ServerURL       string
 	OIDCConfigPath  string
 	EnableReadProxy bool
 
@@ -91,6 +92,7 @@ type Service struct {
 	APIToken              string
 	SigningKeys           []*signing.Key
 	CacheURL              string
+	ServerURL             string
 	OIDCValidator         *oidc.Validator
 	EnableReadProxy       bool
 	MTLSProxyHeader       string
@@ -222,6 +224,7 @@ func runServer(opts *options) error {
 		MTLSBoundSubjects:     opts.MTLSBoundSubjects,
 		MTLSBoundSubjectsRead: opts.MTLSBoundSubjectsRead,
 		CacheURL:              opts.CacheURL,
+		ServerURL:             opts.ServerURL,
 		GCTasks:               NewGCTaskStore(),
 		Metrics:               NewMetrics(),
 	}
