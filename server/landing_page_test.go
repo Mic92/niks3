@@ -53,4 +53,23 @@ func TestGenerateLandingPage(t *testing.T) {
 	if !strings.Contains(html, "</html>") {
 		t.Error("Landing page does not end with closing html tag")
 	}
+
+	// Without ServerURL the page fetches stats from a same-origin relative path.
+	// html/template escapes "/" as "\/" in the JS context, so undo it first.
+	if !strings.Contains(strings.ReplaceAll(html, `\/`, "/"), `fetch("api/cache-stats"`) {
+		t.Error("expected same-origin relative cache-stats fetch when ServerURL is unset")
+	}
+
+	// With ServerURL set the page fetches stats from the absolute niks3 URL.
+	withServer, err := (&server.Service{
+		SigningKeys: []*signing.Key{key},
+		ServerURL:   "https://niks3.example.com/",
+	}).GenerateLandingPage("https://cache.example.com")
+	if err != nil {
+		t.Fatalf("Failed to generate landing page: %v", err)
+	}
+
+	if !strings.Contains(strings.ReplaceAll(withServer, `\/`, "/"), `fetch("https://niks3.example.com/api/cache-stats"`) {
+		t.Error("expected absolute cache-stats fetch when ServerURL is set")
+	}
 }

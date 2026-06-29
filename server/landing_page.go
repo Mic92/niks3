@@ -19,10 +19,18 @@ type landingPageData struct {
 	PublicKeys       []string
 	PublicKeysJoined string
 	CacheURL         string
+	// CacheStatsURL is where the page fetches inventory stats from: absolute
+	// when ServerURL is set, else a same-origin relative path.
+	CacheStatsURL string
 }
 
 // GenerateLandingPage creates an HTML landing page with the cache's public keys and usage instructions.
 func (s *Service) GenerateLandingPage(cacheURL string) (string, error) {
+	cacheStatsURL := "api/cache-stats"
+	if s.ServerURL != "" {
+		cacheStatsURL = strings.TrimRight(s.ServerURL, "/") + "/api/cache-stats"
+	}
+
 	publicKeys := make([]string, 0, len(s.SigningKeys))
 	for _, key := range s.SigningKeys {
 		pubKey, err := key.PublicKey()
@@ -38,6 +46,7 @@ func (s *Service) GenerateLandingPage(cacheURL string) (string, error) {
 		PublicKeys:       publicKeys,
 		PublicKeysJoined: strings.Join(publicKeys, " "),
 		CacheURL:         cacheURL,
+		CacheStatsURL:    cacheStatsURL,
 	}
 
 	tmpl, err := template.New("landing").Parse(landingPageTemplate)

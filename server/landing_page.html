@@ -307,7 +307,7 @@ extra-trusted-public-keys = {{ .PublicKeysJoined }}</code></pre>
             // Abort a slow or unreachable niks3; the section stays hidden on failure.
             var ctrl = new AbortController();
             var timer = setTimeout(function () { ctrl.abort(); }, 3000);
-            fetch("api/cache-stats", { signal: ctrl.signal })
+            fetch("{{ .CacheStatsURL }}", { signal: ctrl.signal })
                 .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
                 .then(function (s) {
                     document.getElementById("stat-objects").textContent = s.objects.toLocaleString();

@@ -117,6 +117,9 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
 	flag.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
+	flag.StringVar(&opts.ServerURL, "server-url", getEnvOrDefault("NIKS3_SERVER_URL", ""),
+		"Public niks3 server URL the landing page fetches cache stats from (e.g., https://niks3.example.com); "+
+			"defaults to a same-origin relative path")
 	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
 		"Path to OIDC configuration file (JSON format)")
 	flag.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),

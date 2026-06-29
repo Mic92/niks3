@@ -10,7 +10,8 @@ import (
 )
 
 // CacheStatsHandler serves public cache inventory stats for the landing page.
-// CORS-open so the page can fetch it when served cross-origin from S3 or a CDN.
+// CORS "*" is safe only because the data is public and the endpoint is
+// unauthenticated: keep it that way, and never add Allow-Credentials.
 func (s *Service) CacheStatsHandler(w http.ResponseWriter, r *http.Request) {
 	stats, err := pg.New(s.Pool).GetObjectStats(r.Context())
 	if err != nil {
