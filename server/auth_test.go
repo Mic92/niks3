@@ -295,7 +295,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 
 	// Create test service with OIDC validator
 	service := createTestService(t)
-	defer service.Close()
+	t.Cleanup(service.Close)
 
 	service.Pool.Close() // health check works without DB
 	service.OIDCValidator = validator
