@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/cmdutil"
 	"github.com/Mic92/niks3/hook"
 )
@@ -146,27 +145,7 @@ func runServe() error {
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 	tf := cmdutil.AddTLSFlags(fs)
 
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printServeHelp()
-			os.Exit(0)
-		}
-
-		return fmt.Errorf("parsing flags: %w", err)
-	}
-
-	if *cf.Help {
-		printServeHelp()
-		os.Exit(0)
-	}
-
-	cmdutil.SetupLogger(*cf.Debug)
-
-	if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	ts, err := cf.TokenSource(fs, tf)
+	ts, err := cmdutil.ParseCommand(fs, cf, tf, os.Args[2:], printServeHelp)
 	if err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
@@ -201,21 +180,13 @@ func runServe() error {
 	defer stop()
 
 	// Create the niks3 client.
-	c, err := client.NewClientWithTokenSource(ctx, *cf.ServerURL, ts)
+	c, err := cmdutil.NewClient(ctx, *cf.ServerURL, ts, tf, *cf.Debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = *maxConcurrent
-
 	c.VerifyS3Integrity = *verifyS3
-	if *cf.Debug {
-		c.SetDebugHTTP(true)
-	}
 
 	// Notification channels: the server notifies both the worker and the
 	// idle timer when new paths are queued. Separate channels avoid the
