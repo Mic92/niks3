@@ -83,6 +83,29 @@ func writeTestConfig(t *testing.T, config oidc.Config) string {
 	return configPath
 }
 
+// newTestValidator round-trips config through a file and LoadConfig, then
+// builds a validator, mirroring production startup.
+func newTestValidator(t *testing.T, config oidc.Config) (context.Context, *oidc.Validator) {
+	t.Helper()
+
+	configPath := writeTestConfig(t, config)
+
+	cfg, err := oidc.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	validator, err := oidc.NewValidator(ctx, cfg)
+	if err != nil {
+		t.Fatalf("failed to create validator: %v", err)
+	}
+
+	return ctx, validator
+}
+
 func TestValidateToken_ValidToken(t *testing.T) {
 	t.Parallel()
 
@@ -97,20 +120,7 @@ func TestValidateToken_ValidToken(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	token := signToken(t, m, jwt.MapClaims{
 		"sub": "repo:myorg/myrepo:ref:refs/heads/main",
@@ -144,20 +154,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Token is signed for the mock's ClientID, but validator expects different audience
 	token := signToken(t, m, jwt.MapClaims{
@@ -165,7 +162,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 		"aud": m.Config().ClientID, // Different from what validator expects
 	})
 
-	_, err = validator.ValidateToken(ctx, token)
+	_, err := validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for wrong audience, got nil")
 	}
@@ -185,20 +182,7 @@ func TestValidateToken_Expired(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Create an already-expired token
 	token := signToken(t, m, jwt.MapClaims{
@@ -206,7 +190,7 @@ func TestValidateToken_Expired(t *testing.T) {
 		"exp": m.Now().Add(-time.Hour).Unix(), // Expired 1 hour ago
 	})
 
-	_, err = validator.ValidateToken(ctx, token)
+	_, err := validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}
@@ -229,20 +213,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Token has wrong repository_owner
 	token := signToken(t, m, jwt.MapClaims{
@@ -250,7 +221,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 		"repository_owner": "otherorg",
 	})
 
-	_, err = validator.ValidateToken(ctx, token)
+	_, err := validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for mismatched bound claims, got nil")
 	}
@@ -280,27 +251,14 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Token has non-matching subject
 	token := signToken(t, m, jwt.MapClaims{
 		"sub": "repo:otherorg/myrepo:ref:refs/heads/main",
 	})
 
-	_, err = validator.ValidateToken(ctx, token)
+	_, err := validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for mismatched bound subject, got nil")
 	}
@@ -325,20 +283,7 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Token from second provider should be validated
 	token := signToken(t, m2, jwt.MapClaims{
@@ -377,20 +322,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 			},
 		},
 	}
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
+	ctx, validator := newTestValidator(t, config)
 
 	// Token from m2 (not configured) should fail
 	token := signToken(t, m2, jwt.MapClaims{
@@ -399,7 +331,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 		"aud": m2.Config().ClientID,
 	})
 
-	_, err = validator.ValidateToken(ctx, token)
+	_, err := validator.ValidateToken(ctx, token)
 	if err == nil {
 		t.Fatal("expected error for token from unconfigured provider, got nil")
 	}
