@@ -1,9 +1,7 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -175,32 +173,9 @@ func (c *Client) RequestMoreParts(ctx context.Context, objectKey, uploadID strin
 		NumParts:        numParts,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK); err != nil {
-		return nil, err
-	}
-
 	var respBody requestMorePartsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, &respBody, http.StatusOK); err != nil {
+		return nil, err
 	}
 
 	// Validate that the server returned the correct start part number
@@ -233,30 +208,7 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 		Parts:     parts,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
-		return err
-	}
-
-	return nil
+	return c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, nil, http.StatusOK, http.StatusNoContent)
 }
 
 // uploadMultipart uploads a stream in parts using presigned URLs (sequential).
