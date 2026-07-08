@@ -1,115 +1,19 @@
 package oidc_test
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Mic92/niks3/server/oidc"
+	"github.com/Mic92/niks3/server/oidc/oidctest"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oauth2-proxy/mockoidc"
 )
-
-// setupMockOIDC starts a mock OIDC server and returns it along with a cleanup function.
-func setupMockOIDC(t *testing.T) *mockoidc.MockOIDC {
-	t.Helper()
-
-	m, err := mockoidc.Run()
-	if err != nil {
-		t.Fatalf("failed to start mock OIDC server: %v", err)
-	}
-
-	t.Cleanup(func() {
-		if err := m.Shutdown(); err != nil {
-			t.Errorf("failed to shutdown mock OIDC server: %v", err)
-		}
-	})
-
-	return m
-}
-
-// signToken creates a JWT signed by the mock server's keypair with custom claims.
-func signToken(t *testing.T, m *mockoidc.MockOIDC, claims jwt.MapClaims) string {
-	t.Helper()
-
-	// Ensure required OIDC claims are present
-	if _, ok := claims["iss"]; !ok {
-		claims["iss"] = m.Issuer()
-	}
-
-	if _, ok := claims["aud"]; !ok {
-		claims["aud"] = m.Config().ClientID
-	}
-
-	if _, ok := claims["sub"]; !ok {
-		claims["sub"] = "test-subject"
-	}
-
-	if _, ok := claims["iat"]; !ok {
-		claims["iat"] = m.Now().Unix()
-	}
-
-	if _, ok := claims["exp"]; !ok {
-		claims["exp"] = m.Now().Add(time.Hour).Unix()
-	}
-
-	token, err := m.Keypair.SignJWT(claims)
-	if err != nil {
-		t.Fatalf("failed to sign token: %v", err)
-	}
-
-	return token
-}
-
-// writeTestConfig writes an OIDC config file and returns its path.
-func writeTestConfig(t *testing.T, config oidc.Config) string {
-	t.Helper()
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "oidc.json")
-
-	data, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("failed to marshal config: %v", err)
-	}
-
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		t.Fatalf("failed to write config: %v", err)
-	}
-
-	return configPath
-}
-
-// newTestValidator round-trips config through a file and LoadConfig, then
-// builds a validator, mirroring production startup.
-func newTestValidator(t *testing.T, config oidc.Config) (context.Context, *oidc.Validator) {
-	t.Helper()
-
-	configPath := writeTestConfig(t, config)
-
-	cfg, err := oidc.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel)
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create validator: %v", err)
-	}
-
-	return ctx, validator
-}
 
 func TestValidateToken_ValidToken(t *testing.T) {
 	t.Parallel()
 
-	m := setupMockOIDC(t)
+	m := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true, // Allow HTTP for test mock server
@@ -120,9 +24,9 @@ func TestValidateToken_ValidToken(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
-	token := signToken(t, m, jwt.MapClaims{
+	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "repo:myorg/myrepo:ref:refs/heads/main",
 	})
 
@@ -143,7 +47,7 @@ func TestValidateToken_ValidToken(t *testing.T) {
 func TestValidateToken_WrongAudience(t *testing.T) {
 	t.Parallel()
 
-	m := setupMockOIDC(t)
+	m := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true,
@@ -154,10 +58,10 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Token is signed for the mock's ClientID, but validator expects different audience
-	token := signToken(t, m, jwt.MapClaims{
+	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "test-subject",
 		"aud": m.Config().ClientID, // Different from what validator expects
 	})
@@ -171,7 +75,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 func TestValidateToken_Expired(t *testing.T) {
 	t.Parallel()
 
-	m := setupMockOIDC(t)
+	m := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true,
@@ -182,10 +86,10 @@ func TestValidateToken_Expired(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Create an already-expired token
-	token := signToken(t, m, jwt.MapClaims{
+	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "test-subject",
 		"exp": m.Now().Add(-time.Hour).Unix(), // Expired 1 hour ago
 	})
@@ -199,7 +103,7 @@ func TestValidateToken_Expired(t *testing.T) {
 func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 	t.Parallel()
 
-	m := setupMockOIDC(t)
+	m := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true,
@@ -213,10 +117,10 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Token has wrong repository_owner
-	token := signToken(t, m, jwt.MapClaims{
+	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub":              "test-subject",
 		"repository_owner": "otherorg",
 	})
@@ -239,7 +143,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 	t.Parallel()
 
-	m := setupMockOIDC(t)
+	m := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true,
@@ -251,10 +155,10 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Token has non-matching subject
-	token := signToken(t, m, jwt.MapClaims{
+	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "repo:otherorg/myrepo:ref:refs/heads/main",
 	})
 
@@ -267,8 +171,8 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 func TestValidateToken_MultipleProviders(t *testing.T) {
 	t.Parallel()
 
-	m1 := setupMockOIDC(t)
-	m2 := setupMockOIDC(t)
+	m1 := oidctest.StartMockOIDC(t)
+	m2 := oidctest.StartMockOIDC(t)
 
 	config := oidc.Config{
 		AllowInsecure: true,
@@ -283,10 +187,10 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Token from second provider should be validated
-	token := signToken(t, m2, jwt.MapClaims{
+	token := oidctest.SignToken(t, m2, jwt.MapClaims{
 		"sub": "test-subject-from-provider2",
 		"iss": m2.Issuer(),
 		"aud": m2.Config().ClientID,
@@ -309,8 +213,8 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 func TestValidateToken_NoMatchingProvider(t *testing.T) {
 	t.Parallel()
 
-	m1 := setupMockOIDC(t)
-	m2 := setupMockOIDC(t)
+	m1 := oidctest.StartMockOIDC(t)
+	m2 := oidctest.StartMockOIDC(t)
 
 	// Configure only m1
 	config := oidc.Config{
@@ -322,10 +226,10 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 			},
 		},
 	}
-	ctx, validator := newTestValidator(t, config)
+	ctx, validator := oidctest.NewValidator(t, config)
 
 	// Token from m2 (not configured) should fail
-	token := signToken(t, m2, jwt.MapClaims{
+	token := oidctest.SignToken(t, m2, jwt.MapClaims{
 		"sub": "test-subject",
 		"iss": m2.Issuer(),
 		"aud": m2.Config().ClientID,

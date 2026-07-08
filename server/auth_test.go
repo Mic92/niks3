@@ -1,18 +1,13 @@
 package server_test
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/Mic92/niks3/server/oidc"
+	"github.com/Mic92/niks3/server/oidc/oidctest"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oauth2-proxy/mockoidc"
 )
 
 func TestService_AuthMiddleware(t *testing.T) {
@@ -255,16 +250,8 @@ func TestService_ReadAuthMiddleware(t *testing.T) {
 func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	t.Parallel()
 
-	// Start mock OIDC server
-	m, err := mockoidc.Run()
-	ok(t, err)
-	t.Cleanup(func() {
-		if err := m.Shutdown(); err != nil {
-			t.Errorf("failed to shutdown mock OIDC server: %v", err)
-		}
-	})
+	m := oidctest.StartMockOIDC(t)
 
-	// Create OIDC config file
 	config := oidc.Config{
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
@@ -277,21 +264,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 			},
 		},
 	}
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "oidc.json")
-	data, err := json.Marshal(config)
-	ok(t, err)
-	ok(t, os.WriteFile(configPath, data, 0o600))
-
-	// Load config and create validator
-	cfg, err := oidc.LoadConfig(configPath)
-	ok(t, err)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	validator, err := oidc.NewValidator(ctx, cfg)
-	ok(t, err)
+	_, validator := oidctest.NewValidator(t, config)
 
 	// Create test service with OIDC validator
 	service := createTestService(t)
@@ -300,34 +273,6 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	service.Pool.Close() // health check works without DB
 	service.OIDCValidator = validator
 	service.APIToken = "static-api-token-at-least-36-chars-long"
-
-	// Helper to sign tokens
-	signToken := func(claims jwt.MapClaims) string {
-		if _, ok := claims["iss"]; !ok {
-			claims["iss"] = m.Issuer()
-		}
-
-		if _, ok := claims["aud"]; !ok {
-			claims["aud"] = m.Config().ClientID
-		}
-
-		if _, ok := claims["sub"]; !ok {
-			claims["sub"] = "test-subject"
-		}
-
-		if _, ok := claims["iat"]; !ok {
-			claims["iat"] = m.Now().Unix()
-		}
-
-		if _, ok := claims["exp"]; !ok {
-			claims["exp"] = m.Now().Add(time.Hour).Unix()
-		}
-
-		token, err := m.Keypair.SignJWT(claims)
-		ok(t, err)
-
-		return token
-	}
 
 	checkUnauthorized := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
@@ -340,7 +285,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	t.Run("valid OIDC token", func(t *testing.T) {
 		t.Parallel()
 
-		token := signToken(jwt.MapClaims{
+		token := oidctest.SignToken(t, m, jwt.MapClaims{
 			"sub":              "repo:myorg/myrepo:ref:refs/heads/main",
 			"repository_owner": "myorg",
 		})
@@ -358,7 +303,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 	t.Run("OIDC token with wrong org rejected", func(t *testing.T) {
 		t.Parallel()
 
-		token := signToken(jwt.MapClaims{
+		token := oidctest.SignToken(t, m, jwt.MapClaims{
 			"sub":              "repo:otherorg/repo:ref:refs/heads/main",
 			"repository_owner": "otherorg",
 		})
