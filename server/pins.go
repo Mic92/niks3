@@ -26,11 +26,7 @@ type createPinRequest struct {
 func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received create pin request", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
 	name := r.PathValue("name")
 	if name == "" {
@@ -170,14 +166,7 @@ func (s *Service) ListPinsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(result); err != nil {
-		slog.Error("Failed to encode response", "error", err)
-		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
+	writeJSONResponse(w, result)
 }
 
 // DeletePinHandler handles DELETE /api/pins/{name} endpoint.
