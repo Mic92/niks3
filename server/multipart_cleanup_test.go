@@ -2,11 +2,9 @@ package server_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/Mic92/niks3/server"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -32,24 +30,11 @@ func TestMultipartCleanup(t *testing.T) {
 		{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": largeNarSize},
 	}
 
-	body, err := json.Marshal(map[string]any{
+	// Create pending closure (this initiates multipart upload)
+	pendingClosureResponse := createPendingClosure(t, service, map[string]any{
 		"closure": closureKey,
 		"objects": objects,
 	})
-	ok(t, err)
-
-	// Create pending closure (this initiates multipart upload)
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var pendingClosureResponse server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	ok(t, err)
 
 	// Verify that we got a multipart upload
 	narPendingObject, exists := pendingClosureResponse.PendingObjects[narKey]
@@ -68,7 +53,7 @@ func TestMultipartCleanup(t *testing.T) {
 
 	// Verify the upload exists in S3
 	coreClient := minio.Core{Client: service.MinioClient}
-	_, err = coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10)
+	_, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10)
 	ok(t, err) // Should not error if upload exists
 
 	// Don't complete the upload - simulate an abandoned upload

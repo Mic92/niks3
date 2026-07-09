@@ -80,24 +80,9 @@ func (c *Client) StartGarbageCollection(ctx context.Context, olderThan string, f
 func (c *Client) GetGCStatus(ctx context.Context) (*api.GCTaskStatus, error) {
 	taskURL := c.baseURL.JoinPath("/api/gc/status")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, taskURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("executing request: %w", err)
-	}
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("getting gc status: %w", err)
-	}
-
 	var status api.GCTaskStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
+	if err := c.doJSONRequest(ctx, http.MethodGet, taskURL.String(), nil, &status, http.StatusOK); err != nil {
+		return nil, fmt.Errorf("getting gc status: %w", err)
 	}
 
 	return &status, nil

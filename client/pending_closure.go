@@ -1,10 +1,7 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -40,32 +37,9 @@ func (c *Client) CreatePendingClosure(ctx context.Context, closure string, objec
 		VerifyS3: verifyS3,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK, http.StatusCreated); err != nil {
-		return nil, err
-	}
-
 	var result CreatePendingClosureResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, &result, http.StatusOK, http.StatusCreated); err != nil {
+		return nil, err
 	}
 
 	slog.Debug("Created pending closure", "id", result.ID, "pending_objects", len(result.PendingObjects))
@@ -91,22 +65,7 @@ type NarinfoMetadata struct {
 func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
 	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
 
-	// Empty request body
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), http.NoBody)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
 		return err
 	}
 
@@ -131,32 +90,9 @@ func (c *Client) SignPendingClosure(ctx context.Context, closureID string, narin
 		Narinfos: narinfos,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK); err != nil {
-		return nil, err
-	}
-
 	var result signNarinfosResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, &result, http.StatusOK); err != nil {
+		return nil, err
 	}
 
 	slog.Debug("Signed narinfos", "id", closureID, "count", len(result.Signatures))

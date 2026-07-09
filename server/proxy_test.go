@@ -112,6 +112,28 @@ func setupProxyServer(tb testing.TB, service *server.Service) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// proxyGet issues a GET against the proxy test server, asserts the response
+// status and returns the response headers and body.
+func proxyGet(t *testing.T, ts *httptest.Server, path string, wantStatus int) (http.Header, []byte) {
+	t.Helper()
+
+	resp, err := http.Get(ts.URL + path)
+	ok(t, err)
+
+	body, err := io.ReadAll(resp.Body)
+	ok(t, err)
+
+	if err := resp.Body.Close(); err != nil {
+		t.Logf("Failed to close response body: %v", err)
+	}
+
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("GET %s: status = %d, want %d", path, resp.StatusCode, wantStatus)
+	}
+
+	return resp.Header, body
+}
+
 func TestReadProxyNarinfo(t *testing.T) {
 	t.Parallel()
 
@@ -129,35 +151,21 @@ func TestReadProxyNarinfo(t *testing.T) {
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
-	ok(t, err)
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	ok(t, err)
+	header, body := proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusOK)
 
 	if !bytes.Equal(body, plainNarinfo) {
 		t.Errorf("body mismatch: got %q, want %q", body, plainNarinfo)
 	}
 
-	if ct := resp.Header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
+	if ct := header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
 		t.Errorf("Content-Type = %q, want text/x-nix-narinfo", ct)
 	}
 
-	if resp.Header.Get("ETag") == "" {
+	if header.Get("ETag") == "" {
 		t.Error("expected ETag header")
 	}
 
-	if resp.Header.Get("Last-Modified") == "" {
+	if header.Get("Last-Modified") == "" {
 		t.Error("expected Last-Modified header")
 	}
 }
@@ -182,27 +190,13 @@ func TestReadProxyNarinfoAlreadyDecompressed(t *testing.T) {
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
-	ok(t, err)
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	ok(t, err)
+	header, body := proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusOK)
 
 	if !bytes.Equal(body, plainNarinfo) {
 		t.Errorf("body mismatch: got %q, want %q", body, plainNarinfo)
 	}
 
-	if ct := resp.Header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
+	if ct := header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
 		t.Errorf("Content-Type = %q, want text/x-nix-narinfo", ct)
 	}
 }
@@ -223,21 +217,7 @@ func TestReadProxyNarStreaming(t *testing.T) {
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst")
-	ok(t, err)
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	ok(t, err)
+	_, body := proxyGet(t, ts, "/nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst", http.StatusOK)
 
 	if len(body) != len(narContent) {
 		t.Errorf("body length = %d, want %d", len(body), len(narContent))
@@ -254,18 +234,7 @@ func TestReadProxy404(t *testing.T) {
 	defer ts.Close()
 
 	// Valid path but object doesn't exist in S3
-	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
-	ok(t, err)
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404 for missing object, got %d", resp.StatusCode)
-	}
+	proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusNotFound)
 }
 
 func TestReadProxyInvalidPath(t *testing.T) {
@@ -282,16 +251,7 @@ func TestReadProxyInvalidPath(t *testing.T) {
 		"/foo/bar/baz",
 		"/some-random-file.txt",
 	} {
-		resp, err := http.Get(ts.URL + path)
-		ok(t, err)
-
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("path %q: expected 404, got %d", path, resp.StatusCode)
-		}
+		proxyGet(t, ts, path, http.StatusNotFound)
 	}
 }
 
@@ -353,15 +313,9 @@ func TestReadProxyConditionalGet(t *testing.T) {
 	defer ts.Close()
 
 	// First GET to capture ETag
-	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
-	ok(t, err)
+	header, _ := proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusOK)
 
-	etag := resp.Header.Get("ETag")
-
-	if err := resp.Body.Close(); err != nil {
-		t.Logf("Failed to close response body: %v", err)
-	}
-
+	etag := header.Get("ETag")
 	if etag == "" {
 		t.Fatal("expected ETag in first response")
 	}
@@ -441,18 +395,7 @@ func TestReadProxyDisabled(t *testing.T) {
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
-	ok(t, err)
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404 when proxy disabled, got %d", resp.StatusCode)
-	}
+	proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusNotFound)
 }
 
 // TestReadProxyRangeRequest ensures the proxy honors Range headers so an

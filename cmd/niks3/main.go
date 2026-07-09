@@ -99,27 +99,7 @@ func run() error {
 		pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
-		if err := pushCmd.Parse(os.Args[2:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printPushHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		if *cf.Help {
-			printPushHelp()
-			os.Exit(0)
-		}
-
-		cmdutil.SetupLogger(*cf.Debug)
-
-		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err //nolint:wrapcheck // cmdutil errors are already user-facing
-		}
-
-		ts, err := cf.TokenSource(pushCmd, tf)
+		ts, err := cmdutil.ParseCommand(pushCmd, cf, tf, os.Args[2:], printPushHelp)
 		if err != nil {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
@@ -143,27 +123,7 @@ func run() error {
 		force := gcCmd.Bool("force", false, "Force immediate deletion without grace period")
 		tf := cmdutil.AddTLSFlags(gcCmd)
 
-		if err := gcCmd.Parse(os.Args[2:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printGcHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		if *cf.Help {
-			printGcHelp()
-			os.Exit(0)
-		}
-
-		cmdutil.SetupLogger(*cf.Debug)
-
-		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err //nolint:wrapcheck // cmdutil errors are already user-facing
-		}
-
-		ts, err := cf.TokenSource(gcCmd, tf)
+		ts, err := cmdutil.ParseCommand(gcCmd, cf, tf, os.Args[2:], printGcHelp)
 		if err != nil {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
@@ -171,7 +131,6 @@ func run() error {
 		return gcCommand(*cf.ServerURL, ts, *olderThan, *pendingOlderThan, *force, *cf.Debug, tf)
 
 	case "pins":
-
 		if len(os.Args) < 3 {
 			printPinsHelp()
 
@@ -186,22 +145,7 @@ func run() error {
 
 		subcommand := os.Args[2]
 
-		if err := pinsCmd.Parse(os.Args[3:]); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				printPinsHelp()
-				os.Exit(0)
-			}
-
-			return fmt.Errorf("parsing flags: %w", err)
-		}
-
-		cmdutil.SetupLogger(*cf.Debug)
-
-		if err := cmdutil.RequireServerURL(*cf.ServerURL); err != nil {
-			return err //nolint:wrapcheck // cmdutil errors are already user-facing
-		}
-
-		ts, err := cf.TokenSource(pinsCmd, tf)
+		ts, err := cmdutil.ParseCommand(pinsCmd, cf, tf, os.Args[3:], printPinsHelp)
 		if err != nil {
 			return err //nolint:wrapcheck // cmdutil errors are already user-facing
 		}
@@ -240,21 +184,13 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 		maxConcurrent = 1
 	}
 
-	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
-
-	if debug {
-		c.SetDebugHTTP(true)
-	}
 
 	if _, err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
@@ -282,17 +218,9 @@ func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderT
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
 	}
 
 	if force {
@@ -345,17 +273,9 @@ func pinsCreateCommandNew(serverURL string, ts client.TokenSource, name, storePa
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
 	}
 
 	resolvedPath, err := c.ResolveStorePath(storePath)
@@ -376,17 +296,9 @@ func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, json
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
 	}
 
 	pins, err := c.ListPins(ctx)
@@ -431,17 +343,9 @@ func pinsDeleteCommandNew(serverURL string, ts client.TokenSource, name string, 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
-	}
-
-	if err := tf.Configure(c); err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
-	}
-
-	if debug {
-		c.SetDebugHTTP(true)
 	}
 
 	if err := c.DeletePin(ctx, name); err != nil {

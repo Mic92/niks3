@@ -122,26 +122,13 @@ func TestCompleteMultipartUploadHandler_RateLimitTriggersThrottle(t *testing.T) 
 	narinfoKey := closureHash + ".narinfo"
 	narKey := narKeyFor(closureHash)
 
-	body, err := json.Marshal(map[string]any{
+	pendingClosureResponse := createPendingClosure(t, service, map[string]any{
 		"closure": narinfoKey,
 		"objects": []map[string]any{
 			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
 			{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 20 * 1024 * 1024}, // above simple-upload threshold to trigger multipart
 		},
 	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var pendingClosureResponse server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	ok(t, err)
 
 	// Find the multipart upload
 	var narPending server.PendingObject

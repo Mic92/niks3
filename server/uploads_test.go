@@ -19,6 +19,78 @@ const (
 	objectTypeNarinfo = "narinfo"
 )
 
+// createPendingClosure posts a pending-closure request and returns the
+// decoded response.
+func createPendingClosure(t *testing.T, service *server.Service, request map[string]any) server.PendingClosureResponse {
+	t.Helper()
+
+	body, err := json.Marshal(request)
+	ok(t, err)
+
+	rr := testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/pending_closures",
+		body:    body,
+		handler: service.CreatePendingClosureHandler,
+	})
+
+	var resp server.PendingClosureResponse
+
+	ok(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+
+	return resp
+}
+
+// commitPendingClosure completes a pending closure with the given narinfo
+// metadata.
+func commitPendingClosure(t *testing.T, service *server.Service, id string, narinfos map[string]map[string]any) {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{"narinfos": narinfos})
+	ok(t, err)
+
+	testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    fmt.Sprintf("/api/pending_closures/%s/complete", id),
+		body:    body,
+		handler: service.CommitPendingClosureHandler,
+		pathValues: map[string]string{
+			"id": id,
+		},
+	})
+}
+
+// uploadPendingObjects uploads all pending objects (multipart or presigned)
+// and returns the narinfo metadata needed to complete the closure.
+func uploadPendingObjects(ctx context.Context, t *testing.T, service *server.Service, resp server.PendingClosureResponse, closureHash, narKey string) map[string]map[string]any {
+	t.Helper()
+
+	narinfoMetadata := make(map[string]map[string]any)
+
+	for key, pendingObject := range resp.PendingObjects {
+		switch {
+		case pendingObject.Type == objectTypeNarinfo:
+			// Narinfo is handled server-side - collect metadata instead
+			narinfoMetadata[key] = map[string]any{
+				"store_path":  "/nix/store/" + closureHash + "-test-package",
+				"url":         narKey,
+				"compression": "zstd",
+				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
+				"nar_size":    1000,
+				"file_hash":   "sha256:1111111111111111111111111111111111111111111111111111",
+				"file_size":   500,
+				"references":  []string{},
+			}
+		case pendingObject.MultipartInfo != nil:
+			handleMultipartUpload(ctx, t, key, pendingObject, service)
+		default:
+			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
+		}
+	}
+
+	return narinfoMetadata
+}
+
 // checkStatusCode returns a checkResponse function that validates the expected status code.
 func checkStatusCode(expectedStatus int) func(*testing.T, *httptest.ResponseRecorder) {
 	return func(t *testing.T, rr *httptest.ResponseRecorder) {
@@ -46,21 +118,12 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 	closureHash := "00000000000000000000000000000000"
 	closureKey := closureHash + ".narinfo"
 	narKey := narKeyFor(closureHash)
-	objects := []map[string]any{
-		{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
-		{"key": narKey, "type": "nar", "refs": []string{}},
-	}
-	body, err := json.Marshal(map[string]any{
+	pendingClosureResponse := createPendingClosure(t, service, map[string]any{
 		"closure": closureKey,
-		"objects": objects,
-	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
+		"objects": []map[string]any{
+			{"key": closureKey, "type": "narinfo", "refs": []string{narKey}},
+			{"key": narKey, "type": "nar", "refs": []string{}},
+		},
 	})
 
 	testRequest(t, &TestRequest{
@@ -68,11 +131,6 @@ func TestService_cleanupPendingClosuresHandler(t *testing.T) {
 		path:    "/api/pending_closures?older-than=0s",
 		handler: service.CleanupPendingClosuresHandler,
 	})
-
-	var pendingClosureResponse server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	ok(t, err)
 
 	// Try to complete the cleaned up closure - should fail with not found
 	emptyNarinfos, err := json.Marshal(map[string]any{
@@ -233,23 +291,10 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		{"key": firstObject, "type": "narinfo", "refs": []string{secondObject}}, // narinfo references the NAR file
 		{"key": secondObject, "type": "nar", "refs": []string{}},                // NAR file has no references
 	}
-	body, err := json.Marshal(map[string]any{
+	pendingClosureResponse := createPendingClosure(t, service, map[string]any{
 		"closure": firstObject, // Send the narinfo key as closure key
 		"objects": objects,
 	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var pendingClosureResponse server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	ok(t, err)
 
 	if pendingClosureResponse.ID == "" {
 		t.Errorf("handler returned empty upload id")
@@ -259,50 +304,12 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 		t.Errorf("expected %v, got %v", objects, pendingClosureResponse.PendingObjects)
 	}
 
-	// Upload non-narinfo objects and collect narinfo metadata
-	narinfoMetadata := make(map[string]map[string]any)
+	narinfoMetadata := uploadPendingObjects(ctx, t, service, pendingClosureResponse, closureKey, narKeyFor(closureKey))
+	commitPendingClosure(t, service, pendingClosureResponse.ID, narinfoMetadata)
 
-	for key, pendingObject := range pendingClosureResponse.PendingObjects {
-		switch {
-		case pendingObject.Type == objectTypeNarinfo:
-			// Narinfo is handled server-side - collect metadata instead
-			narinfoMetadata[key] = map[string]any{
-				"store_path":  "/nix/store/" + closureKey + "-test-package",
-				"url":         narKeyFor(closureKey),
-				"compression": "zstd",
-				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
-				"nar_size":    1000,
-				"file_hash":   "sha256:1111111111111111111111111111111111111111111111111111",
-				"file_size":   500,
-				"references":  []string{},
-			}
-		case pendingObject.MultipartInfo != nil:
-			handleMultipartUpload(ctx, t, key, pendingObject, service)
-		default:
-			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
-		}
-	}
-
-	// Send completion request with narinfo metadata
-	completionBody, err := json.Marshal(map[string]any{
-		"narinfos": narinfoMetadata,
-	})
-	ok(t, err)
-
-	testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
-		body:    completionBody,
-		handler: service.CommitPendingClosureHandler,
-		pathValues: map[string]string{
-			"id": pendingClosureResponse.ID,
-		},
-	})
-
-	rr = testRequest(t, &TestRequest{
+	rr := testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/api/closures/" + closureKey,
-		body:    body,
 		handler: service.GetClosureHandler,
 		pathValues: map[string]string{
 			"key": firstObject, // Use the narinfo key for the closure
@@ -320,30 +327,14 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 
 	thirdObject := "cccccccccccccccccccccccccccccccc.narinfo"
 
-	objects2 := []map[string]any{
-		{"key": firstObject, "type": "narinfo", "refs": []string{}},
-		{"key": secondObject, "type": "nar", "refs": []string{firstObject}},
-		{"key": thirdObject, "type": "narinfo", "refs": []string{secondObject}},
-	}
-	body2, err := json.Marshal(map[string]any{
+	pendingClosureResponse2 := createPendingClosure(t, service, map[string]any{
 		"closure": "11111111111111111111111111111111.narinfo", // Send the narinfo key as closure key
-		"objects": objects2,
+		"objects": []map[string]any{
+			{"key": firstObject, "type": "narinfo", "refs": []string{}},
+			{"key": secondObject, "type": "nar", "refs": []string{firstObject}},
+			{"key": thirdObject, "type": "narinfo", "refs": []string{secondObject}},
+		},
 	})
-	ok(t, err)
-
-	rr = testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body2,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	ok(t, err)
-
-	var pendingClosureResponse2 server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse2)
-	ok(t, err)
 
 	// Should only return the one new narinfo object with presigned URL
 	if len(pendingClosureResponse2.PendingObjects) != 1 {
@@ -368,7 +359,6 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/api/closures/" + closureKey,
-		body:          body,
 		handler:       service.GetClosureHandler,
 		checkResponse: &checkNotFound2,
 		pathValues: map[string]string{
@@ -394,79 +384,21 @@ func TestService_verifyS3Integrity(t *testing.T) {
 		{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
 		{"key": narKey, "type": "nar", "refs": []string{}},
 	}
-	body, err := json.Marshal(map[string]any{
+	request := map[string]any{
 		"closure": narinfoKey,
 		"objects": objects,
-	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var pendingClosureResponse server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &pendingClosureResponse)
-	ok(t, err)
-
-	// Upload the objects
-	narinfoMetadata := make(map[string]map[string]any)
-
-	for key, pendingObject := range pendingClosureResponse.PendingObjects {
-		switch {
-		case pendingObject.Type == objectTypeNarinfo:
-			narinfoMetadata[key] = map[string]any{
-				"store_path":  "/nix/store/" + closureKey + "-test-package",
-				"url":         narKey,
-				"compression": "zstd",
-				"nar_hash":    "sha256:0000000000000000000000000000000000000000000000000000",
-				"nar_size":    1000,
-				"file_hash":   "sha256:1111111111111111111111111111111111111111111111111111",
-				"file_size":   500,
-				"references":  []string{},
-			}
-		case pendingObject.MultipartInfo != nil:
-			handleMultipartUpload(ctx, t, key, pendingObject, service)
-		default:
-			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
-		}
 	}
+	pendingClosureResponse := createPendingClosure(t, service, request)
 
-	// Complete the closure
-	completionBody, err := json.Marshal(map[string]any{
-		"narinfos": narinfoMetadata,
-	})
-	ok(t, err)
-
-	testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    fmt.Sprintf("/api/pending_closures/%s/complete", pendingClosureResponse.ID),
-		body:    completionBody,
-		handler: service.CommitPendingClosureHandler,
-		pathValues: map[string]string{
-			"id": pendingClosureResponse.ID,
-		},
-	})
+	narinfoMetadata := uploadPendingObjects(ctx, t, service, pendingClosureResponse, closureKey, narKey)
+	commitPendingClosure(t, service, pendingClosureResponse.ID, narinfoMetadata)
 
 	// Step 2: Delete the narinfo from S3 to simulate the bug
-	err = service.MinioClient.RemoveObject(ctx, service.Bucket, narinfoKey, minio.RemoveObjectOptions{})
+	err := service.MinioClient.RemoveObject(ctx, service.Bucket, narinfoKey, minio.RemoveObjectOptions{})
 	ok(t, err)
 
 	// Step 3: Try to upload the same closure WITHOUT verify_s3 - should skip upload
-	rr = testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var responseWithoutVerify server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &responseWithoutVerify)
-	ok(t, err)
+	responseWithoutVerify := createPendingClosure(t, service, request)
 
 	// Should have no pending objects because DB thinks they exist
 	if len(responseWithoutVerify.PendingObjects) != 0 {
@@ -474,24 +406,11 @@ func TestService_verifyS3Integrity(t *testing.T) {
 	}
 
 	// Step 4: Try again WITH verify_s3=true - should detect missing object
-	bodyWithVerify, err := json.Marshal(map[string]any{
+	responseWithVerify := createPendingClosure(t, service, map[string]any{
 		"closure":   narinfoKey,
 		"objects":   objects,
 		"verify_s3": true,
 	})
-	ok(t, err)
-
-	rr = testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    bodyWithVerify,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var responseWithVerify server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &responseWithVerify)
-	ok(t, err)
 
 	// Should detect the missing narinfo and return it as a pending object
 	if len(responseWithVerify.PendingObjects) != 1 {
@@ -544,7 +463,7 @@ func TestCreatePendingClosure_SmallNARUsesSimplePUT(t *testing.T) {
 	smallNarKey := narKeyFor(closureHash)
 	largeNarKey := narKeyFor("dddddddddddddddddddddddddddddd02")
 
-	body, err := json.Marshal(map[string]any{
+	resp := createPendingClosure(t, service, map[string]any{
 		"closure": narinfoKey,
 		"objects": []map[string]any{
 			{"key": narinfoKey, "type": "narinfo", "refs": []string{smallNarKey, largeNarKey}},
@@ -552,19 +471,6 @@ func TestCreatePendingClosure_SmallNARUsesSimplePUT(t *testing.T) {
 			{"key": largeNarKey, "type": "nar", "refs": []string{}, "nar_size": 20 * 1024 * 1024},
 		},
 	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var resp server.PendingClosureResponse
-
-	err = json.Unmarshal(rr.Body.Bytes(), &resp)
-	ok(t, err)
 
 	small := resp.PendingObjects[smallNarKey]
 	if small.MultipartInfo != nil {

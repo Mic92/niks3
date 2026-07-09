@@ -1,10 +1,7 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -31,26 +28,7 @@ func (c *Client) CreatePin(ctx context.Context, name, storePath string) error {
 		StorePath: storePath,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL.String(), bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, nil, http.StatusOK, http.StatusNoContent); err != nil {
 		return err
 	}
 
@@ -63,25 +41,9 @@ func (c *Client) CreatePin(ctx context.Context, name, storePath string) error {
 func (c *Client) ListPins(ctx context.Context) ([]PinInfo, error) {
 	reqURL := c.baseURL.JoinPath("api/pins")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK); err != nil {
-		return nil, err
-	}
-
 	var pins []PinInfo
-	if err := json.NewDecoder(resp.Body).Decode(&pins); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+	if err := c.doJSONRequest(ctx, http.MethodGet, reqURL.String(), nil, &pins, http.StatusOK); err != nil {
+		return nil, err
 	}
 
 	slog.Debug("Listed pins", "count", len(pins))
@@ -93,19 +55,7 @@ func (c *Client) ListPins(ctx context.Context) ([]PinInfo, error) {
 func (c *Client) DeletePin(ctx context.Context, name string) error {
 	reqURL := c.baseURL.JoinPath("api/pins", name)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL.String(), http.NoBody)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	resp, err := c.DoServerRequest(ctx, req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-
-	defer deferCloseBody(resp)
-
-	if err := checkResponse(resp, http.StatusOK, http.StatusNoContent); err != nil {
+	if err := c.doJSONRequest(ctx, http.MethodDelete, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
 		return err
 	}
 

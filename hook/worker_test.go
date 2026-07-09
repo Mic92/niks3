@@ -11,112 +11,21 @@ import (
 	"github.com/Mic92/niks3/hook"
 )
 
-func TestWorkerUploadsAndRemoves(t *testing.T) {
-	t.Parallel()
+// writeTestFile creates a file simulating an existing store path.
+func writeTestFile(t *testing.T, dir, name string) string {
+	t.Helper()
 
-	q := newTestQueue(t)
-	notify := make(chan struct{}, 1)
-
-	// Create temp files to simulate existing store paths.
-	dir := t.TempDir()
-	p1 := filepath.Join(dir, "aaa")
-	p2 := filepath.Join(dir, "bbb")
-
-	if err := os.WriteFile(p1, []byte("a"), 0o600); err != nil {
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(p2, []byte("b"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := q.Enqueue([]string{p1, p2}); err != nil {
-		t.Fatal(err)
-	}
-
-	var mu sync.Mutex
-
-	var pushed [][]string
-
-	push := func(_ context.Context, paths []string) ([]string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		cp := make([]string, len(paths))
-		copy(cp, paths)
-		pushed = append(pushed, cp)
-
-		return cp, nil
-	}
-
-	w := hook.NewWorker(q, push, 10, notify)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		w.Run(ctx)
-	}()
-
-	// Notify worker that there's work.
-	notify <- struct{}{}
-
-	// Wait for the upload to complete.
-	deadline := time.After(5 * time.Second)
-
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for upload")
-		default:
-		}
-
-		count, _ := q.Count()
-		if count == 0 {
-			break
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	cancel()
-	<-done
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(pushed) != 1 {
-		t.Fatalf("expected 1 push call, got %d", len(pushed))
-	}
-
-	if len(pushed[0]) != 2 {
-		t.Errorf("expected 2 paths in batch, got %d", len(pushed[0]))
-	}
+	return path
 }
 
-func TestWorkerSkipsGCdPaths(t *testing.T) {
-	t.Parallel()
-
-	q := newTestQueue(t)
-	notify := make(chan struct{}, 1)
-
-	// Create one real file and one nonexistent path.
-	dir := t.TempDir()
-	existing := filepath.Join(dir, "existing")
-
-	if err := os.WriteFile(existing, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	gcedPath := filepath.Join(dir, "nonexistent")
-
-	if err := q.Enqueue([]string{existing, gcedPath}); err != nil {
-		t.Fatal(err)
-	}
-
+// recordingPush returns a PushFunc that records each batch it receives and a
+// getter for the recorded batches.
+func recordingPush() (hook.PushFunc, func() [][]string) {
 	var mu sync.Mutex
 
 	var pushed [][]string
@@ -132,7 +41,23 @@ func TestWorkerSkipsGCdPaths(t *testing.T) {
 		return cp, nil
 	}
 
-	w := hook.NewWorker(q, push, 10, notify)
+	batches := func() [][]string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return pushed
+	}
+
+	return push, batches
+}
+
+// runWorkerUntilDrained runs a worker for the queue until it is empty (or the
+// test times out), then shuts the worker down.
+func runWorkerUntilDrained(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) {
+	t.Helper()
+
+	notify := make(chan struct{}, 1)
+	w := hook.NewWorker(q, push, batchSize, notify)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -146,7 +71,6 @@ func TestWorkerSkipsGCdPaths(t *testing.T) {
 
 	notify <- struct{}{}
 
-	// Wait for queue to drain.
 	deadline := time.After(5 * time.Second)
 
 	for {
@@ -166,10 +90,52 @@ func TestWorkerSkipsGCdPaths(t *testing.T) {
 
 	cancel()
 	<-done
+}
 
-	mu.Lock()
-	defer mu.Unlock()
+func TestWorkerUploadsAndRemoves(t *testing.T) {
+	t.Parallel()
 
+	q := newTestQueue(t)
+
+	dir := t.TempDir()
+	p1 := writeTestFile(t, dir, "aaa")
+	p2 := writeTestFile(t, dir, "bbb")
+
+	if err := q.Enqueue([]string{p1, p2}); err != nil {
+		t.Fatal(err)
+	}
+
+	push, batches := recordingPush()
+	runWorkerUntilDrained(t, q, push, 10)
+
+	pushed := batches()
+	if len(pushed) != 1 {
+		t.Fatalf("expected 1 push call, got %d", len(pushed))
+	}
+
+	if len(pushed[0]) != 2 {
+		t.Errorf("expected 2 paths in batch, got %d", len(pushed[0]))
+	}
+}
+
+func TestWorkerSkipsGCdPaths(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	// Create one real file and one nonexistent path.
+	dir := t.TempDir()
+	existing := writeTestFile(t, dir, "existing")
+	gcedPath := filepath.Join(dir, "nonexistent")
+
+	if err := q.Enqueue([]string{existing, gcedPath}); err != nil {
+		t.Fatal(err)
+	}
+
+	push, batches := recordingPush()
+	runWorkerUntilDrained(t, q, push, 10)
+
+	pushed := batches()
 	if len(pushed) != 1 {
 		t.Fatalf("expected 1 push call, got %d", len(pushed))
 	}
@@ -186,19 +152,10 @@ func TestWorkerPrunesClosureDeps(t *testing.T) {
 	t.Parallel()
 
 	q := newTestQueue(t)
-	notify := make(chan struct{}, 1)
 
 	dir := t.TempDir()
-	depPath := filepath.Join(dir, "dep")
-	topPath := filepath.Join(dir, "top")
-
-	if err := os.WriteFile(depPath, []byte("d"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(topPath, []byte("t"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	depPath := writeTestFile(t, dir, "dep")
+	topPath := writeTestFile(t, dir, "top")
 
 	// Queue both the dependency and the top-level path.
 	if err := q.Enqueue([]string{depPath, topPath}); err != nil {
@@ -213,39 +170,7 @@ func TestWorkerPrunesClosureDeps(t *testing.T) {
 		return []string{depPath, topPath}, nil
 	}
 
-	w := hook.NewWorker(q, push, 1, notify)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		w.Run(ctx)
-	}()
-
-	notify <- struct{}{}
-
-	deadline := time.After(5 * time.Second)
-
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for queue drain")
-		default:
-		}
-
-		count, _ := q.Count()
-		if count == 0 {
-			break
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	cancel()
-	<-done
+	runWorkerUntilDrained(t, q, push, 1)
 
 	// Both paths should have been removed even though only one was in the batch.
 	count, err := q.Count()

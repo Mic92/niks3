@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -87,11 +86,7 @@ type createPendingClosureRequest struct {
 func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received uploads request", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
 	req := &createPendingClosureRequest{}
 	if !decodeJSONBody(w, r, MaxClosureRequestBody, req) {
@@ -140,14 +135,7 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	err = json.NewEncoder(w).Encode(upload)
-	if err != nil {
-		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
+	writeJSONResponse(w, upload)
 }
 
 type completedPart struct {
@@ -173,38 +161,55 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
+// getValidMultipartUpload validates the object key and upload ID of a
+// multipart request and looks up the tracked upload, so clients cannot
+// operate on uploads outside the pending-closure book-keeping. On failure it
+// writes an error response and returns false.
+func (s *Service) getValidMultipartUpload(w http.ResponseWriter, r *http.Request, objectKey, uploadID string) (pg.MultipartUpload, bool) {
+	if objectKey == "" {
+		http.Error(w, "missing object_key", http.StatusBadRequest)
+
+		return pg.MultipartUpload{}, false
+	}
+
+	// Multipart uploads are only ever created for NAR objects.
+	if !IsValidUploadKey(objectKey, "nar") {
+		http.Error(w, fmt.Sprintf("invalid object key %q", objectKey), http.StatusBadRequest)
+
+		return pg.MultipartUpload{}, false
+	}
+
+	if uploadID == "" {
+		http.Error(w, "missing upload_id", http.StatusBadRequest)
+
+		return pg.MultipartUpload{}, false
+	}
+
+	queries := pg.New(s.Pool)
+
+	upload, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
+		UploadID:  uploadID,
+		ObjectKey: objectKey,
+	})
+	if err != nil {
+		slog.Error("Failed to get multipart upload", "error", err, "upload_id", uploadID, "object_key", objectKey)
+		http.Error(w, "multipart upload not found", http.StatusNotFound)
+
+		return pg.MultipartUpload{}, false
+	}
+
+	return upload, true
+}
+
 // RequestMorePartsHandler handles POST /api/multipart/request-parts endpoint.
 // Requests additional presigned URLs for an existing multipart upload.
 func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received request for more parts", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
 	req := &requestPartsRequest{}
 	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
-		return
-	}
-
-	if req.ObjectKey == "" {
-		http.Error(w, "missing object_key", http.StatusBadRequest)
-
-		return
-	}
-
-	// Multipart uploads are only ever created for NAR objects.
-	if !IsValidUploadKey(req.ObjectKey, "nar") {
-		http.Error(w, fmt.Sprintf("invalid object key %q", req.ObjectKey), http.StatusBadRequest)
-
-		return
-	}
-
-	if req.UploadID == "" {
-		http.Error(w, "missing upload_id", http.StatusBadRequest)
-
 		return
 	}
 
@@ -229,16 +234,8 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Verify the upload exists and belongs to a valid pending closure
-	queries := pg.New(s.Pool)
-
-	upload, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
-		UploadID:  req.UploadID,
-		ObjectKey: req.ObjectKey,
-	})
-	if err != nil {
-		slog.Error("Failed to get multipart upload", "error", err, "upload_id", req.UploadID, "object_key", req.ObjectKey)
-		http.Error(w, "multipart upload not found", http.StatusNotFound)
-
+	upload, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID)
+	if !ok {
 		return
 	}
 
@@ -263,19 +260,10 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Return the part URLs
-	resp := requestPartsResponse{
+	writeJSONResponse(w, requestPartsResponse{
 		PartURLs:        partURLs,
 		StartPartNumber: req.StartPartNumber,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("Failed to encode response", "error", err)
-		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
+	})
 
 	slog.Info("Generated additional parts", "upload_id", req.UploadID, "parts", len(partURLs))
 }
@@ -285,33 +273,10 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete multipart upload request", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
 	req := &completeMultipartRequest{}
 	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
-		return
-	}
-
-	if req.ObjectKey == "" {
-		http.Error(w, "missing object_key", http.StatusBadRequest)
-
-		return
-	}
-
-	// Multipart uploads are only ever created for NAR objects.
-	if !IsValidUploadKey(req.ObjectKey, "nar") {
-		http.Error(w, fmt.Sprintf("invalid object key %q", req.ObjectKey), http.StatusBadRequest)
-
-		return
-	}
-
-	if req.UploadID == "" {
-		http.Error(w, "missing upload_id", http.StatusBadRequest)
-
 		return
 	}
 
@@ -323,16 +288,11 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 
 	// Verify the upload is registered before touching S3, so clients cannot
 	// finalize multipart uploads outside the pending-closure book-keeping.
-	queries := pg.New(s.Pool)
-	if _, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
-		UploadID:  req.UploadID,
-		ObjectKey: req.ObjectKey,
-	}); err != nil {
-		slog.Error("Multipart upload not found", "error", err, "upload_id", req.UploadID, "object_key", req.ObjectKey)
-		http.Error(w, "multipart upload not found", http.StatusNotFound)
-
+	if _, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID); !ok {
 		return
 	}
+
+	queries := pg.New(s.Pool)
 
 	// Convert to Minio format
 	completeParts := make([]minio.CompletePart, len(req.Parts))
@@ -499,23 +459,10 @@ type signNarinfosResponse struct {
 func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received sign narinfos request", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
-	pendingClosureValue := r.PathValue("id")
-	if pendingClosureValue == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-
-		return
-	}
-
-	parsedUploadID, err := strconv.ParseInt(pendingClosureValue, 10, 32)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid id: %v", err), http.StatusBadRequest)
-
+	parsedUploadID, ok := parsePendingClosureID(w, r)
+	if !ok {
 		return
 	}
 
@@ -583,15 +530,7 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap))
 
-	// Return signatures
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(signNarinfosResponse{Signatures: signaturesMap}); err != nil {
-		slog.Error("Failed to encode response", "error", err)
-		http.Error(w, "failed to encode response: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
+	writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap})
 }
 
 // CommitPendingClosureHandler handles POST /api/pending_closures/{id}/complete endpoint.
@@ -601,28 +540,15 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received complete upload request", "method", r.Method, "path", r.URL.Path)
 
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.Error("Failed to close request body", "error", err)
-		}
-	}()
+	defer closeRequestBody(r)
 
-	pendingClosureValue := r.PathValue("id")
-	if pendingClosureValue == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-
-		return
-	}
-
-	parsedUploadID, err := strconv.ParseInt(pendingClosureValue, 10, 32)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid id: %v", err), http.StatusBadRequest)
-
+	parsedUploadID, ok := parsePendingClosureID(w, r)
+	if !ok {
 		return
 	}
 
 	// Commit the pending closure (all objects including narinfos should already be uploaded)
-	if err = commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
+	if err := commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)
 

@@ -32,24 +32,13 @@ func TestRedundantMultipartUpload(t *testing.T) {
 	postSharedClosure := func(narinfoKey string) server.PendingObject {
 		t.Helper()
 
-		body, err := json.Marshal(map[string]any{
+		resp := createPendingClosure(t, service, map[string]any{
 			"closure": narinfoKey,
 			"objects": []map[string]any{
 				{"key": narinfoKey, "type": "narinfo", "refs": []string{sharedNarKey}},
 				{"key": sharedNarKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
 			},
 		})
-		ok(t, err)
-
-		rr := testRequest(t, &TestRequest{
-			method:  "POST",
-			path:    "/api/pending_closures",
-			body:    body,
-			handler: service.CreatePendingClosureHandler,
-		})
-
-		var resp server.PendingClosureResponse
-		ok(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 
 		nar := resp.PendingObjects[sharedNarKey]
 		if nar.MultipartInfo == nil || nar.MultipartInfo.UploadID == "" {
@@ -93,30 +82,19 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 	narKey := narKeyFor("gggggggggggggggggggggggggggggg03")
 	narinfoKey := "gggggggggggggggggggggggggggggg30.narinfo"
 
-	body, err := json.Marshal(map[string]any{
+	resp := createPendingClosure(t, service, map[string]any{
 		"closure": narinfoKey,
 		"objects": []map[string]any{
 			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
 			{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
 		},
 	})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{
-		method:  "POST",
-		path:    "/api/pending_closures",
-		body:    body,
-		handler: service.CreatePendingClosureHandler,
-	})
-
-	var resp server.PendingClosureResponse
-	ok(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 
 	uploadID := resp.PendingObjects[narKey].MultipartInfo.UploadID
 
 	// The blob already landed in S3 (e.g. a prior completion whose response was
 	// lost), but the multipart upload row is still registered.
-	_, err = service.MinioClient.PutObject(ctx, service.Bucket, narKey,
+	_, err := service.MinioClient.PutObject(ctx, service.Bucket, narKey,
 		strings.NewReader("payload"), -1, minio.PutObjectOptions{})
 	ok(t, err)
 

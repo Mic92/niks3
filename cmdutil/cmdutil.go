@@ -3,6 +3,7 @@
 package cmdutil
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -200,4 +201,50 @@ func (tf TLSFlags) Configure(c *client.Client) error {
 	}
 
 	return nil
+}
+
+// ParseCommand parses args into fs, printing help and exiting on -h/--help,
+// then sets up logging, validates the server URL and resolves the token
+// source.
+func ParseCommand(fs *flag.FlagSet, cf CommonFlags, tf TLSFlags, args []string, printHelp func()) (client.TokenSource, error) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printHelp()
+			os.Exit(0)
+		}
+
+		return nil, fmt.Errorf("parsing flags: %w", err)
+	}
+
+	if *cf.Help {
+		printHelp()
+		os.Exit(0)
+	}
+
+	SetupLogger(*cf.Debug)
+
+	if err := RequireServerURL(*cf.ServerURL); err != nil {
+		return nil, err
+	}
+
+	return cf.TokenSource(fs, tf)
+}
+
+// NewClient creates a niks3 client from the parsed flags: token source,
+// optional mTLS configuration and HTTP debug logging.
+func NewClient(ctx context.Context, serverURL string, ts client.TokenSource, tf TLSFlags, debug bool) (*client.Client, error) {
+	c, err := client.NewClientWithTokenSource(ctx, serverURL, ts)
+	if err != nil {
+		return nil, fmt.Errorf("creating client: %w", err)
+	}
+
+	if err := tf.Configure(c); err != nil {
+		return nil, err
+	}
+
+	if debug {
+		c.SetDebugHTTP(true)
+	}
+
+	return c, nil
 }
