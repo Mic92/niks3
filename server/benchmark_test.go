@@ -10,16 +10,19 @@ import (
 	"testing"
 )
 
-// BenchmarkPythonClosure benchmarks building a Python closure with
-// common dependencies and uploading it to S3.
-//
-// This benchmark measures the end-to-end performance of:
-// 1. Building a Python environment with popular packages (if not already built)
-// 2. Uploading the entire closure to S3 via the niks3 server
-//
-// The Python closure is defined in nix/benchmark/python-closure.nix
-// and can be built with: nix build .#python-closure.
-func BenchmarkPythonClosure(b *testing.B) {
+// benchmarkClosures lists the flake attributes (see nix/benchmark) used as
+// upload workloads: many small/medium NARs vs. one large NAR.
+var benchmarkClosures = []struct { //nolint:gochecknoglobals // benchmark table
+	name string
+	attr string
+}{
+	{name: "PythonClosure", attr: ".#benchmark-closure"},
+	{name: "DiskImage", attr: ".#benchmark-disk-image"},
+}
+
+// BenchmarkUploadClosure measures uploading pre-built closures to S3 via the
+// niks3 server. Building the closure with nix is not timed.
+func BenchmarkUploadClosure(b *testing.B) {
 	ctx := context.Background()
 
 	// Find the git repository root
@@ -30,20 +33,29 @@ func BenchmarkPythonClosure(b *testing.B) {
 
 	projectRoot := strings.TrimSpace(string(gitRoot))
 
-	// Build the Python closure once before benchmarking
-	b.Log("Building Python closure (this may take a while on first run)...")
+	for _, bc := range benchmarkClosures {
+		b.Run(bc.name, func(b *testing.B) {
+			benchmarkUploadClosure(ctx, b, projectRoot, bc.attr)
+		})
+	}
+}
 
-	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "build", ".#benchmark-closure", "--print-out-paths", "--no-link")
+func benchmarkUploadClosure(ctx context.Context, b *testing.B, projectRoot, flakeAttr string) {
+	b.Helper()
+
+	b.Logf("Building %s (this may take a while on first run)...", flakeAttr)
+
+	cmd := exec.CommandContext(ctx, "nix", "--extra-experimental-features", "nix-command flakes", "build", flakeAttr, "--print-out-paths", "--no-link")
 	cmd.Dir = projectRoot
 
 	output, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			b.Fatalf("Failed to build Python closure: %v\nStderr: %s", err, exitErr.Stderr)
+			b.Fatalf("Failed to build %s: %v\nStderr: %s", flakeAttr, err, exitErr.Stderr)
 		}
 
-		b.Fatalf("Failed to build Python closure: %v", err)
+		b.Fatalf("Failed to build %s: %v", flakeAttr, err)
 	}
 
 	closurePath := strings.TrimSpace(string(output))
@@ -56,8 +68,6 @@ func BenchmarkPythonClosure(b *testing.B) {
 	} else {
 		b.Logf("Closure size: %s", strings.TrimSpace(string(sizeOutput)))
 	}
-
-	// Reset the timer to exclude setup time
 
 	// Run the benchmark
 	for b.Loop() {
