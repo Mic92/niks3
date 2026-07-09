@@ -18,7 +18,6 @@
       pkgs.s5cmd
       pkgs.awscli
       selfPackages.rustfs
-      pkgs.watchexec
     ];
 
     inputsFrom = [

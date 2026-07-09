@@ -6,37 +6,27 @@ Thank you for your interest in contributing to niks3! This document provides gui
 
 ### Local Development Environment
 
-Start the complete development environment with:
+Enter the development shell with:
 
 ```bash
-nix run .#dev
+nix develop
 ```
 
-This launches a process-compose setup with:
+Or use [direnv](https://direnv.net/) (`direnv allow`) to load it automatically.
 
-- **PostgreSQL**: Database server with automatic initialization and health checks
-- **RustFS**: S3-compatible storage server with health checks
-- **niks3-server**: API server with automatic recompilation on code changes (via watchexec)
+The shell provides Go tooling, PostgreSQL, RustFS (S3-compatible storage),
+goose, sqlc, s5cmd and awscli.
 
-### Features
+### Development Workflow
 
-- **Auto-reload**: The niks3-server automatically recompiles and restarts when Go source files change
-- **Health checks**: Services wait for dependencies to be healthy before starting
-- **Signing keys**: Nix signing key pair is automatically generated on first run
-- **Environment variables**: All configuration is in `.envrc` (see NIKS3\_\*, PGDATA, MINIO_DATA)
+Develop against the test suite instead of a manually started server. The Go
+tests start their own PostgreSQL and RustFS (see `server/main_test.go`):
 
-### Data Management
+```bash
+go test ./server/...
+```
 
-- State is stored in `.data/` directory
-- For a fresh environment, delete `.data/` and restart
-
-### Environment Variables
-
-Key variables configured in `.envrc`:
-
-- `DATABASE_URL`: PostgreSQL connection string
-- `NIKS3_*`: Server configuration (endpoint, credentials, bucket, etc.)
-- `NIKS3_SIGN_KEY_PATHS`: Path to signing key (auto-generated)
+When adding features or fixing bugs, cover the new behavior with tests.
 
 ## Database
 
