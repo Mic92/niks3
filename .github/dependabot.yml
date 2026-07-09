@@ -4,7 +4,15 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      gomod:
+        patterns:
+          - "*"
   - package-ecosystem: "nix"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      nix:
+        patterns:
+          - "*"
