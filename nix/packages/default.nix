@@ -11,6 +11,7 @@ let
     niks3-tests = pkgs.callPackage ./niks3-tests.nix { inherit (pkgs) go; };
     mock-oidc-server = pkgs.callPackage ./mock-oidc-server.nix { };
     benchmark-closure = pkgs.callPackage ../benchmark/benchmark-closure.nix { };
+    benchmark-disk-image = pkgs.callPackage ../benchmark/benchmark-disk-image.nix { };
     default = niks3;
   };
 in

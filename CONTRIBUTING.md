@@ -66,7 +66,7 @@ To run the benchmark:
 
 ```bash
 cd server
-go test -bench=BenchmarkPythonClosure -benchtime=3x -v
+go test -bench=BenchmarkUploadClosure -benchtime=3x -v
 ```
 
 ## Contributing S3 Provider Testing Results
