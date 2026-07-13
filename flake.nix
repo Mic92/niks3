@@ -26,6 +26,10 @@
         default = ./nix/nixosModules/niks3.nix;
       };
 
+      darwinModules = {
+        niks3-auto-upload = ./nix/darwinModules/niks3-auto-upload.nix;
+      };
+
       packages = forAllSystems (_: pkgs: import ./nix/packages { inherit pkgs; });
 
       checks = forAllSystems (
