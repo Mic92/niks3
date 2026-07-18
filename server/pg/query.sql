@@ -33,6 +33,20 @@ WHERE key = any($1::varchar []);
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
 
+-- name: RegisterCompletedObject :exec
+-- Record an object as present as soon as its (multipart) upload completes,
+-- instead of waiting for the whole closure to commit. Without this, a NAR that
+-- uploaded successfully but whose closure never committed -- e.g. because a
+-- sibling object in the same push batch failed, or the push process was killed
+-- -- stays unknown to the objects table and is re-offered for upload by every
+-- later closure that references it, leaking an orphaned multipart upload each
+-- time. ON CONFLICT resurrects a tombstoned row, matching commit_pending_closure.
+INSERT INTO objects (key, refs)
+VALUES (sqlc.arg(key), sqlc.arg(refs)::varchar [])
+ON CONFLICT (key) DO UPDATE SET
+    deleted_at = NULL,
+    first_deleted_at = NULL;
+
 -- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time

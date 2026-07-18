@@ -536,6 +536,31 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const registerCompletedObject = `-- name: RegisterCompletedObject :exec
+INSERT INTO objects (key, refs)
+VALUES ($1, $2::varchar [])
+ON CONFLICT (key) DO UPDATE SET
+    deleted_at = NULL,
+    first_deleted_at = NULL
+`
+
+type RegisterCompletedObjectParams struct {
+	Key  string   `json:"key"`
+	Refs []string `json:"refs"`
+}
+
+// Record an object as present as soon as its (multipart) upload completes,
+// instead of waiting for the whole closure to commit. Without this, a NAR that
+// uploaded successfully but whose closure never committed -- e.g. because a
+// sibling object in the same push batch failed, or the push process was killed
+// -- stays unknown to the objects table and is re-offered for upload by every
+// later closure that references it, leaking an orphaned multipart upload each
+// time. ON CONFLICT resurrects a tombstoned row, matching commit_pending_closure.
+func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
+	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs)
+	return err
+}
+
 const upsertPin = `-- name: UpsertPin :exec
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
 VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))

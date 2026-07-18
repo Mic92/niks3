@@ -342,6 +342,19 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 		s.S3RateLimiter.RecordSuccess()
 	}
 
+	// Record the object as present as soon as it is finalized in S3, rather than
+	// waiting for the whole closure to commit. Otherwise a NAR whose closure
+	// never commits -- e.g. a sibling object in the same push batch failed, or
+	// the push process was killed -- stays unknown to the objects table and is
+	// re-offered for upload by every later closure that references it, leaking an
+	// orphaned multipart upload each time.
+	if err := queries.RegisterCompletedObject(r.Context(), pg.RegisterCompletedObjectParams{
+		Key:  req.ObjectKey,
+		Refs: []string{},
+	}); err != nil {
+		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
+	}
+
 	// Delete the multipart upload tracking row
 	if err := queries.DeleteMultipartUpload(r.Context(), req.UploadID); err != nil {
 		// Log the error but don't fail the request - the upload already succeeded in S3
