@@ -35,13 +35,30 @@ SELECT commit_pending_closure($1::bigint);
 
 -- name: RegisterCompletedObject :exec
 -- Record an object as soon as its upload completes so later closures don't
--- re-offer it if this closure never commits. ON CONFLICT resurrects a
--- tombstoned row, matching commit_pending_closure.
-INSERT INTO objects (key, refs)
-VALUES (sqlc.arg(key), sqlc.arg(refs)::varchar [])
+-- re-offer it if this closure never commits. Conflict handling matches
+-- commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
+INSERT INTO objects (key, refs, size)
+VALUES (sqlc.arg(key), sqlc.arg(refs)::varchar [], sqlc.arg(size))
 ON CONFLICT (key) DO UPDATE SET
+    refs = (
+        SELECT ARRAY(
+            SELECT DISTINCT unnest(objects.refs || excluded.refs)
+        )
+    ),
+    size = coalesce(objects.size, excluded.size),
     deleted_at = NULL,
     first_deleted_at = NULL;
+
+-- name: GetPendingObject :one
+SELECT refs, size FROM pending_objects
+WHERE pending_closure_id = $1 AND key = $2;
+
+-- name: GetPendingObjectByKey :one
+-- Any pending closure's row for this key; used to recover refs/size when the
+-- upload is registered outside closure commit.
+SELECT refs, size FROM pending_objects
+WHERE key = $1
+LIMIT 1;
 
 -- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
