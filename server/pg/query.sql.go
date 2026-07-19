@@ -549,13 +549,9 @@ type RegisterCompletedObjectParams struct {
 	Refs []string `json:"refs"`
 }
 
-// Record an object as present as soon as its (multipart) upload completes,
-// instead of waiting for the whole closure to commit. Without this, a NAR that
-// uploaded successfully but whose closure never committed -- e.g. because a
-// sibling object in the same push batch failed, or the push process was killed
-// -- stays unknown to the objects table and is re-offered for upload by every
-// later closure that references it, leaking an orphaned multipart upload each
-// time. ON CONFLICT resurrects a tombstoned row, matching commit_pending_closure.
+// Record an object as soon as its upload completes so later closures don't
+// re-offer it if this closure never commits. ON CONFLICT resurrects a
+// tombstoned row, matching commit_pending_closure.
 func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
 	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs)
 	return err

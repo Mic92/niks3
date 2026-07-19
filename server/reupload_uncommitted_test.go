@@ -8,21 +8,10 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// TestCompletedNarNotReofferedAcrossClosures is a regression test for a NAR that
-// has been fully uploaded to S3 (its multipart upload completed) but whose
-// closure was never committed -- exactly what happens in CI when one object in
-// a batch fails (or the push process is killed) after a sibling NAR already
-// finished uploading.
-//
-// CompleteMultipartUploadHandler finalizes the object in S3 and drops its
-// multipart_uploads tracking row, but the object is only recorded in the
-// `objects` table at closure commit (commit_pending_closure). So a completed-
-// but-uncommitted NAR stays present in S3 yet is treated as missing forever:
-// every later closure re-opens a fresh multipart upload for it. When the client
-// then notices the object already exists and skips, that fresh multipart is
-// abandoned with zero parts and leaks. Over many CI runs this produces
-// thousands of orphaned zero-part multipart uploads and needless re-uploads,
-// and it prevents the affected path from being served from the cache.
+// Regression test: a NAR whose multipart upload completed but whose closure
+// never committed (sibling object failed, push killed) must not be re-offered
+// for upload by later closures, since each re-offer leaks an orphaned
+// zero-part multipart upload.
 func TestCompletedNarNotReofferedAcrossClosures(t *testing.T) {
 	t.Parallel()
 
@@ -64,19 +53,12 @@ func TestCompletedNarNotReofferedAcrossClosures(t *testing.T) {
 		t.Fatalf("NAR should be present in S3 after completing its multipart upload: %v", err)
 	}
 
-	// Deliberately do NOT commit the first closure: this models a batch where a
-	// sibling object failed (or the push was killed) after this NAR uploaded, so
-	// PushPaths returned before reaching CompletePendingClosure.
-
-	// A later build pushes a different closure that references the same NAR
-	// content. The NAR is already in S3, so the server must not ask the client
-	// to upload it again.
+	// Deliberately do NOT commit the first closure. A second closure referencing
+	// the same NAR must not be asked to upload it again.
 	second := createPendingClosure(t, service, closureFor(secondNarinfo))
 
 	if reoffered, ok := second.PendingObjects[narKey]; ok {
-		t.Errorf("server re-offered an upload for a NAR already present in S3 "+
-			"(multipart=%v, presigned=%q); every such re-offer that the client "+
-			"then skips leaks an orphaned zero-part multipart upload",
+		t.Errorf("NAR already in S3 was re-offered for upload (multipart=%v, presigned=%q)",
 			reoffered.MultipartInfo != nil, reoffered.PresignedURL)
 	}
 }
