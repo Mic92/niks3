@@ -306,14 +306,21 @@ func computeClosureMembership(topLevelPaths []string, pathInfos map[string]*Path
 	return closureMembership
 }
 
+// skippedUploads counts store paths (and their uncompressed NAR bytes)
+// dropped by filterOversizedClosures.
+type skippedUploads struct {
+	Paths    uint64
+	NarBytes uint64
+}
+
 // filterOversizedClosures drops top-level paths whose closure contains a path
 // with NarSize larger than maxNarSize. A limit of 0 disables filtering. It returns the kept
-// top-level paths and pathInfos pruned to paths still reachable from them.
-// Skipping only warns, never errors, so pushes and the build hook keep
-// succeeding under a server-side size policy.
-func filterOversizedClosures(topLevelPaths []string, pathInfos map[string]*PathInfo, maxNarSize uint64) ([]string, map[string]*PathInfo) {
+// top-level paths, pathInfos pruned to paths still reachable from them, and
+// counts of what was skipped. Skipping only warns, never errors, so pushes
+// and the build hook keep succeeding under a server-side size policy.
+func filterOversizedClosures(topLevelPaths []string, pathInfos map[string]*PathInfo, maxNarSize uint64) ([]string, map[string]*PathInfo, skippedUploads) {
 	if maxNarSize == 0 {
-		return topLevelPaths, pathInfos
+		return topLevelPaths, pathInfos, skippedUploads{}
 	}
 
 	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
@@ -337,7 +344,7 @@ nextClosure:
 	}
 
 	if len(kept) == len(topLevelPaths) {
-		return topLevelPaths, pathInfos
+		return topLevelPaths, pathInfos, skippedUploads{}
 	}
 
 	// Prune pathInfos to paths still reachable from the kept top-level paths.
@@ -351,7 +358,16 @@ nextClosure:
 		}
 	}
 
-	return kept, prunedInfos
+	var skipped skippedUploads
+
+	for path, info := range pathInfos {
+		if _, ok := prunedInfos[path]; !ok {
+			skipped.Paths++
+			skipped.NarBytes += info.NarSize
+		}
+	}
+
+	return kept, prunedInfos, skipped
 }
 
 // CreatePendingClosures creates pending closures and returns all pending objects and closure ID to narinfo key mapping.
@@ -527,7 +543,11 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 		maxNarSize = cfg.MaxNarSize
 	}
 
-	resolvedPaths, pathInfos = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
+	var skipped skippedUploads
+
+	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
+	c.ReportSkippedUploads(ctx, skipped.Paths, skipped.NarBytes)
+
 	if len(resolvedPaths) == 0 {
 		slog.Warn("All closures skipped by server max NAR size, nothing to upload")
 

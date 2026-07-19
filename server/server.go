@@ -301,6 +301,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.AuthMiddleware(service.CommitPendingClosureHandler))
 	mux.HandleFunc("POST /api/multipart/complete", service.AuthMiddleware(service.CompleteMultipartUploadHandler))
 	mux.HandleFunc("POST /api/uploads/complete", service.AuthMiddleware(service.CompleteUploadHandler))
+	mux.HandleFunc("POST /api/uploads/skipped", service.AuthMiddleware(service.SkippedUploadsHandler))
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("HEAD /api/objects/{key...}", service.AuthMiddleware(service.ObjectExistsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))

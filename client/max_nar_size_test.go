@@ -25,7 +25,11 @@ func TestFilterOversizedClosures(t *testing.T) {
 	t.Run("no limit keeps everything", func(t *testing.T) {
 		t.Parallel()
 
-		kept, infos := client.FilterOversizedClosures([]string{wrapper, small}, pathInfos, 0)
+		kept, infos, skipped := client.FilterOversizedClosures([]string{wrapper, small}, pathInfos, 0)
+		if skipped.Paths != 0 || skipped.NarBytes != 0 {
+			t.Errorf("skipped = %+v, want none", skipped)
+		}
+
 		if len(kept) != 2 || len(infos) != 3 {
 			t.Errorf("kept = %v, infos = %d, want all", kept, len(infos))
 		}
@@ -34,7 +38,11 @@ func TestFilterOversizedClosures(t *testing.T) {
 	t.Run("closure with oversized dependency is skipped", func(t *testing.T) {
 		t.Parallel()
 
-		kept, infos := client.FilterOversizedClosures([]string{wrapper, small}, pathInfos, 2000)
+		kept, infos, skipped := client.FilterOversizedClosures([]string{wrapper, small}, pathInfos, 2000)
+		if skipped.Paths != 2 || skipped.NarBytes != 5100 {
+			t.Errorf("skipped = %+v, want 2 paths / 5100 bytes", skipped)
+		}
+
 		if !slices.Equal(kept, []string{small}) {
 			t.Errorf("kept = %v, want only %s", kept, small)
 		}
@@ -47,7 +55,11 @@ func TestFilterOversizedClosures(t *testing.T) {
 	t.Run("all closures skipped", func(t *testing.T) {
 		t.Parallel()
 
-		kept, infos := client.FilterOversizedClosures([]string{wrapper}, pathInfos, 50)
+		kept, infos, skipped := client.FilterOversizedClosures([]string{wrapper}, pathInfos, 50)
+		if skipped.Paths != 3 || skipped.NarBytes != 6100 {
+			t.Errorf("skipped = %+v, want 3 paths / 6100 bytes", skipped)
+		}
+
 		if len(kept) != 0 || len(infos) != 0 {
 			t.Errorf("kept = %v, infos = %v, want none", kept, infos)
 		}
