@@ -89,4 +89,8 @@ type CacheConfig struct {
 	// the issuer passed via ?issuer=. Empty if no issuer was requested or no
 	// matching provider is configured.
 	OIDCAudience string `json:"oidc_audience,omitempty"`
+
+	// MaxNarSize is the maximum uncompressed NAR size in bytes the server
+	// accepts. Clients skip closures containing larger paths. 0 means unlimited.
+	MaxNarSize uint64 `json:"max_nar_size,omitempty"`
 }

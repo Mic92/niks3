@@ -48,6 +48,10 @@ type options struct {
 	OIDCConfigPath  string
 	EnableReadProxy bool
 
+	// MaxNarSize is the maximum uncompressed NAR size in bytes accepted for
+	// upload. 0 means unlimited.
+	MaxNarSize uint64
+
 	// MTLSProxyHeader, when set, names a header the reverse proxy sets to
 	// "SUCCESS" after verifying a client certificate (e.g. nginx's
 	// $ssl_client_verify). Requests carrying it are accepted without a
@@ -99,6 +103,10 @@ type Service struct {
 	MTLSSubjectHeader     string
 	MTLSBoundSubjects     []string
 	MTLSBoundSubjectsRead []string
+
+	// MaxNarSize is advertised via /api/cache-config and enforced on
+	// pending-closure creation. 0 means unlimited.
+	MaxNarSize uint64
 
 	// NativeMTLS is set when the server terminates TLS itself with a
 	// client CA — mtlsCheck reads r.TLS.PeerCertificates directly
@@ -225,6 +233,7 @@ func runServer(opts *options) error {
 		MTLSBoundSubjectsRead: opts.MTLSBoundSubjectsRead,
 		CacheURL:              opts.CacheURL,
 		ServerURL:             opts.ServerURL,
+		MaxNarSize:            opts.MaxNarSize,
 		GCTasks:               NewGCTaskStore(),
 		Metrics:               NewMetrics(),
 	}
@@ -292,6 +301,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.AuthMiddleware(service.CommitPendingClosureHandler))
 	mux.HandleFunc("POST /api/multipart/complete", service.AuthMiddleware(service.CompleteMultipartUploadHandler))
 	mux.HandleFunc("POST /api/uploads/complete", service.AuthMiddleware(service.CompleteUploadHandler))
+	mux.HandleFunc("POST /api/uploads/skipped", service.AuthMiddleware(service.SkippedUploadsHandler))
 	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
 	mux.HandleFunc("HEAD /api/objects/{key...}", service.AuthMiddleware(service.ObjectExistsHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))

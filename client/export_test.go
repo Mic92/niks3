@@ -18,6 +18,9 @@ var ShellSplit = shellSplit //nolint:gochecknoglobals // test-only re-export
 // PartSizeForNAR re-exports partSizeForNAR for the external test package.
 var PartSizeForNAR = partSizeForNAR //nolint:gochecknoglobals // test-only re-export
 
+// FilterOversizedClosures re-exports filterOversizedClosures for the external test package.
+var FilterOversizedClosures = filterOversizedClosures //nolint:gochecknoglobals // test-only re-export
+
 // MultipartPartSize re-exports the default part size for tests.
 const MultipartPartSize = multipartPartSize
 

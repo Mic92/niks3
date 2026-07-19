@@ -141,6 +141,10 @@ let
     "--server-url"
     cfg.serverUrl
   ]
+  ++ lib.optionals (cfg.maxNarSize != null) [
+    "--max-nar-size"
+    cfg.maxNarSize
+  ]
   ++ lib.concatMap (f: [
     "--sign-key-path"
     (toString f)
@@ -345,6 +349,16 @@ in
         cache stats from {serverUrl}/api/cache-stats. If unset, the page uses a
         same-origin relative path, which only works when the cache is served by
         niks3 or a proxy that routes /api/cache-stats to it.
+      '';
+    };
+
+    maxNarSize = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "2G";
+      description = ''
+        Maximum uncompressed NAR size accepted for upload (e.g. "2G", "512M").
+        Clients skip closures containing larger store paths. Null means unlimited.
       '';
     };
 

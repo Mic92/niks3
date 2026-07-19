@@ -34,6 +34,8 @@ type Metrics struct {
 	gcDuration        prometheus.Histogram
 	gcObjectsDeleted  prometheus.Counter
 	gcLastRun         prometheus.Gauge
+	skippedPaths      prometheus.Counter
+	skippedNarBytes   prometheus.Counter
 }
 
 // NewMetrics builds a registry with the Go/process collectors and the cache
@@ -100,6 +102,14 @@ func NewMetrics() *Metrics {
 			Name: "niks3_gc_last_run_timestamp_seconds",
 			Help: "Unix time of the last successful garbage collection; absent until one completes after startup.",
 		}),
+		skippedPaths: factory.NewCounter(prometheus.CounterOpts{
+			Name: "niks3_upload_skipped_paths_total",
+			Help: "Store paths clients skipped because a closure exceeded the max NAR size.",
+		}),
+		skippedNarBytes: factory.NewCounter(prometheus.CounterOpts{
+			Name: "niks3_upload_skipped_nar_bytes_total",
+			Help: "Uncompressed NAR bytes of store paths clients skipped due to the max NAR size.",
+		}),
 	}
 }
 
@@ -153,6 +163,12 @@ func (m *Metrics) Instrument(next http.Handler) http.Handler {
 // Handler serves the metrics in the Prometheus text format.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+}
+
+// recordSkippedUploads records store paths a client skipped due to the max NAR size limit.
+func (m *Metrics) recordSkippedUploads(paths, narBytes uint64) {
+	m.skippedPaths.Add(float64(paths))
+	m.skippedNarBytes.Add(float64(narBytes))
 }
 
 func (s *Service) refreshInventory(ctx context.Context) error {

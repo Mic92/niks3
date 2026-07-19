@@ -91,6 +91,8 @@ func (s *stringSliceFlag) Set(value string) error {
 func parseArgs() (*options, error) {
 	var opts options
 
+	maxNarSize := ""
+
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
 	apiTokenPath := ""
@@ -140,6 +142,8 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
 	flag.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
 		"CA bundle for native mTLS client cert verification; subjects checked against --mtls-bound-subject")
+	flag.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
+		"Maximum uncompressed NAR size accepted for upload (e.g. 2G, 512M). Empty or 0 means unlimited")
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
@@ -174,6 +178,10 @@ func parseArgs() (*options, error) {
 
 	if opts.S3BucketLookup, err = parseBucketLookup(s3BucketLookup); err != nil {
 		return nil, err
+	}
+
+	if opts.MaxNarSize, err = ParseSize(maxNarSize); err != nil {
+		return nil, fmt.Errorf("invalid --max-nar-size: %w", err)
 	}
 
 	var secret string
