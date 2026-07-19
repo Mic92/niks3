@@ -201,6 +201,7 @@ func (c *Client) uploadMetadataOnly(
 			return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
 		}
 
+		c.RegisterUploadedObject(ctx, lsTask.key)
 		slog.Debug("Uploaded listing", "key", lsTask.key)
 	}
 

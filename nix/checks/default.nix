@@ -18,7 +18,10 @@ packages
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
     buildPhase = ''
       HOME=$TMPDIR
-      golangci-lint run
+      # Cap parallelism at the allotted build cores; golangci-lint defaults to
+      # all CPUs, which exhausts process limits on shared builders.
+      export GOMAXPROCS=$NIX_BUILD_CORES
+      golangci-lint run --concurrency "$NIX_BUILD_CORES"
     '';
     installPhase = ''
       touch $out
@@ -38,6 +41,9 @@ packages
       }
       ''
         export HOME=$TMPDIR
+        # Cap runtime parallelism at the allotted build cores to avoid hitting
+        # process limits on shared builders.
+        export GOMAXPROCS=$NIX_BUILD_CORES
 
         echo "Running client tests..."
         niks3-client.test -test.v

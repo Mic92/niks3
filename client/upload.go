@@ -419,6 +419,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 				return fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
 			}
 
+			c.RegisterUploadedObject(ctx, task.key)
 			slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
 
 			return nil

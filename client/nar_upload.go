@@ -71,9 +71,13 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 	)
 
 	if obj.MultipartInfo != nil {
+		// The server records the object when the multipart upload completes.
 		listing, err = c.compressAndMultipartUploadNAR(ctx, storePath, narSize, obj.MultipartInfo, objectKey)
 	} else {
 		listing, err = c.compressAndSimpleUploadNAR(ctx, storePath, obj.PresignedURL, objectKey)
+		if err == nil {
+			c.RegisterUploadedObject(ctx, objectKey)
+		}
 	}
 
 	if err != nil {
