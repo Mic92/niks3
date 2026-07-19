@@ -38,10 +38,14 @@ pkgs.buildGoModule {
   buildPhase = ''
     runHook preBuild
 
-    go test -c ./client -o client.test
-    go test -c ./server -o server.test
-    go test -c ./server/oidc -o server-oidc.test
-    go test -c ./hook -o hook.test
+    # Cap compiler/vet parallelism at the allotted build cores; go defaults to
+    # all CPUs, which exhausts process limits on shared builders.
+    export GOMAXPROCS=$NIX_BUILD_CORES
+
+    go test -c -p "$NIX_BUILD_CORES" ./client -o client.test
+    go test -c -p "$NIX_BUILD_CORES" ./server -o server.test
+    go test -c -p "$NIX_BUILD_CORES" ./server/oidc -o server-oidc.test
+    go test -c -p "$NIX_BUILD_CORES" ./hook -o hook.test
 
     runHook postBuild
   '';
