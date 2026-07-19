@@ -38,7 +38,7 @@ in
         Path to a file containing the auth token.
         The file should contain only the token without trailing newlines.
         Use a runtime path (e.g. from sops-nix or agenix), not a Nix store path.
-        The launchd daemon runs as root, so the file must be readable by root.
+        Must be readable by root (the launchd daemon runs as root).
       '';
       example = "/run/secrets/niks3-auth-token";
     };
@@ -47,11 +47,7 @@ in
       type = lib.types.str;
       default = "${stateDir}/upload-to-cache.sock";
       defaultText = lib.literalExpression ''"''${stateDir}/upload-to-cache.sock"'';
-      description = ''
-        Path to the unix stream socket. The daemon creates it itself (no
-        socket activation on launchd). Defaults into the state dir, which the
-        daemon creates before binding, so no pre-creation is needed.
-      '';
+      description = "Path to the unix stream socket, created by the daemon itself.";
     };
 
     batchSize = lib.mkOption {
@@ -65,8 +61,7 @@ in
       default = 0;
       description = ''
         Seconds of idle time before the daemon exits. Set to 0 to disable.
-        Defaults to 0 on Darwin because the launchd daemon is always-on
-        (KeepAlive); a non-zero value would just be respawned by launchd.
+        Defaults to 0 because launchd (KeepAlive) would respawn the daemon anyway.
       '';
     };
 
