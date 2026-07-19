@@ -233,33 +233,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 	}
 
 	// Second pass: compute closure membership for each top-level path
-	// Build a map of which paths are reachable from each top-level path
-	closureMembership := make(map[string]map[string]bool) // topLevelPath -> set of reachable paths
-
-	for _, topLevelPath := range topLevelPaths {
-		reachable := make(map[string]bool)
-
-		var visit func(string)
-
-		visit = func(path string) {
-			if reachable[path] {
-				return
-			}
-
-			reachable[path] = true
-
-			pathInfo, ok := pathInfos[path]
-			if !ok {
-				return
-			}
-
-			for _, ref := range pathInfo.References {
-				visit(ref)
-			}
-		}
-		visit(topLevelPath)
-		closureMembership[topLevelPath] = reachable
-	}
+	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
 
 	// Third pass: create one ClosureInfo per top-level path with only its reachable objects
 	closures := make([]ClosureInfo, 0, len(topLevelPaths))
@@ -297,6 +271,87 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		LogPathsByKey:     logPathsByKey,
 		RealisationsByKey: realisations,
 	}, nil
+}
+
+// computeClosureMembership returns, for each top-level path, the set of store
+// paths reachable from it via references.
+func computeClosureMembership(topLevelPaths []string, pathInfos map[string]*PathInfo) map[string]map[string]bool {
+	closureMembership := make(map[string]map[string]bool) // topLevelPath -> set of reachable paths
+
+	for _, topLevelPath := range topLevelPaths {
+		reachable := make(map[string]bool)
+
+		var visit func(string)
+
+		visit = func(path string) {
+			if reachable[path] {
+				return
+			}
+
+			reachable[path] = true
+
+			pathInfo, ok := pathInfos[path]
+			if !ok {
+				return
+			}
+
+			for _, ref := range pathInfo.References {
+				visit(ref)
+			}
+		}
+		visit(topLevelPath)
+		closureMembership[topLevelPath] = reachable
+	}
+
+	return closureMembership
+}
+
+// filterOversizedClosures drops top-level paths whose closure contains a path
+// with NarSize larger than maxNarSize. A limit of 0 disables filtering. It returns the kept
+// top-level paths and pathInfos pruned to paths still reachable from them.
+// Skipping only warns, never errors, so pushes and the build hook keep
+// succeeding under a server-side size policy.
+func filterOversizedClosures(topLevelPaths []string, pathInfos map[string]*PathInfo, maxNarSize uint64) ([]string, map[string]*PathInfo) {
+	if maxNarSize == 0 {
+		return topLevelPaths, pathInfos
+	}
+
+	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
+	kept := make([]string, 0, len(topLevelPaths))
+
+nextClosure:
+	for _, topLevelPath := range topLevelPaths {
+		for path := range closureMembership[topLevelPath] {
+			if info, ok := pathInfos[path]; ok && info.NarSize > maxNarSize {
+				slog.Warn("Skipping closure: path exceeds server max NAR size",
+					"top_level_path", topLevelPath,
+					"oversized_path", path,
+					"nar_size", info.NarSize,
+					"max_nar_size", maxNarSize)
+
+				continue nextClosure
+			}
+		}
+
+		kept = append(kept, topLevelPath)
+	}
+
+	if len(kept) == len(topLevelPaths) {
+		return topLevelPaths, pathInfos
+	}
+
+	// Prune pathInfos to paths still reachable from the kept top-level paths.
+	prunedInfos := make(map[string]*PathInfo)
+
+	for _, topLevelPath := range kept {
+		for path := range closureMembership[topLevelPath] {
+			if info, ok := pathInfos[path]; ok {
+				prunedInfos[path] = info
+			}
+		}
+	}
+
+	return kept, prunedInfos
 }
 
 // CreatePendingClosures creates pending closures and returns all pending objects and closure ID to narinfo key mapping.
@@ -454,10 +509,29 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
-	// Collect all closure paths to return to the caller.
+	// Collect all closure paths to return to the caller. This includes paths
+	// from closures skipped by the size filter below, so callers (e.g. the
+	// hook queue) treat them as handled instead of retrying forever.
 	closurePaths := make([]string, 0, len(pathInfos))
 	for storePath := range pathInfos {
 		closurePaths = append(closurePaths, storePath)
+	}
+
+	// Skip closures containing paths larger than the server's max NAR size.
+	// Fetched per push so the long-running hook picks up config changes.
+	var maxNarSize uint64
+
+	if cfg, err := c.GetCacheConfig(ctx); err != nil {
+		slog.Warn("Failed to fetch cache config, uploading without size limit", "error", err)
+	} else {
+		maxNarSize = cfg.MaxNarSize
+	}
+
+	resolvedPaths, pathInfos = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
+	if len(resolvedPaths) == 0 {
+		slog.Warn("All closures skipped by server max NAR size, nothing to upload")
+
+		return closurePaths, nil
 	}
 
 	// Prepare closures - one per top-level path

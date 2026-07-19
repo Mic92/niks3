@@ -21,6 +21,7 @@ func (s *Service) CacheConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := api.CacheConfig{
 		SubstituterURL: s.CacheURL,
 		PublicKeys:     make([]string, 0, len(s.SigningKeys)),
+		MaxNarSize:     s.MaxNarSize,
 	}
 
 	for _, key := range s.SigningKeys {

@@ -122,6 +122,15 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 
+		// Advisory size limit: nar_size is client-supplied and optional, the
+		// real filtering happens in the client based on /api/cache-config.
+		if s.MaxNarSize > 0 && object.NarSize != nil && *object.NarSize > s.MaxNarSize {
+			http.Error(w, fmt.Sprintf("NAR object %q size %d exceeds server max NAR size %d bytes",
+				object.Key, *object.NarSize, s.MaxNarSize), http.StatusBadRequest)
+
+			return
+		}
+
 		objectsMap[object.Key] = object
 	}
 
