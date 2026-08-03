@@ -33,7 +33,7 @@ packages
       {
         nativeBuildInputs = [
           selfPackages.niks3-tests
-          selfPackages.rustfs
+          pkgs.rustfs
           pkgs.postgresql
           pkgs.nix
         ];
@@ -44,6 +44,8 @@ packages
         # Cap runtime parallelism at the allotted build cores to avoid hitting
         # process limits on shared builders.
         export GOMAXPROCS=$NIX_BUILD_CORES
+        # rustfs (via reqwest/rustls-native-certs) wants this
+        export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 
         echo "Running client tests..."
         niks3-client.test -test.v
@@ -65,7 +67,7 @@ packages
     mock-oidc-server = selfPackages.mock-oidc-server;
     niks3 = selfPackages.niks3;
     niks3-hook = selfPackages.niks3-hook;
-    rustfs = selfPackages.rustfs;
+    rustfs = pkgs.rustfs;
     nix = pkgs.nixVersions.latest;
     ca-derivations-supported = true;
   };
@@ -73,12 +75,12 @@ packages
     mock-oidc-server = selfPackages.mock-oidc-server;
     niks3 = selfPackages.niks3;
     niks3-hook = selfPackages.niks3-hook;
-    rustfs = selfPackages.rustfs;
+    rustfs = pkgs.rustfs;
     nix = pkgs.lixPackageSets.latest.lix;
     ca-derivations-supported = false;
   };
   nixos-test-read-proxy = pkgs.callPackage ./nixos-test-read-proxy.nix {
     niks3 = selfPackages.niks3;
-    rustfs = selfPackages.rustfs;
+    rustfs = pkgs.rustfs;
   };
 }

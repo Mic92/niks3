@@ -4,7 +4,6 @@
 }:
 let
   packages = rec {
-    rustfs = pkgs.callPackage ./rustfs.nix { };
     niks3 = pkgs.callPackage ./niks3.nix { };
     niks3-server = pkgs.callPackage ./niks3-server.nix { };
     niks3-hook = pkgs.callPackage ./niks3-hook.nix { };
