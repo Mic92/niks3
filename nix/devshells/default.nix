@@ -17,7 +17,7 @@
       pkgs.postgresql_16
       pkgs.s5cmd
       pkgs.awscli
-      selfPackages.rustfs
+      pkgs.rustfs
     ];
 
     inputsFrom = [
