@@ -45,10 +45,19 @@ let
             fi
           '';
         }))
-        (import ./niks3.nix {
-          pkgs = crossPkgs;
-          inherit lib;
-        })
+        # Build the CLI with the native (cached) Go toolchain
+        ((import ./niks3.nix { inherit pkgs lib; }).overrideAttrs (old: {
+          env = (old.env or { }) // {
+            inherit GOOS GOARCH;
+            CGO_ENABLED = 0;
+          };
+          postInstall = (old.postInstall or "") + ''
+            if [ -d $out/bin/${GOOS}_${GOARCH} ]; then
+              mv $out/bin/${GOOS}_${GOARCH}/* $out/bin/
+              rmdir $out/bin/${GOOS}_${GOARCH}
+            fi
+          '';
+        }))
       ]
       ++ (with crossPkgs.pkgsStatic; [
         busybox
