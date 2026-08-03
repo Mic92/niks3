@@ -58,7 +58,6 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 - **NAR files** (`nar/`): Compressed with zstd, stored in S3
 - **Narinfo files** (`.narinfo`): Metadata with cryptographic signatures
   - StorePath, URL, Compression, NarHash, NarSize
-  - FileHash, FileSize (for compressed NAR)
   - References, Deriver
   - Signatures (Sig fields)
   - CA field for content-addressed derivations
