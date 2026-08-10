@@ -48,6 +48,11 @@ For private S3 buckets, niks3 can proxy read requests
 from Nix clients to S3 using its own credentials. Enable with `--enable-read-proxy`.
 See the [Private S3 Buckets](https://github.com/Mic92/niks3/wiki/Private-S3-Buckets) wiki page.
 
+With `--read-redirect-ttl 15m` NAR requests are answered with a 307 to a
+presigned S3 URL instead of being streamed, so NAR bytes bypass niks3. Narinfos
+and other metadata stay proxied. Note that anyone holding such a URL can fetch
+that object until it expires, regardless of read-proxy authentication.
+
 ## Features
 
 ### Binary Cache Protocol Support

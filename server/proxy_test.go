@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -396,6 +397,95 @@ func TestReadProxyDisabled(t *testing.T) {
 	defer ts.Close()
 
 	proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusNotFound)
+}
+
+func TestReadRedirectNar(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	service.ReadRedirectTTL = time.Minute
+
+	defer service.Close()
+
+	ctx := t.Context()
+
+	narContent := bytes.Repeat([]byte("x"), 1024*64)
+	key := "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst"
+	putTestObject(ctx, t, service, key, narContent,
+		minio.PutObjectOptions{ContentType: "application/x-nix-nar"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	noFollow := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req, err := http.NewRequestWithContext(ctx, method, ts.URL+"/"+key, nil)
+		ok(t, err)
+
+		resp, err := noFollow.Do(req)
+		ok(t, err)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusTemporaryRedirect {
+			t.Fatalf("%s: status = %d, want 307", method, resp.StatusCode)
+		}
+
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", method, got)
+		}
+
+		location, err := url.Parse(resp.Header.Get("Location"))
+		ok(t, err)
+
+		if location.Query().Get("X-Amz-Signature") == "" {
+			t.Errorf("%s: Location is not presigned: %s", method, location)
+		}
+
+		if location.Host == req.Host {
+			t.Errorf("%s: Location points back at the proxy: %s", method, location)
+		}
+	}
+
+	// Following the redirect proves S3 accepts the signature.
+	_, body := proxyGet(t, ts, "/"+key, http.StatusOK)
+
+	if !bytes.Equal(body, narContent) {
+		t.Errorf("body mismatch: got %d bytes, want %d", len(body), len(narContent))
+	}
+}
+
+// Narinfos are stored zstd-compressed and must still be decompressed by the proxy.
+func TestReadRedirectKeepsNarinfoProxied(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	service.ReadRedirectTTL = time.Minute
+
+	defer service.Close()
+
+	ctx := t.Context()
+
+	plainNarinfo := []byte("StorePath: /nix/store/abc123-hello\nURL: nar/abc.nar.zst\n")
+	putTestObject(ctx, t, service, "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", zstdCompress(t, plainNarinfo),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	header, body := proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusOK)
+
+	if !bytes.Equal(body, plainNarinfo) {
+		t.Errorf("body mismatch: got %q, want %q", body, plainNarinfo)
+	}
+
+	if got := header.Get("Cache-Control"); got == "no-store" {
+		t.Error("narinfo was redirected, want proxied")
+	}
 }
 
 // TestReadProxyRangeRequest ensures the proxy honors Range headers so an

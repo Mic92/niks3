@@ -240,6 +240,14 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only NARs redirect: narinfos need decompressing here and the rest is
+	// too small to be worth an extra round trip.
+	if s.ReadRedirectTTL > 0 && narRe.MatchString(key) {
+		s.redirectToS3(w, r, key)
+
+		return
+	}
+
 	// Wait for rate limiter
 	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -254,6 +262,24 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.handleProxyGet(w, r, key)
+}
+
+// redirectToS3 sends the client to a presigned URL for key. Presigning is
+// local; a missing object 404s from S3 rather than from here.
+func (s *Service) redirectToS3(w http.ResponseWriter, r *http.Request, key string) {
+	presigned, err := s.MinioClient.PresignedGetObject(r.Context(), s.Bucket, key, s.ReadRedirectTTL, nil)
+	if err != nil {
+		slog.Error("Failed to presign S3 object", "key", key, "error", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store") // URL expires
+
+	// 307 keeps the method, so HEAD stays HEAD.
+	//nolint:gosec // G710: host comes from config, key is already narrowed to narRe
+	http.Redirect(w, r, presigned.String(), http.StatusTemporaryRedirect)
 }
 
 func (s *Service) handleProxyHead(w http.ResponseWriter, r *http.Request, key string) {
