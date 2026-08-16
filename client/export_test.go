@@ -21,6 +21,9 @@ var PartSizeForNAR = partSizeForNAR //nolint:gochecknoglobals // test-only re-ex
 // FilterOversizedClosures re-exports filterOversizedClosures for the external test package.
 var FilterOversizedClosures = filterOversizedClosures //nolint:gochecknoglobals // test-only re-export
 
+// FilterUpstreamClosure re-exports filterUpstreamClosure for the external test package.
+var FilterUpstreamClosure = filterUpstreamClosure //nolint:gochecknoglobals // test-only re-export
+
 // MultipartPartSize re-exports the default part size for tests.
 const MultipartPartSize = multipartPartSize
 

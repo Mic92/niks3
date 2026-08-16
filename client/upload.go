@@ -313,6 +313,108 @@ type skippedUploads struct {
 	NarBytes uint64
 }
 
+// upstreamFilterStats counts paths omitted because a signed upstream path
+// makes that path and its dependency subtree available elsewhere.
+type upstreamFilterStats struct {
+	Paths    uint64
+	NarBytes uint64
+}
+
+func signedByUpstream(pathInfo *PathInfo, keyNames map[string]struct{}) bool {
+	for _, signature := range pathInfo.Signatures {
+		name, _, ok := strings.Cut(signature, ":")
+		if !ok {
+			continue
+		}
+
+		if _, ok := keyNames[name]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// filterUpstreamClosure removes paths signed by a configured upstream cache.
+// A matching path is a traversal boundary: its dependencies are expected to be
+// available from the same upstream and must not become unreachable objects in
+// niks3's local GC graph.
+func filterUpstreamClosure(
+	topLevelPaths []string,
+	pathInfos map[string]*PathInfo,
+	upstreamCacheKeyNames []string,
+) ([]string, map[string]*PathInfo, upstreamFilterStats) {
+	if len(upstreamCacheKeyNames) == 0 || len(pathInfos) == 0 {
+		return topLevelPaths, pathInfos, upstreamFilterStats{}
+	}
+
+	keyNames := make(map[string]struct{}, len(upstreamCacheKeyNames))
+
+	for _, name := range upstreamCacheKeyNames {
+		keyNames[name] = struct{}{}
+	}
+
+	upstreamPaths := make(map[string]bool)
+
+	for path, pathInfo := range pathInfos {
+		if signedByUpstream(pathInfo, keyNames) {
+			upstreamPaths[path] = true
+		}
+	}
+
+	if len(upstreamPaths) == 0 {
+		return topLevelPaths, pathInfos, upstreamFilterStats{}
+	}
+
+	keptRoots := make([]string, 0, len(topLevelPaths))
+	for _, path := range topLevelPaths {
+		if !upstreamPaths[path] {
+			keptRoots = append(keptRoots, path)
+		}
+	}
+
+	reachable := make(map[string]bool)
+
+	var visit func(string)
+
+	visit = func(path string) {
+		if reachable[path] || upstreamPaths[path] {
+			return
+		}
+
+		pathInfo, ok := pathInfos[path]
+		if !ok {
+			return
+		}
+
+		reachable[path] = true
+
+		for _, ref := range pathInfo.References {
+			visit(ref)
+		}
+	}
+
+	for _, path := range keptRoots {
+		visit(path)
+	}
+
+	prunedInfos := make(map[string]*PathInfo, len(reachable))
+	for path := range reachable {
+		prunedInfos[path] = pathInfos[path]
+	}
+
+	var filtered upstreamFilterStats
+
+	for path, pathInfo := range pathInfos {
+		if !reachable[path] {
+			filtered.Paths++
+			filtered.NarBytes += pathInfo.NarSize
+		}
+	}
+
+	return keptRoots, prunedInfos, filtered
+}
+
 // filterOversizedClosures drops top-level paths whose closure contains a path
 // with NarSize larger than maxNarSize. A limit of 0 disables filtering. It returns the kept
 // top-level paths, pathInfos pruned to paths still reachable from them, and
@@ -526,11 +628,29 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
 	// Collect all closure paths to return to the caller. This includes paths
-	// from closures skipped by the size filter below, so callers (e.g. the
-	// hook queue) treat them as handled instead of retrying forever.
+	// omitted by the filters below, so callers (e.g. the hook queue) treat them
+	// as handled instead of retrying forever.
 	closurePaths := make([]string, 0, len(pathInfos))
 	for storePath := range pathInfos {
 		closurePaths = append(closurePaths, storePath)
+	}
+
+	var upstreamFiltered upstreamFilterStats
+
+	if len(c.UpstreamCacheKeyNames) > 0 {
+		resolvedPaths, pathInfos, upstreamFiltered = filterUpstreamClosure(
+			resolvedPaths,
+			pathInfos,
+			c.UpstreamCacheKeyNames,
+		)
+	}
+
+	if len(resolvedPaths) == 0 {
+		slog.Info("All paths available from configured upstream caches, nothing to upload",
+			"paths", upstreamFiltered.Paths,
+			"nar_bytes", upstreamFiltered.NarBytes)
+
+		return closurePaths, nil
 	}
 
 	// Skip closures containing paths larger than the server's max NAR size.
@@ -586,7 +706,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	cachedPaths := len(pathInfos) - newPaths
 
-	slog.Info(fmt.Sprintf("Uploading %d paths to %s (%d already cached)", newPaths, c.baseURL.Hostname(), cachedPaths))
+	slog.Info(fmt.Sprintf("Uploading %d paths to %s (%d already cached, %d in upstream)",
+		newPaths, c.baseURL.Hostname(), cachedPaths, upstreamFiltered.Paths))
 	slog.Debug("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
 
 	// Upload all pending objects and collect narinfo metadata

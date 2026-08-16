@@ -67,6 +67,8 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Concurrent upload limit (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify S3 objects before skipping")
+	fmt.Fprintln(os.Stderr, "  --upstream-cache-key-name string")
+	fmt.Fprintln(os.Stderr, "        Upstream cache signing key name; repeat to specify multiple names")
 	fmt.Fprintln(os.Stderr, cmdutil.TLSHelp)
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging")
@@ -143,6 +145,7 @@ func runServe() error {
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
 	maxConcurrent := fs.Int("max-concurrent-uploads", 30, "Concurrent upload limit")
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+	upstreamCacheKeyNames := cmdutil.AddUpstreamCacheKeyNameFlag(fs)
 	tf := cmdutil.AddTLSFlags(fs)
 
 	ts, err := cmdutil.ParseCommand(fs, cf, tf, os.Args[2:], printServeHelp)
@@ -187,6 +190,7 @@ func runServe() error {
 
 	c.MaxConcurrentNARUploads = *maxConcurrent
 	c.VerifyS3Integrity = *verifyS3
+	c.UpstreamCacheKeyNames = *upstreamCacheKeyNames
 
 	// Notification channels: the server notifies both the worker and the
 	// idle timer when new paths are queued. Separate channels avoid the

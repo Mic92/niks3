@@ -70,6 +70,19 @@ in
       description = "Verify that objects in database actually exist in S3 before skipping upload.";
     };
 
+    upstreamCacheKeyNames = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Signing key names for upstream caches. Paths signed by one of these
+        keys, including their dependency subtrees, are not uploaded.
+      '';
+      example = [
+        "cache.nixos.org-1"
+        "example.org-1"
+      ];
+    };
+
     debug = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -153,6 +166,10 @@ in
               "--db-path"
               "/var/lib/niks3-hook/upload-queue.db"
             ]
+            ++ lib.concatMap (keyName: [
+              "--upstream-cache-key-name"
+              (lib.escapeShellArg keyName)
+            ]) cfg.upstreamCacheKeyNames
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
             ++ lib.optionals cfg.mtls.enable [

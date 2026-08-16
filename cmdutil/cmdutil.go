@@ -10,9 +10,33 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Mic92/niks3/client"
 )
+
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+
+	return nil
+}
+
+// AddUpstreamCacheKeyNameFlag registers the repeatable upstream cache filter
+// shared by interactive pushes and the upload daemon.
+func AddUpstreamCacheKeyNameFlag(fs *flag.FlagSet) *[]string {
+	var keyNames []string
+
+	fs.Var((*stringSliceFlag)(&keyNames), "upstream-cache-key-name",
+		"Upstream cache signing key name; repeat to specify multiple names")
+
+	return &keyNames
+}
 
 // SetupLogger configures the global slog logger with the specified level.
 func SetupLogger(debug bool) {

@@ -47,6 +47,8 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --upstream-cache-key-name string")
+	fmt.Fprintln(os.Stderr, "        Upstream cache signing key name; repeat to specify multiple names")
 	fmt.Fprintln(os.Stderr, cmdutil.TLSHelp)
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
@@ -96,6 +98,7 @@ func run() error {
 		cf := cmdutil.AddCommonFlags(pushCmd)
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+		upstreamCacheKeyNames := cmdutil.AddUpstreamCacheKeyNameFlag(pushCmd)
 		pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
@@ -113,7 +116,12 @@ func run() error {
 			return errors.New("--pin requires exactly one store path")
 		}
 
-		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *cf.Debug, tf)
+		if *pinName != "" && len(*upstreamCacheKeyNames) > 0 {
+			return errors.New("--pin combined with --upstream-cache-key-name is not supported")
+		}
+
+		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity,
+			*upstreamCacheKeyNames, *pinName, *cf.Debug, tf)
 
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
@@ -176,7 +184,7 @@ func run() error {
 	}
 }
 
-func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, verifyS3Integrity bool, pinName string, debug bool, tf cmdutil.TLSFlags) error {
+func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, verifyS3Integrity bool, upstreamCacheKeyNames []string, pinName string, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -191,6 +199,7 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
+	c.UpstreamCacheKeyNames = upstreamCacheKeyNames
 
 	if _, err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
