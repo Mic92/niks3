@@ -48,6 +48,10 @@ type options struct {
 	OIDCConfigPath  string
 	EnableReadProxy bool
 
+	// ReadRedirectTTL > 0 redirects NAR reads to presigned S3 URLs with this
+	// lifetime instead of streaming them. Requires EnableReadProxy.
+	ReadRedirectTTL time.Duration
+
 	// MaxNarSize is the maximum uncompressed NAR size in bytes accepted for
 	// upload. 0 means unlimited.
 	MaxNarSize uint64
@@ -103,6 +107,9 @@ type Service struct {
 	MTLSSubjectHeader     string
 	MTLSBoundSubjects     []string
 	MTLSBoundSubjectsRead []string
+
+	// See options.ReadRedirectTTL.
+	ReadRedirectTTL time.Duration
 
 	// MaxNarSize is advertised via /api/cache-config and enforced on
 	// pending-closure creation. 0 means unlimited.
@@ -313,10 +320,15 @@ func runServer(opts *options) error {
 
 	if opts.EnableReadProxy {
 		service.EnableReadProxy = true
+		service.ReadRedirectTTL = opts.ReadRedirectTTL
 		// Register without method prefix to avoid ServeMux conflicts with
 		// auto-generated HEAD routes. The handler rejects non-GET/HEAD itself.
 		mux.HandleFunc("/{path...}", service.ReadAuthMiddleware(service.ReadProxyHandler))
 		slog.Info("Read proxy enabled — serving cache objects from S3")
+
+		if opts.ReadRedirectTTL > 0 {
+			slog.Info("NAR reads redirect to presigned S3 URLs", "ttl", opts.ReadRedirectTTL)
+		}
 	} else {
 		mux.HandleFunc("GET /", service.RootRedirectHandler)
 	}

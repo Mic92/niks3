@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	minio "github.com/minio/minio-go/v7"
 )
@@ -57,6 +58,16 @@ func getEnvOrDefaultFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
+func getEnvOrDefaultDuration(key string, defaultValue time.Duration) time.Duration {
+	if value, ok := os.LookupEnv(key); ok {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+
+	return defaultValue
+}
+
 func readSecretFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -73,6 +84,9 @@ func readSecretFile(path string) (string, error) {
 const (
 	minAPITokenLength    = 36
 	defaultS3Concurrency = 100
+
+	// maxReadRedirectTTL is the longest lifetime SigV4 allows a presigned URL.
+	maxReadRedirectTTL = 7 * 24 * time.Hour
 )
 
 // stringSliceFlag implements flag.Value for repeatable string flags.
@@ -84,6 +98,22 @@ func (s *stringSliceFlag) String() string {
 
 func (s *stringSliceFlag) Set(value string) error {
 	*s = append(*s, value)
+
+	return nil
+}
+
+func validateReadRedirect(opts *options) error {
+	if opts.ReadRedirectTTL == 0 {
+		return nil
+	}
+
+	if !opts.EnableReadProxy {
+		return errors.New("--read-redirect-ttl requires --enable-read-proxy")
+	}
+
+	if opts.ReadRedirectTTL < time.Second || opts.ReadRedirectTTL > maxReadRedirectTTL {
+		return fmt.Errorf("--read-redirect-ttl must be between 1s and %s", maxReadRedirectTTL)
+	}
 
 	return nil
 }
@@ -147,6 +177,10 @@ func parseArgs() (*options, error) {
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
+	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
+		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
+		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
+			"streaming them; requires --enable-read-proxy. 0 disables")
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 
@@ -230,6 +264,10 @@ func parseArgs() (*options, error) {
 	// API token is always required (for GC and admin operations)
 	if opts.APIToken == "" {
 		return nil, errors.New("missing required flag: --api-token or --api-token-path")
+	}
+
+	if err := validateReadRedirect(&opts); err != nil {
+		return nil, err
 	}
 
 	if (opts.TLSCert == "") != (opts.TLSKey == "") {

@@ -133,6 +133,10 @@ let
     ]) cfg.nginx.mtls.boundSubjectsRead
   )
   ++ lib.optional cfg.readProxy.enable "--enable-read-proxy"
+  ++ lib.optionals (cfg.readProxy.redirectTTL != null) [
+    "--read-redirect-ttl"
+    cfg.readProxy.redirectTTL
+  ]
   ++ lib.optionals (cfg.cacheUrl != null) [
     "--cache-url"
     cfg.cacheUrl
@@ -376,6 +380,17 @@ in
 
     readProxy = {
       enable = lib.mkEnableOption "built-in read proxy for serving the cache from a private S3 bucket";
+
+      redirectTTL = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "15m";
+        description = ''
+          Redirect NAR reads to presigned S3 URLs valid for this long instead
+          of streaming them through niks3. Anyone holding such a URL can fetch
+          the object until it expires.
+        '';
+      };
     };
 
     nginx = {
