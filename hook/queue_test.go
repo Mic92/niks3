@@ -3,6 +3,7 @@ package hook_test
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -127,6 +128,30 @@ func TestQueueFetchBatchLimit(t *testing.T) {
 
 	if len(fetched) != 2 {
 		t.Errorf("expected 2, got %d", len(fetched))
+	}
+}
+
+func TestQueueRetryMovesToBack(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	if err := q.Enqueue([]string{"/nix/store/aaa", "/nix/store/bbb", "/nix/store/ccc"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Retry([]string{"/nix/store/aaa"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fetched, err := q.FetchBatch(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/nix/store/bbb", "/nix/store/ccc", "/nix/store/aaa"}
+	if !slices.Equal(fetched, want) {
+		t.Errorf("got %v, want %v", fetched, want)
 	}
 }
 

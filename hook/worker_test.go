@@ -2,9 +2,12 @@ package hook_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,16 +54,15 @@ func recordingPush() (hook.PushFunc, func() [][]string) {
 	return push, batches
 }
 
-// runWorkerUntilDrained runs a worker for the queue until it is empty (or the
-// test times out), then shuts the worker down.
-func runWorkerUntilDrained(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) {
+// startWorker runs a worker in the background and returns a stop function
+// that cancels it and waits for the shutdown drain to finish.
+func startWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) func() {
 	t.Helper()
 
 	notify := make(chan struct{}, 1)
 	w := hook.NewWorker(q, push, batchSize, notify)
 
 	ctx, cancel := context.WithCancel(context.Background())
-
 	done := make(chan struct{})
 
 	go func() {
@@ -71,25 +73,207 @@ func runWorkerUntilDrained(t *testing.T, q *hook.Queue, push hook.PushFunc, batc
 
 	notify <- struct{}{}
 
+	return func() {
+		t.Helper()
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for worker to stop")
+		}
+	}
+}
+
+// waitForCount blocks until the queue holds exactly n paths.
+func waitForCount(t *testing.T, q *hook.Queue, n int) {
+	t.Helper()
+
 	deadline := time.After(5 * time.Second)
 
 	for {
+		if count, _ := q.Count(); count == n {
+			return
+		}
+
 		select {
 		case <-deadline:
-			t.Fatal("timeout waiting for queue drain")
-		default:
+			count, _ := q.Count()
+			t.Fatalf("timeout waiting for queue count %d, have %d", n, count)
+		case <-time.After(20 * time.Millisecond):
 		}
+	}
+}
 
-		count, _ := q.Count()
-		if count == 0 {
-			break
-		}
+// runWorkerUntilDrained runs a worker until the queue is empty, then stops it.
+func runWorkerUntilDrained(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) {
+	t.Helper()
 
-		time.Sleep(50 * time.Millisecond)
+	stop := startWorker(t, q, push, batchSize)
+	waitForCount(t, q, 0)
+	stop()
+}
+
+// drainWorker runs only the shutdown drain by starting a worker with an
+// already-cancelled context.
+func drainWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) {
+	t.Helper()
+
+	w := hook.NewWorker(q, push, batchSize, make(chan struct{}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		w.Run(ctx)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for drain to finish")
+	}
+}
+
+func remaining(t *testing.T, q *hook.Queue) []string {
+	t.Helper()
+
+	paths, err := q.FetchBatch(1000)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	cancel()
-	<-done
+	return paths
+}
+
+func enqueueFiles(t *testing.T, q *hook.Queue, names ...string) []string {
+	t.Helper()
+
+	dir := t.TempDir()
+	paths := make([]string, len(names))
+
+	for i, n := range names {
+		paths[i] = writeTestFile(t, dir, n)
+	}
+
+	if err := q.Enqueue(paths); err != nil {
+		t.Fatal(err)
+	}
+
+	return paths
+}
+
+var errUpload = errors.New("upload failed")
+
+// poisonPush fails any push containing poison and uploads everything else.
+func poisonPush(poison string, calls *atomic.Int32) hook.PushFunc {
+	return func(_ context.Context, paths []string) ([]string, error) {
+		calls.Add(1)
+
+		if slices.Contains(paths, poison) {
+			return nil, errUpload
+		}
+
+		return paths, nil
+	}
+}
+
+// A single unuploadable path in a batch must cost only itself on the final
+// drain; on an ephemeral CI runner the rest of the queue is otherwise lost.
+func TestDrainIsolatesPoisonPath(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "aaa", "bbb", "ccc", "ddd")
+	poison := paths[1]
+
+	var calls atomic.Int32
+
+	drainWorker(t, q, poisonPush(poison, &calls), 10)
+
+	if left := remaining(t, q); len(left) != 1 || left[0] != poison {
+		t.Errorf("expected only %s left, got %v", poison, left)
+	}
+}
+
+// During normal operation a permanently failing path at the head of the queue
+// must not block paths behind it until the next restart.
+func TestRunNotBlockedByPoisonHead(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "aaa", "bbb", "ccc")
+	poison := paths[0]
+
+	var calls atomic.Int32
+
+	stop := startWorker(t, q, poisonPush(poison, &calls), 1)
+	waitForCount(t, q, 1)
+	stop()
+
+	if left := remaining(t, q); len(left) != 1 || left[0] != poison {
+		t.Errorf("expected only %s left, got %v", poison, left)
+	}
+}
+
+// When nothing at all goes through, drain must terminate on its own, keep
+// every path for a later start and not retry each path individually forever.
+func TestDrainGivesUpWhenServerDown(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+
+	var calls atomic.Int32
+
+	push := func(_ context.Context, _ []string) ([]string, error) {
+		calls.Add(1)
+
+		return nil, errUpload
+	}
+
+	drainWorker(t, q, push, 2)
+
+	if left := remaining(t, q); len(left) != len(paths) {
+		t.Errorf("expected all %d paths kept, got %d", len(paths), len(left))
+	}
+
+	// 3 stalled batches × (1 batch push + 2 single-path retries), then stop.
+	if n := calls.Load(); n != 9 {
+		t.Errorf("expected drain to back off from a dead server, got %d push calls", n)
+	}
+}
+
+// A path that failed on its own can still go up later as part of a parent's
+// closure and must be removed from the queue then.
+func TestFailedPathPrunedByLaterClosure(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "dep", "top", "last")
+	dep, top := paths[0], paths[1]
+
+	push := func(_ context.Context, batch []string) ([]string, error) {
+		if slices.Contains(batch, top) {
+			return []string{dep, top}, nil
+		}
+
+		if slices.Contains(batch, dep) {
+			return nil, errUpload
+		}
+
+		return batch, nil
+	}
+
+	drainWorker(t, q, push, 1)
+
+	if left := remaining(t, q); len(left) != 0 {
+		t.Errorf("expected empty queue, got %v", left)
+	}
 }
 
 func TestWorkerUploadsAndRemoves(t *testing.T) {
