@@ -20,30 +20,46 @@ func (s *Service) readGated() bool {
 	return len(s.MTLSBoundSubjectsRead) > 0 || (s.OIDCValidator != nil && s.OIDCValidator.GrantsScope(oidc.ScopeRead))
 }
 
-// requestScopes authenticates r and returns the granted scopes. ok is false
-// when no valid credentials were presented at all.
-func (s *Service) requestScopes(r *http.Request) (scopes []oidc.Scope, ok bool) {
-	if s.mtlsCheck(r, s.MTLSBoundSubjects) {
-		return allScopes, true
+// certScopes trusts any verified cert fully when no subject lists are set.
+// Otherwise a cert gets only what its subject matches.
+func (s *Service) certScopes(r *http.Request) []oidc.Scope {
+	subject, ok := s.mtlsSubject(r)
+	if !ok {
+		return nil
 	}
 
-	if len(s.MTLSBoundSubjectsRead) > 0 && s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
-		return []oidc.Scope{oidc.ScopeRead}, true
+	if len(s.MTLSBoundSubjects) == 0 && len(s.MTLSBoundSubjectsRead) == 0 {
+		return allScopes
 	}
 
+	if subjectMatches(subject, s.MTLSBoundSubjects) {
+		return allScopes
+	}
+
+	if subjectMatches(subject, s.MTLSBoundSubjectsRead) {
+		return []oidc.Scope{oidc.ScopeRead}
+	}
+
+	slog.Warn("mTLS auth: subject not in bound subjects", "subject", subject)
+
+	return nil
+}
+
+// bearerScopes returns what the Authorization header grants.
+func (s *Service) bearerScopes(r *http.Request) []oidc.Scope {
 	token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !found || token == "" {
-		return nil, false
+		return nil
 	}
 
 	if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
-		return allScopes, true
+		return allScopes
 	}
 
 	if s.OIDCValidator == nil {
 		s.logAuthFailure(token, nil)
 
-		return nil, false
+		return nil
 	}
 
 	claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
@@ -53,19 +69,21 @@ func (s *Service) requestScopes(r *http.Request) (scopes []oidc.Scope, ok bool) 
 		errors.As(err, &vErr)
 		s.logAuthFailure(token, vErr)
 
-		return nil, false
+		return nil
 	}
 
 	slog.Info("OIDC auth successful", "provider", claims.Provider, "scopes", claims.Scopes)
 	slog.Debug("OIDC auth details", "subject", claims.Subject)
 
-	scopes = claims.Scopes
 	// Anyone who may upload or administer may also read.
-	if !claims.Has(oidc.ScopeRead) {
-		scopes = append(slices.Clone(scopes), oidc.ScopeRead)
-	}
+	return append(slices.Clone(claims.Scopes), oidc.ScopeRead)
+}
 
-	return scopes, true
+// requestScopes unions all presented credentials. ok is false if none were valid.
+func (s *Service) requestScopes(r *http.Request) ([]oidc.Scope, bool) {
+	scopes := append(s.certScopes(r), s.bearerScopes(r)...)
+
+	return scopes, len(scopes) > 0
 }
 
 // RequireScope wraps next so it only runs for principals holding scope.

@@ -71,7 +71,8 @@ type options struct {
 	MTLSSubjectHeader string
 
 	// MTLSBoundSubjects restricts mTLS auth to certs whose subject DN
-	// matches one of these glob patterns. Empty = any verified cert.
+	// matches one of these glob patterns. If this and MTLSBoundSubjectsRead
+	// are both empty, any verified cert is fully trusted.
 	MTLSBoundSubjects []string
 
 	// MTLSBoundSubjectsRead, when non-empty, gates the read proxy behind

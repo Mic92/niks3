@@ -436,3 +436,50 @@ func TestService_ReadScope_PublicByDefault(t *testing.T) {
 		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 	})
 }
+
+// With only a read subject list configured, a cert outside it must not get
+// write, and a reader cert must not mask a valid bearer token.
+func TestService_MTLSReadListDoesNotGrantWrite(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+	service.Pool.Close()
+
+	service.APIToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	service.MTLSProxyHeader = "X-SSL-Client-Verify"
+	service.MTLSSubjectHeader = "X-SSL-Client-Dn"
+	service.MTLSBoundSubjectsRead = []string{"CN=reader"}
+
+	expect := func(code int) *func(*testing.T, *httptest.ResponseRecorder) {
+		f := func(t *testing.T, w *httptest.ResponseRecorder) {
+			t.Helper()
+
+			if w.Code != code {
+				t.Errorf("status = %d, want %d", w.Code, code)
+			}
+		}
+
+		return &f
+	}
+
+	write := service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler)
+
+	testRequest(t, &TestRequest{
+		method: http.MethodGet, path: "/health", handler: write, checkResponse: expect(http.StatusUnauthorized),
+		header: map[string]string{"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-Dn": "CN=guest"},
+	})
+
+	testRequest(t, &TestRequest{
+		method: http.MethodGet, path: "/health", handler: write, checkResponse: expect(http.StatusForbidden),
+		header: map[string]string{"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-Dn": "CN=reader"},
+	})
+
+	testRequest(t, &TestRequest{
+		method: http.MethodGet, path: "/health", handler: write, checkResponse: expect(http.StatusOK),
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-Dn": "CN=reader",
+			"Authorization": "Bearer " + service.APIToken,
+		},
+	})
+}

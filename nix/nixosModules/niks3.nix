@@ -532,8 +532,8 @@ in
           example = [ "CN=ci-runner,*" ];
           description = ''
             Restrict mTLS write auth to certs whose subject DN matches one
-            of these glob patterns (`*` and `?` supported). Empty = any
-            verified cert.
+            of these glob patterns (`*` and `?` supported). If both this and
+            `boundSubjectsRead` are empty, any verified cert may write.
           '';
         };
 

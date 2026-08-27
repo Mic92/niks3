@@ -44,35 +44,18 @@ func serverTLSConfig(clientCA string) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// mtlsCheck verifies the client cert (native or proxied) and, if
-// boundSubjects is non-empty, matches the subject DN against them.
-func (s *Service) mtlsCheck(r *http.Request, boundSubjects []string) bool {
-	subject, ok := s.mtlsSubject(r)
-	if !ok {
-		return false
-	}
-
-	if len(boundSubjects) == 0 {
-		slog.Debug("mTLS auth: any verified cert accepted")
-
-		return true
-	}
-
-	if subject == "" {
+func subjectMatches(subject string, patterns []string) bool {
+	if subject == "" && len(patterns) > 0 {
 		slog.Warn("mTLS auth: bound subjects configured but subject DN unavailable")
 
 		return false
 	}
 
-	for _, pattern := range boundSubjects {
+	for _, pattern := range patterns {
 		if oidc.GlobMatch(pattern, subject) {
-			slog.Debug("mTLS auth: subject matched", "subject", subject, "pattern", pattern)
-
 			return true
 		}
 	}
-
-	slog.Warn("mTLS auth: subject not in bound subjects", "subject", subject)
 
 	return false
 }
