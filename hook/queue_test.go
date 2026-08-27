@@ -236,3 +236,28 @@ func TestQueueConcurrentWriters(t *testing.T) {
 		t.Errorf("expected %d, got %d", writers*perWriter, count)
 	}
 }
+
+// PushPaths returns whole closures, which can exceed SQLite's bound
+// parameter limit (32766) if deleted in a single statement.
+func TestQueueRemoveLargeClosure(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	paths := make([]string, 40000)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/nix/store/%05d", i)
+	}
+
+	if err := q.Enqueue(paths[:10]); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Remove(paths); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if count, _ := q.Count(); count != 0 {
+		t.Errorf("expected empty queue, got %d", count)
+	}
+}
