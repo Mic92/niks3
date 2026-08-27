@@ -37,42 +37,11 @@ func serverTLSConfig(clientCA string) (*tls.Config, error) {
 
 	cfg.ClientCAs = pool
 	// VerifyClientCertIfGiven: anonymous TLS is allowed so bearer-token
-	// auth and public reads still work; AuthMiddleware/ReadAuthMiddleware
-	// decide what an unauthenticated request may do.
+	// auth and public reads still work. RequireScope
+	// decides what an unauthenticated request may do.
 	cfg.ClientAuth = tls.VerifyClientCertIfGiven
 
 	return cfg, nil
-}
-
-// ReadAuthMiddleware gates the read proxy behind mTLS when
-// MTLSBoundSubjectsRead is non-empty. Reads are otherwise public: Nix
-// substituters present no credentials and the cache contents are
-// integrity-signed.
-func (s *Service) ReadAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Checked per-request, not at registration: the bound subject list
-		// may not be set yet when the mux is built (e.g. in tests).
-		if len(s.MTLSBoundSubjectsRead) == 0 {
-			next.ServeHTTP(w, r)
-
-			return
-		}
-
-		if !s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	}
-}
-
-// mtlsAuthenticated reports whether the request carries proxy headers
-// proving a verified mTLS client cert that is allowed by MTLSBoundSubjects.
-// Used for the write API.
-func (s *Service) mtlsAuthenticated(r *http.Request) bool {
-	return s.mtlsCheck(r, s.MTLSBoundSubjects)
 }
 
 // mtlsCheck verifies the client cert (native or proxied) and, if

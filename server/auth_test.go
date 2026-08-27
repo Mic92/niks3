@@ -24,7 +24,7 @@ func TestService_AuthMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		header: map[string]string{
 			"Authorization": "Bearer " + service.APIToken,
 		},
@@ -41,7 +41,7 @@ func TestService_AuthMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 		header: map[string]string{
 			"Authorization": "Bearer wrongtoken",
@@ -63,7 +63,7 @@ func TestService_AuthMiddleware_MTLSProxyHeader(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 		},
@@ -82,7 +82,7 @@ func TestService_AuthMiddleware_MTLSProxyHeader(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 		header: map[string]string{
 			"X-SSL-Client-Verify": "NONE",
@@ -93,7 +93,7 @@ func TestService_AuthMiddleware_MTLSProxyHeader(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 	})
 
@@ -102,7 +102,7 @@ func TestService_AuthMiddleware_MTLSProxyHeader(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
@@ -134,7 +134,7 @@ func TestService_AuthMiddleware_MTLSBoundSubjects(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 			"X-SSL-Client-Dn":     "CN=ci-runner,O=Acme",
@@ -145,7 +145,7 @@ func TestService_AuthMiddleware_MTLSBoundSubjects(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 			"X-SSL-Client-Dn":     "CN=admin",
@@ -156,7 +156,7 @@ func TestService_AuthMiddleware_MTLSBoundSubjects(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
@@ -168,7 +168,7 @@ func TestService_AuthMiddleware_MTLSBoundSubjects(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.AuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
@@ -179,7 +179,7 @@ func TestService_AuthMiddleware_MTLSBoundSubjects(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.AuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 			"X-SSL-Client-Dn":     "CN=untrusted",
@@ -210,7 +210,7 @@ func TestService_ReadAuthMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.ReadAuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 	})
 
 	// Read bound subjects set → unauthenticated read rejected.
@@ -218,7 +218,7 @@ func TestService_ReadAuthMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:        "GET",
 		path:          "/health",
-		handler:       service.ReadAuthMiddleware(service.HealthCheckHandler),
+		handler:       service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 		checkResponse: &checkUnauthorized,
 	})
 
@@ -226,20 +226,19 @@ func TestService_ReadAuthMiddleware(t *testing.T) {
 	testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/health",
-		handler: service.ReadAuthMiddleware(service.HealthCheckHandler),
+		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 			"X-SSL-Client-Dn":     "CN=reader-1",
 		},
 	})
 
-	// Subject allowed for write but not read.
+	// Write subjects may read too.
 	service.MTLSBoundSubjects = []string{"CN=writer"}
 	testRequest(t, &TestRequest{
-		method:        "GET",
-		path:          "/health",
-		handler:       service.ReadAuthMiddleware(service.HealthCheckHandler),
-		checkResponse: &checkUnauthorized,
+		method:  "GET",
+		path:    "/health",
+		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 		header: map[string]string{
 			"X-SSL-Client-Verify": "SUCCESS",
 			"X-SSL-Client-Dn":     "CN=writer",
@@ -293,7 +292,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		testRequest(t, &TestRequest{
 			method:  "GET",
 			path:    "/health",
-			handler: service.AuthMiddleware(service.HealthCheckHandler),
+			handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 			header: map[string]string{
 				"Authorization": "Bearer " + token,
 			},
@@ -311,7 +310,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		testRequest(t, &TestRequest{
 			method:        "GET",
 			path:          "/health",
-			handler:       service.AuthMiddleware(service.HealthCheckHandler),
+			handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 			checkResponse: &checkUnauthorized,
 			header: map[string]string{
 				"Authorization": "Bearer " + token,
@@ -325,7 +324,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		testRequest(t, &TestRequest{
 			method:        "GET",
 			path:          "/health",
-			handler:       service.AuthMiddleware(service.HealthCheckHandler),
+			handler:       service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 			checkResponse: &checkUnauthorized,
 			header: map[string]string{
 				"Authorization": "Bearer not-a-valid-jwt",
@@ -339,10 +338,101 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		testRequest(t, &TestRequest{
 			method:  "GET",
 			path:    "/health",
-			handler: service.AuthMiddleware(service.HealthCheckHandler),
+			handler: service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler),
 			header: map[string]string{
 				"Authorization": "Bearer " + service.APIToken,
 			},
 		})
+	})
+}
+
+func TestService_RequireScope_OIDC(t *testing.T) {
+	t.Parallel()
+
+	m := oidctest.StartMockOIDC(t)
+	_, validator := oidctest.NewValidator(t, oidc.Config{
+		AllowInsecure: true,
+		Providers: map[string]*oidc.ProviderConfig{
+			"test": {
+				Issuer:   m.Issuer(),
+				Audience: m.Config().ClientID,
+				Rules: []oidc.Rule{
+					{BoundSubject: []string{"builder"}, Scopes: []oidc.Scope{oidc.ScopeWrite}},
+					{BoundSubject: []string{"ops"}, Scopes: []oidc.Scope{oidc.ScopeAdmin}},
+					{BoundSubject: []string{"reader"}, Scopes: []oidc.Scope{oidc.ScopeRead}},
+				},
+			},
+		},
+	})
+
+	service := createTestService(t)
+	t.Cleanup(service.Close)
+	service.Pool.Close()
+	service.OIDCValidator = validator
+	service.APIToken = "static-api-token-at-least-36-chars-long"
+
+	bearer := func(sub string) map[string]string {
+		return map[string]string{"Authorization": "Bearer " + oidctest.SignToken(t, m, jwt.MapClaims{"sub": sub})}
+	}
+	static := map[string]string{"Authorization": "Bearer " + service.APIToken}
+
+	expect := func(code int) *func(*testing.T, *httptest.ResponseRecorder) {
+		f := func(t *testing.T, w *httptest.ResponseRecorder) {
+			t.Helper()
+
+			if w.Code != code {
+				t.Errorf("status = %d, want %d", w.Code, code)
+			}
+		}
+
+		return &f
+	}
+
+	cases := []struct {
+		name   string
+		scope  oidc.Scope
+		header map[string]string
+		code   int
+	}{
+		{"builder may write", oidc.ScopeWrite, bearer("builder"), http.StatusOK},
+		{"builder may not admin", oidc.ScopeAdmin, bearer("builder"), http.StatusForbidden},
+		{"ops may admin", oidc.ScopeAdmin, bearer("ops"), http.StatusOK},
+		{"ops may not write", oidc.ScopeWrite, bearer("ops"), http.StatusForbidden},
+		{"reader may not write", oidc.ScopeWrite, bearer("reader"), http.StatusForbidden},
+		{"static token may admin", oidc.ScopeAdmin, static, http.StatusOK},
+		{"static token may write", oidc.ScopeWrite, static, http.StatusOK},
+		// Read proxy is gated once OIDC is configured with a read rule.
+		{"reader may read", oidc.ScopeRead, bearer("reader"), http.StatusOK},
+		{"writer implies read", oidc.ScopeRead, bearer("builder"), http.StatusOK},
+		{"anonymous may not read", oidc.ScopeRead, nil, http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			testRequest(t, &TestRequest{
+				method:        "GET",
+				path:          "/health",
+				handler:       service.RequireScope(tc.scope, service.HealthCheckHandler),
+				header:        tc.header,
+				checkResponse: expect(tc.code),
+			})
+		})
+	}
+}
+
+func TestService_ReadScope_PublicByDefault(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	t.Cleanup(service.Close)
+	service.Pool.Close()
+
+	// No read rules anywhere: reads stay public so plain Nix substituters work.
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
 	})
 }

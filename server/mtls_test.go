@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/oidc"
 )
 
 // TestService_NativeMTLS exercises the direct-TLS auth path that reads
@@ -53,15 +54,15 @@ func TestService_NativeMTLS(t *testing.T) {
 		}
 	}
 
-	write := service.AuthMiddleware(service.HealthCheckHandler)
-	read := service.ReadAuthMiddleware(service.HealthCheckHandler)
+	write := service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler)
+	read := service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler)
 
 	check(t, write, "writer", http.StatusOK)
-	check(t, write, "reader", http.StatusUnauthorized)
+	check(t, write, "reader", http.StatusForbidden)
 	check(t, write, "", http.StatusUnauthorized)
 
 	check(t, read, "reader", http.StatusOK)
-	check(t, read, "writer", http.StatusUnauthorized)
+	check(t, read, "writer", http.StatusOK) // write implies read
 	check(t, read, "", http.StatusUnauthorized)
 
 	// Proxy headers ignored under native mTLS.

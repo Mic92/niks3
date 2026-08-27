@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -63,6 +64,8 @@ type ValidatedClaims struct {
 	Issuer string
 	// Provider is the provider name from config
 	Provider string
+	// Scopes is the union of scopes of all matching rules.
+	Scopes []Scope
 	// RawClaims contains all claims for logging/debugging
 	RawClaims map[string]any
 }
@@ -158,6 +161,19 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	return v, nil
 }
 
+// GrantsScope reports whether any configured rule can grant s.
+func (v *Validator) GrantsScope(s Scope) bool {
+	for _, p := range v.config.Providers {
+		for _, r := range p.effectiveRules() {
+			if slices.Contains(r.Scopes, s) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // AudienceForIssuer returns the configured audience for the given issuer URL,
 // and whether a provider is configured for that issuer.
 func (v *Validator) AudienceForIssuer(issuer string) (string, bool) {
@@ -200,24 +216,12 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			}
 		}
 
-		// Validate bound claims (our custom authorization logic)
-		if err := validateBoundClaims(claims, pv.config.BoundClaims); err != nil {
-			slog.Debug("Bound claims validation failed", "provider", pv.config.Name(), "error", err)
+		scopes, err := matchRules(claims, pv.config.effectiveRules())
+		if err != nil {
+			slog.Debug("No rule matched", "provider", pv.config.Name(), "error", err)
 
 			return nil, &ValidationError{
-				Reason:         fmt.Sprintf("bound claims validation failed: %v", err),
-				Provider:       pv.config.Name(),
-				Claims:         claims,
-				TriedProviders: triedProviders,
-			}
-		}
-
-		// Validate bound subject
-		if err := validateBoundSubject(claims, pv.config.BoundSubject); err != nil {
-			slog.Debug("Bound subject validation failed", "provider", pv.config.Name(), "error", err)
-
-			return nil, &ValidationError{
-				Reason:         fmt.Sprintf("bound subject validation failed: %v", err),
+				Reason:         err.Error(),
 				Provider:       pv.config.Name(),
 				Claims:         claims,
 				TriedProviders: triedProviders,
@@ -228,6 +232,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			Subject:   idToken.Subject,
 			Issuer:    issuer,
 			Provider:  pv.config.Name(),
+			Scopes:    scopes,
 			RawClaims: claims,
 		}, nil
 	}

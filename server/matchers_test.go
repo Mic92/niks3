@@ -8,6 +8,7 @@ import (
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/oidc"
 )
 
 // ok fails the test if an err is not nil.
@@ -57,9 +58,9 @@ func waitForGC(tb testing.TB, service *server.Service) api.GCTaskStatus {
 
 // registerTestHandlers registers common test handlers on the given mux.
 func registerTestHandlers(mux *http.ServeMux, testService *server.Service) {
-	mux.HandleFunc("POST /api/pending_closures", testService.AuthMiddleware(testService.CreatePendingClosureHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/sign", testService.AuthMiddleware(testService.SignNarinfosHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.AuthMiddleware(testService.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", testService.AuthMiddleware(testService.CompleteMultipartUploadHandler))
+	mux.HandleFunc("POST /api/pending_closures", testService.RequireScope(oidc.ScopeWrite, testService.CreatePendingClosureHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/sign", testService.RequireScope(oidc.ScopeWrite, testService.SignNarinfosHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.RequireScope(oidc.ScopeWrite, testService.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", testService.RequireScope(oidc.ScopeWrite, testService.CompleteMultipartUploadHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 }

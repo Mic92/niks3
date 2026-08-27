@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -145,67 +144,6 @@ const (
 	shutdownTimeout = 10 * time.Second
 )
 
-func (s *Service) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// mTLS via reverse proxy. The proxy is responsible for overriding
-		// these headers on every request; we only trust them because the
-		// operator opted in.
-		if s.mtlsAuthenticated(r) {
-			next.ServeHTTP(w, r)
-
-			return
-		}
-
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-
-			return
-		}
-
-		const bearerPrefix = "Bearer "
-		if !strings.HasPrefix(authHeader, bearerPrefix) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-
-			return
-		}
-
-		token := strings.TrimPrefix(authHeader, bearerPrefix)
-
-		// Try static API token first (faster, no network calls)
-		if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
-			next.ServeHTTP(w, r)
-
-			return
-		}
-
-		// Fall back to OIDC validation if configured
-		var oidcErr *oidc.ValidationError
-
-		if s.OIDCValidator != nil {
-			claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
-			if err == nil {
-				slog.Info("OIDC auth successful", "provider", claims.Provider)
-				slog.Debug("OIDC auth details", "subject", claims.Subject)
-				next.ServeHTTP(w, r)
-
-				return
-			}
-			// Store the OIDC error for later logging
-			validationErr := &oidc.ValidationError{}
-			if errors.As(err, &validationErr) {
-				oidcErr = validationErr
-			}
-
-			slog.Debug("OIDC validation failed")
-		}
-
-		// Both static token and OIDC failed - log details for debugging
-		s.logAuthFailure(token, oidcErr)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	}
-}
-
 func runServer(opts *options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
 	defer cancel()
@@ -311,28 +249,28 @@ func runServer(opts *options) error {
 	mux.HandleFunc("GET /api/cache-config", service.CacheConfigHandler)
 	mux.HandleFunc("GET /api/cache-stats", service.CacheStatsHandler)
 
-	mux.HandleFunc("POST /api/pending_closures", service.AuthMiddleware(service.CreatePendingClosureHandler))
-	mux.HandleFunc("DELETE /api/pending_closures", service.AuthMiddleware(service.CleanupPendingClosuresHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/sign", service.AuthMiddleware(service.SignNarinfosHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.AuthMiddleware(service.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", service.AuthMiddleware(service.CompleteMultipartUploadHandler))
-	mux.HandleFunc("POST /api/uploads/complete", service.AuthMiddleware(service.CompleteUploadHandler))
-	mux.HandleFunc("POST /api/uploads/skipped", service.AuthMiddleware(service.SkippedUploadsHandler))
-	mux.HandleFunc("POST /api/multipart/request-parts", service.AuthMiddleware(service.RequestMorePartsHandler))
-	mux.HandleFunc("HEAD /api/objects/{key...}", service.AuthMiddleware(service.ObjectExistsHandler))
-	mux.HandleFunc("GET /api/closures/{key}", service.AuthMiddleware(service.GetClosureHandler))
-	mux.HandleFunc("DELETE /api/closures", service.AuthMiddleware(service.CleanupClosuresOlder))
-	mux.HandleFunc("GET /api/gc/status", service.AuthMiddleware(service.GCStatusHandler))
-	mux.HandleFunc("GET /api/pins", service.AuthMiddleware(service.ListPinsHandler))
-	mux.HandleFunc("POST /api/pins/{name}", service.AuthMiddleware(service.CreatePinHandler))
-	mux.HandleFunc("DELETE /api/pins/{name}", service.AuthMiddleware(service.DeletePinHandler))
+	mux.HandleFunc("POST /api/pending_closures", service.RequireScope(oidc.ScopeWrite, service.CreatePendingClosureHandler))
+	mux.HandleFunc("DELETE /api/pending_closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupPendingClosuresHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/sign", service.RequireScope(oidc.ScopeWrite, service.SignNarinfosHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.RequireScope(oidc.ScopeWrite, service.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/multipart/complete", service.RequireScope(oidc.ScopeWrite, service.CompleteMultipartUploadHandler))
+	mux.HandleFunc("POST /api/uploads/complete", service.RequireScope(oidc.ScopeWrite, service.CompleteUploadHandler))
+	mux.HandleFunc("POST /api/uploads/skipped", service.RequireScope(oidc.ScopeWrite, service.SkippedUploadsHandler))
+	mux.HandleFunc("POST /api/multipart/request-parts", service.RequireScope(oidc.ScopeWrite, service.RequestMorePartsHandler))
+	mux.HandleFunc("HEAD /api/objects/{key...}", service.RequireScope(oidc.ScopeWrite, service.ObjectExistsHandler))
+	mux.HandleFunc("GET /api/closures/{key}", service.RequireScope(oidc.ScopeWrite, service.GetClosureHandler))
+	mux.HandleFunc("DELETE /api/closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", service.RequireScope(oidc.ScopeAdmin, service.GCStatusHandler))
+	mux.HandleFunc("GET /api/pins", service.RequireScope(oidc.ScopeWrite, service.ListPinsHandler))
+	mux.HandleFunc("POST /api/pins/{name}", service.RequireScope(oidc.ScopeWrite, service.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/pins/{name}", service.RequireScope(oidc.ScopeAdmin, service.DeletePinHandler))
 
 	if opts.EnableReadProxy {
 		service.EnableReadProxy = true
 		service.ReadRedirectTTL = opts.ReadRedirectTTL
 		// Register without method prefix to avoid ServeMux conflicts with
 		// auto-generated HEAD routes. The handler rejects non-GET/HEAD itself.
-		mux.HandleFunc("/{path...}", service.ReadAuthMiddleware(service.ReadProxyHandler))
+		mux.HandleFunc("/{path...}", service.RequireScope(oidc.ScopeRead, service.ReadProxyHandler))
 		slog.Info("Read proxy enabled — serving cache objects from S3")
 
 		if opts.ReadRedirectTTL > 0 {
