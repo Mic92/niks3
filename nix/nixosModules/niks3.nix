@@ -145,6 +145,10 @@ let
     "--max-nar-size"
     cfg.maxNarSize
   ]
+  ++ [
+    "--cache-priority"
+    (toString cfg.priority)
+  ]
   ++ lib.concatMap (f: [
     "--sign-key-path"
     (toString f)
@@ -359,6 +363,15 @@ in
       description = ''
         Maximum uncompressed NAR size accepted for upload (e.g. "2G", "512M").
         Clients skip closures containing larger store paths. Null means unlimited.
+      '';
+    };
+
+    priority = lib.mkOption {
+      type = lib.types.int;
+      default = 30;
+      description = ''
+        Priority advertised in nix-cache-info. Lower is preferred by Nix;
+        cache.nixos.org uses 40.
       '';
     };
 

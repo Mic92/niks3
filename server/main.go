@@ -144,6 +144,8 @@ func parseArgs() (*options, error) {
 		"CA bundle for native mTLS client cert verification; subjects checked against --mtls-bound-subject")
 	flag.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
 		"Maximum uncompressed NAR size accepted for upload (e.g. 2G, 512M). Empty or 0 means unlimited")
+	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
+		"Priority advertised in nix-cache-info; lower is preferred (cache.nixos.org uses 40)")
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
 		"Serve cache objects by proxying reads from S3 (for private buckets)")

@@ -52,6 +52,9 @@ type options struct {
 	// upload. 0 means unlimited.
 	MaxNarSize uint64
 
+	// CachePriority is advertised in nix-cache-info; lower wins.
+	CachePriority int
+
 	// MTLSProxyHeader, when set, names a header the reverse proxy sets to
 	// "SUCCESS" after verifying a client certificate (e.g. nginx's
 	// $ssl_client_verify). Requests carrying it are accepted without a
@@ -107,6 +110,9 @@ type Service struct {
 	// MaxNarSize is advertised via /api/cache-config and enforced on
 	// pending-closure creation. 0 means unlimited.
 	MaxNarSize uint64
+
+	// CachePriority is written to nix-cache-info. 0 means defaultCachePriority.
+	CachePriority int
 
 	// NativeMTLS is set when the server terminates TLS itself with a
 	// client CA — mtlsCheck reads r.TLS.PeerCertificates directly
@@ -234,6 +240,7 @@ func runServer(opts *options) error {
 		CacheURL:              opts.CacheURL,
 		ServerURL:             opts.ServerURL,
 		MaxNarSize:            opts.MaxNarSize,
+		CachePriority:         opts.CachePriority,
 		GCTasks:               NewGCTaskStore(),
 		Metrics:               NewMetrics(),
 	}
@@ -464,65 +471,41 @@ func drain(server *http.Server) error {
 	return nil
 }
 
-// InitializeBucket ensures the bucket has the required nix-cache-info file.
+// defaultCachePriority sorts before cache.nixos.org (40).
+const defaultCachePriority = 30
+
+// InitializeBucket uploads nix-cache-info and the landing page. Both are
+// rewritten on every start so configuration changes take effect.
 func (s *Service) InitializeBucket(ctx context.Context) error {
-	// Wait for rate limiter
-	if err := s.S3RateLimiter.Wait(ctx); err != nil {
-		return err
+	storeDir := os.Getenv("NIX_STORE_DIR")
+	if storeDir == "" {
+		storeDir = "/nix/store"
 	}
 
-	// Check if nix-cache-info already exists
-	_, err := s.MinioClient.StatObject(ctx, s.Bucket, "nix-cache-info", minio.StatObjectOptions{})
+	priority := s.CachePriority
+	if priority == 0 {
+		priority = defaultCachePriority
+	}
+
+	cacheInfo := fmt.Sprintf("StoreDir: %s\nWantMassQuery: 1\nPriority: %d\n", storeDir, priority)
+
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("uploading nix-cache-info: %w", err)
+	}
+
+	_, err := s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
+		strings.NewReader(cacheInfo), int64(len(cacheInfo)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
 	if err != nil {
 		if isRateLimitError(err) {
 			s.S3RateLimiter.RecordThrottle()
 		}
 
-		// Check if this is a "not found" error vs other errors
-		errResp := minio.ToErrorResponse(err)
-		if errResp.Code != minio.NoSuchKey {
-			// This is not a "not found" error - could be network, permissions, etc.
-			return fmt.Errorf("failed to stat nix-cache-info object: %w", err)
-		}
-
-		// Object doesn't exist, create it
-		// Priority 30 is higher than the default nixos.org cache (priority 40)
-		// Use NIX_STORE_DIR from environment if set, otherwise default to /nix/store
-		storeDir := os.Getenv("NIX_STORE_DIR")
-		if storeDir == "" {
-			storeDir = "/nix/store"
-		}
-
-		cacheInfo := fmt.Sprintf(`StoreDir: %s
-WantMassQuery: 1
-Priority: 30
-`, storeDir)
-
-		// Wait for rate limiter before PutObject
-		if err := s.S3RateLimiter.Wait(ctx); err != nil {
-			return err
-		}
-
-		// Upload nix-cache-info to the bucket
-		_, err = s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
-			bytes.NewReader([]byte(cacheInfo)), int64(len(cacheInfo)),
-			minio.PutObjectOptions{ContentType: "text/plain"})
-		if err != nil {
-			if isRateLimitError(err) {
-				s.S3RateLimiter.RecordThrottle()
-			}
-
-			return fmt.Errorf("failed to create nix-cache-info: %w", err)
-		}
-
-		s.S3RateLimiter.RecordSuccess()
-		slog.Info("Created nix-cache-info in bucket", "bucket", s.Bucket)
-	} else {
-		s.S3RateLimiter.RecordSuccess()
+		return fmt.Errorf("uploading nix-cache-info: %w", err)
 	}
 
-	// Generate and upload landing page if we have a cache URL
-	// This runs on every startup to keep the landing page up-to-date with current signing keys
+	s.S3RateLimiter.RecordSuccess()
+
 	if s.CacheURL != "" {
 		s.uploadLandingPage(ctx)
 	}
