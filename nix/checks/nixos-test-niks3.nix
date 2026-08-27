@@ -379,7 +379,7 @@ testers.nixosTest {
     server.succeed(f"""
       {s3_env}
       export S3_ENDPOINT_URL=http://server:9000
-      ${s5cmd}/bin/s5cmd ls 's3://niks3-test/realisations/*' | grep -F '.doi'
+      ${s5cmd}/bin/s5cmd ls 's3://niks3-test/*' | grep -E '(realisations|build-trace-v2)/.*[.]doi'
     """)
 
     # Use a chroot store to test retrieval from cache WITH signature verification

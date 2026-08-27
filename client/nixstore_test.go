@@ -2,7 +2,10 @@ package client_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/Mic92/niks3/server"
 
 	"github.com/Mic92/niks3/client"
 )
@@ -357,5 +360,38 @@ func TestPathInfoCACompatibility(t *testing.T) {
 				t.Errorf("CA.String() = %q, want %q", caStr, tt.expectedCAStr)
 			}
 		})
+	}
+}
+
+func TestRealisationInfoFormats(t *testing.T) {
+	t.Parallel()
+
+	var rs []client.RealisationInfo
+
+	in := `[
+	 {"id":"sha256:abc!out","outPath":"pppppppppppppppppppppppppppppppp-x","signatures":[],"dependentRealisations":{}},
+	 {"key":{"drvPath":"dddddddddddddddddddddddddddddddd-x.drv","outputName":"out"},"value":{"outPath":"pppppppppppppppppppppppppppppppp-x","signatures":[]}},
+	 {"opaquePath":"/nix/store/pppppppppppppppppppppppppppppppp-x"}
+	]`
+	if err := json.Unmarshal([]byte(in), &rs); err != nil {
+		t.Fatal(err)
+	}
+
+	if rs[0].Key != "realisations/sha256:abc!out.doi" || rs[0].OutPath != "pppppppppppppppppppppppppppppppp-x" || !strings.Contains(string(rs[0].Body), `"id"`) {
+		t.Errorf("old format: %+v", rs[0])
+	}
+
+	if rs[1].Key != "build-trace-v2/dddddddddddddddddddddddddddddddd-x.drv/out.doi" || rs[1].OutPath != "pppppppppppppppppppppppppppppppp-x" || strings.Contains(string(rs[1].Body), `"key"`) {
+		t.Errorf("new format: %+v body=%s", rs[1], rs[1].Body)
+	}
+
+	if rs[2].Key != "" {
+		t.Errorf("opaque path parsed as realisation: %+v", rs[2])
+	}
+
+	for _, r := range rs[:2] {
+		if !server.IsValidUploadKey(r.Key, "realisation") {
+			t.Errorf("server rejects %s", r.Key)
+		}
 	}
 }

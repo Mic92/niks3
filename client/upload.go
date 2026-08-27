@@ -184,8 +184,8 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 		for i := range realisations[storePath] {
 			r := &realisations[storePath][i]
-			siblings = append(siblings, ObjectWithRefs{Key: r.Key(), Type: ObjectTypeRealisation, Refs: []string{}})
-			realisationsByKey[r.Key()] = r
+			siblings = append(siblings, ObjectWithRefs{Key: r.Key, Type: ObjectTypeRealisation, Refs: []string{}})
+			realisationsByKey[r.Key] = r
 		}
 
 		narinfoRefs := make([]string, 0, len(pathInfo.References)+len(siblings))

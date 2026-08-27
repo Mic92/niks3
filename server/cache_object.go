@@ -53,6 +53,11 @@ var objectClasses = []*ObjectClass{ //nolint:gochecknoglobals // lookup table
 		UploadType: "realisation", ContentType: "application/json", Zstd: true,
 		match: reMatch(`^realisations/[a-z0-9]+:[a-zA-Z0-9+/=]+![a-zA-Z0-9+._?=-]+\.doi$`),
 	},
+	// Nix >= 2.35
+	{
+		UploadType: "realisation", ContentType: "application/json", Zstd: true,
+		match: reMatch(`^build-trace-v2/[` + nixBase32Alphabet + `]{32}-[a-zA-Z0-9+._?=-]+\.drv/[a-zA-Z0-9+._?=-]+\.doi$`),
+	},
 	{ContentType: "text/x-nix-cache-info", match: exact("nix-cache-info")},
 	{ContentType: "text/html; charset=utf-8", match: exact("index.html")},
 	{ContentType: "text/plain; charset=utf-8", match: reMatch(`^pins/[a-zA-Z0-9._-]+$`)},

@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -84,14 +83,7 @@ func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisa
 		return nil // Don't fail the entire upload
 	}
 
-	// Marshal realisation to JSON
-	jsonData, err := json.Marshal(realisationInfo)
-	if err != nil {
-		return fmt.Errorf("marshaling realisation %s: %w", task.key, err)
-	}
-
-	// Compress with zstd (like narinfo)
-	compressed, err := compressWithZstd(jsonData)
+	compressed, err := compressWithZstd(realisationInfo.Body)
 	if err != nil {
 		return fmt.Errorf("compressing realisation %s: %w", task.key, err)
 	}

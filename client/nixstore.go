@@ -140,12 +140,58 @@ type PathInfo struct {
 	CA         *ContentAddress `json:"ca,omitempty"`
 }
 
-// RealisationInfo represents Nix realisation information for CA derivations.
+// RealisationInfo is one CA build-trace entry as printed by
+// `nix realisation info --json`, in either of Nix's two formats:
+//
+//	<2.35: {"id":"sha256:<h>!<out>","outPath":"<base>",...}   -> realisations/<id>.doi
+//	>=2.35: {"key":{"drvPath":"<base>.drv","outputName":"<out>"},
+//	        "value":{"outPath":"<base>","signatures":[]}}     -> build-trace-v2/<drv>/<out>.doi
 type RealisationInfo struct {
-	ID                    string            `json:"id"`      // "sha256:hash!outputName"
-	OutPath               string            `json:"outPath"` //nolint:tagliatelle // outPath is defined by Nix's JSON format
-	Signatures            []string          `json:"signatures,omitempty"`
-	DependentRealisations map[string]string `json:"dependentRealisations,omitempty"` //nolint:tagliatelle
+	Key     string
+	OutPath string // store path basename
+	Body    json.RawMessage
+}
+
+func (r *RealisationInfo) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		ID      string `json:"id"`
+		OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's format
+		Key     *struct {
+			DrvPath    string `json:"drvPath"`    //nolint:tagliatelle // Nix's format
+			OutputName string `json:"outputName"` //nolint:tagliatelle // Nix's format
+		} `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+
+	switch {
+	case probe.Key != nil:
+		var v struct {
+			OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's format
+		}
+		if err := json.Unmarshal(probe.Value, &v); err != nil {
+			return err
+		}
+
+		*r = RealisationInfo{
+			Key:     "build-trace-v2/" + probe.Key.DrvPath + "/" + probe.Key.OutputName + ".doi",
+			OutPath: v.OutPath,
+			Body:    probe.Value,
+		}
+	case probe.ID != "":
+		*r = RealisationInfo{
+			Key:     "realisations/" + probe.ID + ".doi",
+			OutPath: probe.OutPath,
+			Body:    append(json.RawMessage(nil), data...),
+		}
+	default:
+		// {"opaquePath": ...}: not a realisation.
+		*r = RealisationInfo{}
+	}
+
+	return nil
 }
 
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
@@ -239,9 +285,6 @@ func GetStorePathHash(storePath string) (string, error) {
 	return hash, nil
 }
 
-// Key is the binary-cache object key for r.
-func (r *RealisationInfo) Key() string { return "realisations/" + r.ID + ".doi" }
-
 // QueryRealisations returns realisations of CA paths keyed by full store
 // path. Nix only answers for `<drv>^*`, not for store paths, and reports
 // outPath as a basename.
@@ -293,7 +336,7 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 		}
 
 		for _, r := range realisations {
-			if r.ID == "" {
+			if r.Key == "" {
 				continue
 			}
 
