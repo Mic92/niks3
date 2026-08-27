@@ -58,6 +58,11 @@ func ParseSingleRange(spec string, size int64) (*ByteRange, error) {
 func (br ByteRange) Start() int64 { return br.start }
 func (br ByteRange) End() int64   { return br.end }
 
+// ResolveDBConnectionString is an export of resolveDBConnectionString for tests.
+func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (string, bool)) (string, error) {
+	return resolveDBConnectionString(flagValue, file, lookupEnv)
+}
+
 // ServerTLSConfig is an export of serverTLSConfig for tests.
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)

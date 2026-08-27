@@ -305,6 +305,8 @@ func runServer(opts *options) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
+	mux.HandleFunc("GET /healthz", service.HealthCheckHandler)
+	mux.HandleFunc("GET /readyz", service.ReadinessHandler)
 	mux.Handle("GET /metrics", service.Metrics.Handler())
 	mux.HandleFunc("GET /api/cache-config", service.CacheConfigHandler)
 	mux.HandleFunc("GET /api/cache-stats", service.CacheStatsHandler)

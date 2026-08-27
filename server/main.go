@@ -81,6 +81,35 @@ func readSecretFile(path string) (string, error) {
 	return strings.TrimSpace(string(content)), nil
 }
 
+// resolveDBConnectionString returns "" when PG* variables are set. pgx reads
+// those itself.
+func resolveDBConnectionString(flagValue, file string, lookupEnv func(string) (string, bool)) (string, error) {
+	if flagValue != "" {
+		return flagValue, nil
+	}
+
+	if file != "" {
+		dsn, err := readSecretFile(file)
+		if err != nil {
+			return "", fmt.Errorf("failed to read --db-file: %w", err)
+		}
+
+		if dsn == "" {
+			return "", fmt.Errorf("--db-file %s is empty", file)
+		}
+
+		return dsn, nil
+	}
+
+	for _, k := range []string{"PGHOST", "PGSERVICE"} {
+		if v, _ := lookupEnv(k); v != "" {
+			return "", nil
+		}
+	}
+
+	return "", errors.New("missing database configuration: set --db, --db-file or PGHOST")
+}
+
 const (
 	minAPITokenLength    = 36
 	defaultS3Concurrency = 100
@@ -123,13 +152,17 @@ func parseArgs() (*options, error) {
 
 	maxNarSize := ""
 
+	dbFile := ""
 	s3AccessKeyPath := ""
 	s3SecretKeyPath := ""
 	apiTokenPath := ""
 	s3BucketLookup := ""
 
 	flag.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIKS3_DB", ""),
-		"Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters")
+		"Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters. "+
+			"When empty, libpq PG* environment variables are used")
+	flag.StringVar(&dbFile, "db-file", getEnvOrDefault("NIKS3_DB_FILE", ""),
+		"Path to file containing the Postgres connection string (e.g. a mounted Kubernetes secret)")
 	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
 	flag.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
 	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
@@ -206,11 +239,11 @@ func parseArgs() (*options, error) {
 	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
 	flag.Parse()
 
-	if opts.DBConnectionString == "" {
-		return nil, errors.New("missing required flag: --db")
-	}
-
 	var err error
+
+	if opts.DBConnectionString, err = resolveDBConnectionString(opts.DBConnectionString, dbFile, os.LookupEnv); err != nil {
+		return nil, err
+	}
 
 	if opts.S3BucketLookup, err = parseBucketLookup(s3BucketLookup); err != nil {
 		return nil, err
