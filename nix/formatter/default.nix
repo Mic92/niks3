@@ -10,6 +10,8 @@ let
     programs.deadnix.enable = true;
     programs.gofumpt.enable = true;
     programs.yamlfmt.enable = true;
+    # Helm templates are Go templates, not valid YAML.
+    settings.formatter.yamlfmt.excludes = [ "deploy/helm/*/templates/*" ];
     programs.mdformat.enable = true;
     programs.sqlfluff.enable = true;
     programs.sqlfluff.dialect = "postgres";

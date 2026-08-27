@@ -26,3 +26,17 @@ jobs:
         run: nix shell --inputs-from . nixpkgs#goreleaser --command goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  helm-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Publish chart
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/niks3 --version "$version" --app-version "$GITHUB_REF_NAME"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "niks3-$version.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"

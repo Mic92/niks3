@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "niks3.fullname" . }}
+  labels: {{- include "niks3.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "niks3.serverSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "niks3.serverSelectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "niks3.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.auth.workloadIdentity.enabled }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: niks3
+          image: {{ include "niks3.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- range .Values.signing.keys }}
+            - --sign-key-path=/secrets/signing/{{ . }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: NIKS3_HTTP_ADDR
+              value: ":5751"
+            - name: NIKS3_DB_FILE
+              value: /secrets/db/{{ .Values.database.secretKey }}
+            - name: NIKS3_API_TOKEN_PATH
+              value: /secrets/token/token
+            - name: NIKS3_S3_ENDPOINT
+              value: {{ required "s3.endpoint is required" .Values.s3.endpoint | quote }}
+            - name: NIKS3_S3_BUCKET
+              value: {{ required "s3.bucket is required" .Values.s3.bucket | quote }}
+            - name: NIKS3_S3_USE_SSL
+              value: {{ .Values.s3.useSSL | quote }}
+            - name: NIKS3_S3_BUCKET_LOOKUP
+              value: {{ .Values.s3.bucketLookup | quote }}
+            {{- with .Values.s3.region }}
+            - name: NIKS3_S3_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.s3.useIAM }}
+            - name: NIKS3_S3_USE_IAM
+              value: "true"
+            {{- else }}
+            - name: NIKS3_S3_ACCESS_KEY_PATH
+              value: /secrets/s3/access-key
+            - name: NIKS3_S3_SECRET_KEY_PATH
+              value: /secrets/s3/secret-key
+            {{- end }}
+            {{- with .Values.cacheURL }}
+            - name: NIKS3_CACHE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.readProxy.enabled }}
+            - name: NIKS3_ENABLE_READ_PROXY
+              value: "true"
+            {{- if not (kindIs "invalid" .Values.readProxy.redirectTTL) }}
+            - name: NIKS3_READ_REDIRECT_TTL
+              value: {{ .Values.readProxy.redirectTTL | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .Values.maxNarSize) }}
+            - name: NIKS3_MAX_NAR_SIZE
+              value: {{ .Values.maxNarSize | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .Values.cachePriority) }}
+            - name: NIKS3_CACHE_PRIORITY
+              value: {{ .Values.cachePriority | quote }}
+            {{- end }}
+            {{- if include "niks3.oidcProviders" . }}
+            - name: NIKS3_OIDC_CONFIG
+              value: /etc/niks3/oidc.json
+            {{- end }}
+            {{- if .Values.debug }}
+            - name: NIKS3_DEBUG
+              value: "true"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 5751
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            timeoutSeconds: 3
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: db
+              mountPath: /secrets/db
+              readOnly: true
+            - name: token
+              mountPath: /secrets/token
+              readOnly: true
+            {{- if not .Values.s3.useIAM }}
+            - name: s3
+              mountPath: /secrets/s3
+              readOnly: true
+            {{- end }}
+            {{- if .Values.signing.existingSecret }}
+            - name: signing
+              mountPath: /secrets/signing
+              readOnly: true
+            {{- end }}
+            {{- if include "niks3.oidcProviders" . }}
+            - name: oidc
+              mountPath: /etc/niks3
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: db
+          secret:
+            secretName: {{ include "niks3.dbSecretName" . }}
+        - name: token
+          secret:
+            secretName: {{ include "niks3.tokenSecretName" . }}
+        {{- if not .Values.s3.useIAM }}
+        - name: s3
+          secret:
+            secretName: {{ include "niks3.s3SecretName" . }}
+        {{- end }}
+        {{- with .Values.signing.existingSecret }}
+        - name: signing
+          secret:
+            secretName: {{ . }}
+        {{- end }}
+        {{- if include "niks3.oidcProviders" . }}
+        - name: oidc
+          configMap:
+            name: {{ include "niks3.fullname" . }}-oidc
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - {{ toYaml (merge (dict "labelSelector" (dict "matchLabels" (include "niks3.serverSelectorLabels" $ | fromYaml))) .) | nindent 10 | trim }}
+        {{- end }}
+      {{- end }}

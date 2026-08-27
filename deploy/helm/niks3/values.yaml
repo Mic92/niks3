@@ -1,0 +1,98 @@
+image:
+  repository: ghcr.io/mic92/niks3
+  tag: "" # defaults to appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+replicaCount: 1
+resources: {}
+database:
+  # Secret with the Postgres connection string (CloudNativePG: `<cluster>-app`, key `uri`).
+  existingSecret: ""
+  secretKey: uri
+  # Or inline. The chart creates the Secret.
+  url: ""
+s3:
+  endpoint: ""
+  bucket: ""
+  region: ""
+  useSSL: true
+  bucketLookup: auto # auto | dns | path
+  # IRSA / Pod Identity instead of keys from `existingSecret` (access-key / secret-key).
+  useIAM: false
+  existingSecret: ""
+  accessKey: ""
+  secretKey: ""
+auth:
+  # Shared API token (>= 36 chars) for uploads and GC; Secret key `token`.
+  existingSecret: ""
+  token: ""
+  # Allow pods to push with their service account token, see wiki/Kubernetes.
+  workloadIdentity:
+    enabled: false
+    allowedServiceAccounts: [] # "<namespace>:<name>", globs allowed
+    scopes: [write] # read | write | admin
+    audience: niks3
+    issuer: https://kubernetes.default.svc.cluster.local
+  # Further OIDC providers in the server's JSON schema, keyed by name.
+  oidcProviders: {}
+signing:
+  existingSecret: ""
+  keys: [] # file names within the Secret
+cacheURL: ""
+readProxy:
+  enabled: false
+  redirectTTL: null # e.g. 15m
+maxNarSize: null # e.g. 4G
+cachePriority: null # e.g. 30
+debug: false
+extraArgs: []
+extraEnv: []
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: [] # labelSelector is filled in
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+service:
+  type: ClusterIP
+  port: 80
+  nodePort: null
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: niks3.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+gc:
+  enabled: true
+  schedule: "0 3 * * *"
+  olderThan: 720h
+  failedUploadsOlderThan: 6h
+  resources: {}
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}

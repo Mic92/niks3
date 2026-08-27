@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "niks3.fullname" . }}-test
+  labels: {{- include "niks3.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext: {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: readyz
+      image: {{ include "niks3.image" . }}
+      command: ["/bin/wget", "-qO-", "http://{{ include "niks3.fullname" . }}:{{ .Values.service.port }}/readyz"]
+      securityContext: {{- toYaml .Values.securityContext | nindent 8 }}

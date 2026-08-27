@@ -1,0 +1,11 @@
+apiVersion: v2
+name: niks3
+description: S3-backed Nix binary cache with garbage collection
+type: application
+version: 0.1.0
+# version/appVersion are set from the git tag on release.
+appVersion: "v1.9.0"
+icon: https://raw.githubusercontent.com/Mic92/niks3/main/server/niks3.svg
+home: https://github.com/Mic92/niks3
+sources:
+  - https://github.com/Mic92/niks3
