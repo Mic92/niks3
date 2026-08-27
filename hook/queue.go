@@ -86,11 +86,13 @@ func (q *Queue) Enqueue(paths []string) error {
 	return nil
 }
 
-// FetchBatch returns up to batchSize of the oldest queued store paths.
+// FetchBatch returns up to batchSize store paths from the head of the queue.
+// rowid rather than created_at (second resolution) gives the strict order
+// Retry relies on.
 func (q *Queue) FetchBatch(batchSize int) ([]string, error) {
 	rows, err := q.db.QueryContext(
 		context.Background(),
-		"SELECT store_path FROM upload_queue ORDER BY created_at LIMIT ?",
+		"SELECT store_path FROM upload_queue ORDER BY rowid LIMIT ?",
 		batchSize,
 	)
 	if err != nil {
@@ -117,24 +119,71 @@ func (q *Queue) FetchBatch(batchSize int) ([]string, error) {
 	return paths, nil
 }
 
+// removeChunk stays well below SQLite's bound parameter limit (32766); the
+// worker removes whole closures, which can be larger than that.
+const removeChunk = 1000
+
 // Remove deletes the given store paths from the queue.
 func (q *Queue) Remove(paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
 
-	// Build a single DELETE ... WHERE store_path IN (...) for efficiency.
-	placeholders := make([]string, len(paths))
-	args := make([]any, len(paths))
+	ctx := context.Background()
 
-	for i, p := range paths {
-		placeholders[i] = "?"
-		args[i] = p
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
 	}
 
-	query := "DELETE FROM upload_queue WHERE store_path IN (" + strings.Join(placeholders, ",") + ")" //nolint:gosec // placeholders are all "?", no injection
-	if _, err := q.db.ExecContext(context.Background(), query, args...); err != nil {
-		return fmt.Errorf("deleting paths: %w", err)
+	defer func() { _ = tx.Rollback() }()
+
+	for len(paths) > 0 {
+		n := min(len(paths), removeChunk)
+		chunk := paths[:n]
+		paths = paths[n:]
+
+		args := make([]any, n)
+		for i, p := range chunk {
+			args[i] = p
+		}
+
+		query := "DELETE FROM upload_queue WHERE store_path IN (?" + strings.Repeat(",?", n-1) + ")" //nolint:gosec // only "?" placeholders
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("deleting paths: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// Retry moves paths whose upload failed to the back of the queue so that one
+// bad path cannot block the head. As a consequence everything already tried
+// sorts behind everything untried.
+func (q *Queue) Retry(paths []string) error {
+	ctx := context.Background()
+
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	for _, p := range paths {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE upload_queue SET rowid = (SELECT MAX(rowid) FROM upload_queue) + 1 WHERE store_path = ?", p,
+		); err != nil {
+			return fmt.Errorf("requeueing path %q: %w", p, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil

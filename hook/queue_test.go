@@ -3,6 +3,7 @@ package hook_test
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -130,6 +131,30 @@ func TestQueueFetchBatchLimit(t *testing.T) {
 	}
 }
 
+func TestQueueRetryMovesToBack(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	if err := q.Enqueue([]string{"/nix/store/aaa", "/nix/store/bbb", "/nix/store/ccc"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Retry([]string{"/nix/store/aaa"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fetched, err := q.FetchBatch(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/nix/store/bbb", "/nix/store/ccc", "/nix/store/aaa"}
+	if !slices.Equal(fetched, want) {
+		t.Errorf("got %v, want %v", fetched, want)
+	}
+}
+
 func TestQueueFetchRemoveLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -209,5 +234,30 @@ func TestQueueConcurrentWriters(t *testing.T) {
 
 	if count != writers*perWriter {
 		t.Errorf("expected %d, got %d", writers*perWriter, count)
+	}
+}
+
+// PushPaths returns whole closures, which can exceed SQLite's bound
+// parameter limit (32766) if deleted in a single statement.
+func TestQueueRemoveLargeClosure(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	paths := make([]string, 40000)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/nix/store/%05d", i)
+	}
+
+	if err := q.Enqueue(paths[:10]); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Remove(paths); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if count, _ := q.Count(); count != 0 {
+		t.Errorf("expected empty queue, got %d", count)
 	}
 }
