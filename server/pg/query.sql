@@ -16,19 +16,17 @@ SELECT count(*) FROM pending_closures;
 SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;
 
--- name: GetExistingObjects :many
-WITH ct AS (
-    SELECT timezone('UTC', now()) AS now
+-- name: GetLiveObjects :many
+-- Run after the pending_objects rows are committed. FOR SHARE waits for any
+-- reaper batch holding these rows. Later batches see the pending rows and
+-- skip them. Tombstoned rows count as absent: their S3 object may be gone.
+WITH locked AS (
+    SELECT key, deleted_at FROM objects
+    WHERE key = any($1::varchar [])
+    FOR SHARE
 )
 
-SELECT
-    o.key AS key,
-    (CASE
-        WHEN o.first_deleted_at IS NULL THEN NULL
-        ELSE ct.now - o.first_deleted_at
-    END)::interval AS deleted_at
-FROM objects AS o, ct
-WHERE key = any($1::varchar []);
+SELECT key FROM locked WHERE deleted_at IS NULL;
 
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
@@ -46,8 +44,7 @@ ON CONFLICT (key) DO UPDATE SET
         )
     ),
     size = coalesce(objects.size, excluded.size),
-    deleted_at = NULL,
-    first_deleted_at = NULL;
+    deleted_at = NULL;
 
 -- name: GetPendingObject :one
 SELECT refs, size FROM pending_objects
@@ -71,17 +68,16 @@ old_closures AS (
     WHERE started_at < cutoff_time.time
 ),
 
--- Insert pending objects into objects table if they don't already exist
--- We mark them as deleted so they can be cleaned up later
+-- Whatever an abandoned upload left in S3 becomes a tombstone so the reaper
+-- removes it after the normal grace period.
 inserted_objects AS (
-    INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+    INSERT INTO objects (key, refs, deleted_at)
     SELECT
         po.key,
         po.refs,
-        cutoff_time.time,
-        cutoff_time.time
+        timezone('UTC', now())
     FROM pending_objects AS po
-    JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
+    JOIN old_closures oc ON po.pending_closure_id = oc.id
     ON CONFLICT (key) DO NOTHING
     RETURNING key
 ),
@@ -125,13 +121,9 @@ DELETE FROM closures
 WHERE closures.updated_at < $1
   AND closures.key NOT IN (SELECT narinfo_key FROM pins);
 
--- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar []);
-
--- name: DeleteObjects :exec
+-- name: DeleteTombstonedObjects :execrows
 DELETE FROM objects
-WHERE key = any($1::varchar []);
+WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL;
 
 -- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
@@ -192,24 +184,29 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND o.deleted_at IS NULL  -- Only mark fresh objects
-    FOR UPDATE
+        AND o.deleted_at IS NULL
 )
 UPDATE objects
-SET
-    deleted_at = ct.now,
-    first_deleted_at = COALESCE(first_deleted_at, ct.now)
+SET deleted_at = ct.now
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key;
 
--- name: GetObjectsReadyForDeletion :many
--- Returns objects marked for >= grace_period, safe to delete from S3
-SELECT key
-FROM objects
-WHERE first_deleted_at IS NOT NULL
-  AND deleted_at IS NOT NULL
-  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
-LIMIT sqlc.arg(limit_count);
+-- name: LockObjectsForDeletion :many
+-- The transaction stays open across the S3 delete. Pairs with GetLiveObjects.
+SELECT o.key
+FROM objects AS o
+WHERE o.deleted_at IS NOT NULL
+  AND o.deleted_at <= sqlc.arg(cutoff)::timestamp
+  AND o.key > sqlc.arg(after_key)::varchar
+  AND NOT EXISTS (SELECT 1 FROM pending_objects AS po WHERE po.key = o.key)
+ORDER BY o.key
+LIMIT sqlc.arg(limit_count)
+FOR UPDATE OF o;
+
+-- name: GetPendingKeysAmong :many
+-- Fresh-snapshot recheck after the row locks are taken.
+SELECT DISTINCT key FROM pending_objects
+WHERE key = any($1::varchar []);
 
 -- name: GetClosureForShare :one
 -- Lock the closure row so concurrent GC cannot delete it between the

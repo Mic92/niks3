@@ -7,7 +7,7 @@ ALTER TABLE objects ADD COLUMN size bigint;
 ALTER TABLE pending_objects ADD COLUMN size bigint;
 
 -- Single-row running totals of the live object set, maintained by a trigger on
--- objects (functions/2_object_stats_trigger.sql) so inventory metrics avoid a
+-- objects (the object_stats_* triggers) so inventory metrics avoid a
 -- full-table scan.
 CREATE TABLE object_stats (
     id boolean PRIMARY KEY DEFAULT true CHECK (id),

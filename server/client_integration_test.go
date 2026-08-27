@@ -163,7 +163,7 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 	ok(t, err)
 
 	// Log database state after GC
-	rows3, err := service.Pool.Query(ctx, "SELECT key, deleted_at IS NOT NULL as is_deleted, first_deleted_at FROM objects ORDER BY key")
+	rows3, err := service.Pool.Query(ctx, "SELECT key, deleted_at FROM objects ORDER BY key")
 	ok(t, err)
 
 	defer rows3.Close()
@@ -172,14 +172,13 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 
 	for rows3.Next() {
 		var (
-			key            string
-			isDeleted      bool
-			firstDeletedAt any
+			key       string
+			deletedAt any
 		)
 
-		err = rows3.Scan(&key, &isDeleted, &firstDeletedAt)
+		err = rows3.Scan(&key, &deletedAt)
 		ok(t, err)
-		t.Logf("  - %s: deleted=%v, first_deleted_at=%v", key, isDeleted, firstDeletedAt)
+		t.Logf("  - %s: deleted_at=%v", key, deletedAt)
 	}
 
 	ok(t, rows3.Err())

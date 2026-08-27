@@ -232,16 +232,11 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 
 	task.setPhase(api.GCTaskPhaseCleanupOrphanObjects)
 
-	var gracePeriod int32
+	gracePeriod := pendingAge
 	if force {
-		// Force mode: immediate deletion (grace period = 0)
 		gracePeriod = 0
 
 		slog.Warn("Force mode enabled - objects will be deleted immediately without grace period")
-	} else {
-		// Use same grace period for object cleanup as pending closure cleanup
-		// This ensures no pending closure can resurrect an object being deleted
-		gracePeriod = int32(pendingAge.Seconds())
 	}
 
 	objectStats, err := s.cleanupOrphanObjects(ctx, gracePeriod, func(live ObjectCleanupStats) {

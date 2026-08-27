@@ -20,11 +20,10 @@ type MultipartUpload struct {
 }
 
 type Object struct {
-	Key            string           `json:"key"`
-	Refs           []string         `json:"refs"`
-	DeletedAt      pgtype.Timestamp `json:"deleted_at"`
-	FirstDeletedAt pgtype.Timestamp `json:"first_deleted_at"`
-	Size           pgtype.Int8      `json:"size"`
+	Key       string           `json:"key"`
+	Refs      []string         `json:"refs"`
+	DeletedAt pgtype.Timestamp `json:"deleted_at"`
+	Size      pgtype.Int8      `json:"size"`
 }
 
 type ObjectStat struct {

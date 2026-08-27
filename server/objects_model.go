@@ -5,13 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/minio/minio-go/v7"
 )
 
 const (
 	DeletionBatchSize = 1000
+	markStaleRetries  = 20
 )
 
 // ObjectCleanupStats contains statistics about object cleanup operations.
@@ -21,228 +26,214 @@ type ObjectCleanupStats struct {
 	FailedCount  int
 }
 
-func flushBatch(ctx context.Context, keys []string, operation func(context.Context, []string) error) ([]string, error) {
-	if len(keys) == 0 {
-		return keys, nil
+// markStaleObjects tombstones unreachable, non-pending objects. REPEATABLE
+// READ turns a race with a closure commit into a retry instead of
+// tombstoning a just-resurrected row.
+func (s *Service) markStaleObjects(ctx context.Context) (int64, error) {
+	for attempt := range markStaleRetries {
+		n, err := s.markStaleObjectsOnce(ctx)
+		if err == nil {
+			return n, nil
+		}
+
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "40001" {
+			return 0, err
+		}
+
+		slog.Info("mark phase raced a closure commit, retrying", "attempt", attempt+1)
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 	}
 
-	if err := operation(ctx, keys); err != nil {
-		slog.Error("batch operation failed", "error", err)
-		// Return keys unchanged to allow retry
-		return keys, err
-	}
-
-	// Only clear keys on success
-	return keys[:0], nil
+	return 0, fmt.Errorf("mark phase gave up after %d serialization failures", markStaleRetries)
 }
 
-func (s *Service) getObjectsForDeletion(ctx context.Context,
-	objectCh chan<- minio.ObjectInfo,
-	queryErr *error,
-	stats *ObjectCleanupStats,
-	gracePeriod int32,
-	onProgress func(ObjectCleanupStats),
-) {
-	defer close(objectCh)
-
-	queries := pg.New(s.Pool)
-
-	// First, mark stale objects and get count
-	marked, err := queries.MarkStaleObjects(ctx)
+func (s *Service) markStaleObjectsOnce(ctx context.Context) (int64, error) {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		*queryErr = fmt.Errorf("failed to mark stale objects: %w", err)
-		slog.Error("failed to mark stale objects", "error", err)
-
-		return
+		return 0, fmt.Errorf("begin mark tx: %w", err)
 	}
 
-	stats.MarkedCount = int(marked)
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	if onProgress != nil {
-		onProgress(*stats)
+	n, err := pg.New(tx).MarkStaleObjects(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("mark stale objects: %w", err)
 	}
 
-	// Then, get objects ready for deletion (marked > gracePeriod ago)
-	for {
-		objs, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
-			GracePeriodSeconds: gracePeriod,
-			LimitCount:         DeletionBatchSize,
-		})
-		if err != nil {
-			*queryErr = fmt.Errorf("failed to get objects ready for deletion: %w", err)
-			slog.Error("failed to get objects ready for deletion", "error", err)
-
-			break
-		}
-
-		if len(objs) == 0 {
-			break
-		}
-
-		for _, obj := range objs {
-			select {
-			case objectCh <- minio.ObjectInfo{Key: obj}:
-			case <-ctx.Done():
-				*queryErr = ctx.Err()
-
-				return
-			}
-		}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit mark tx: %w", err)
 	}
+
+	return n, nil
 }
 
-// handleDeletedObject processes a successfully deleted object and flushes batch if needed.
-func handleDeletedObject(ctx context.Context, objectName string, deletedKeys []string, queries *pg.Queries) ([]string, error) {
-	deletedKeys = append(deletedKeys, objectName)
-
-	if len(deletedKeys) >= DeletionBatchSize {
-		var err error
-
-		deletedKeys, err = flushBatch(ctx, deletedKeys, queries.DeleteObjects)
-
-		return deletedKeys, err
+// reapBatch locks a batch of expired tombstones, deletes them from S3 while
+// holding the locks, and drops the rows that are gone from S3. Returns a
+// keyset cursor, "" when done.
+func (s *Service) reapBatch(ctx context.Context, cutoff time.Time, afterKey string, stats *ObjectCleanupStats) (string, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin reap tx: %w", err)
 	}
 
-	return deletedKeys, nil
-}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-// handleFailedObject processes a failed deletion and flushes batch if needed.
-func handleFailedObject(ctx context.Context, objectName string, resultErr error, failedKeys []string, queries *pg.Queries) ([]string, []error, error) {
-	s3Errors := []error{fmt.Errorf("failed to remove object %q: %w", objectName, resultErr)}
-	slog.Error("failed to remove object", "object", objectName, "error", resultErr)
-	failedKeys = append(failedKeys, objectName)
+	commit := func() error {
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit reap tx: %w", err)
+		}
 
-	if len(failedKeys) >= DeletionBatchSize {
-		var err error
-
-		failedKeys, err = flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive)
-
-		return failedKeys, s3Errors, err
+		return nil
 	}
 
-	return failedKeys, s3Errors, nil
+	queries := pg.New(tx)
+
+	keys, err := queries.LockObjectsForDeletion(ctx, pg.LockObjectsForDeletionParams{
+		Cutoff:     pgtype.Timestamp{Time: cutoff, Valid: true},
+		AfterKey:   afterKey,
+		LimitCount: DeletionBatchSize,
+	})
+	if err != nil {
+		return "", fmt.Errorf("lock objects for deletion: %w", err)
+	}
+
+	if len(keys) == 0 {
+		return "", commit()
+	}
+
+	lastKey := keys[len(keys)-1]
+
+	pendingNow, err := queries.GetPendingKeysAmong(ctx, keys)
+	if err != nil {
+		return "", fmt.Errorf("recheck pending keys: %w", err)
+	}
+
+	skip := make(map[string]struct{}, len(pendingNow))
+	for _, k := range pendingNow {
+		skip[k] = struct{}{}
+	}
+
+	toDelete := make([]string, 0, len(keys))
+
+	for _, k := range keys {
+		if _, pending := skip[k]; !pending {
+			toDelete = append(toDelete, k)
+		}
+	}
+
+	deleted := s.deleteFromS3(ctx, toDelete, stats)
+
+	if _, err := queries.DeleteTombstonedObjects(ctx, deleted); err != nil {
+		return "", fmt.Errorf("delete object rows: %w", err)
+	}
+
+	if err := commit(); err != nil {
+		return "", err
+	}
+
+	stats.DeletedCount += len(deleted)
+
+	return lastKey, nil
 }
 
-func (s *Service) removeS3Objects(ctx context.Context,
-	objectCh <-chan minio.ObjectInfo,
-	stats *ObjectCleanupStats,
-	onProgress func(ObjectCleanupStats),
-) ([]error, []error) {
-	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
-	failedKeys := make([]string, 0, DeletionBatchSize)
-	deletedKeys := make([]string, 0, DeletionBatchSize)
+// deleteFromS3 returns the keys that are gone from S3 afterwards.
+func (s *Service) deleteFromS3(ctx context.Context, keys []string, stats *ObjectCleanupStats) []string {
+	if len(keys) == 0 {
+		return nil
+	}
 
-	queries := pg.New(s.Pool)
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		stats.FailedCount += len(keys)
 
-	notifyProgress := func() {
+		return nil
+	}
+
+	objectCh := make(chan minio.ObjectInfo, len(keys))
+	for _, k := range keys {
+		objectCh <- minio.ObjectInfo{Key: k}
+	}
+
+	close(objectCh)
+
+	failed := make(map[string]struct{})
+
+	for e := range s.MinioClient.RemoveObjects(ctx, s.Bucket, objectCh, minio.RemoveObjectsOptions{}) {
+		if minio.ToErrorResponse(e.Err).Code == minio.NoSuchKey {
+			continue
+		}
+
+		if isRateLimitError(e.Err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
+		// minio reports a request-level failure with an empty ObjectName.
+		if e.ObjectName == "" {
+			slog.Error("S3 multi-delete failed", "error", e.Err, "keys", len(keys))
+			stats.FailedCount += len(keys)
+
+			return nil
+		}
+
+		slog.Error("failed to delete object", "key", e.ObjectName, "error", e.Err)
+		failed[e.ObjectName] = struct{}{}
+	}
+
+	if len(failed) == 0 {
+		s.S3RateLimiter.RecordSuccess()
+	}
+
+	stats.FailedCount += len(failed)
+
+	deleted := make([]string, 0, len(keys)-len(failed))
+
+	for _, k := range keys {
+		if _, bad := failed[k]; !bad {
+			deleted = append(deleted, k)
+		}
+	}
+
+	return deleted
+}
+
+// cleanupOrphanObjects marks, then reaps tombstones older than gracePeriod.
+func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod time.Duration, onProgress func(ObjectCleanupStats)) (*ObjectCleanupStats, error) {
+	stats := &ObjectCleanupStats{}
+
+	notify := func() {
 		if onProgress != nil {
 			onProgress(*stats)
 		}
 	}
 
-	var s3Errors, batchErrors []error
+	marked, err := s.markStaleObjects(ctx)
+	if err != nil {
+		return stats, err
+	}
 
-	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
-		if result.Err != nil {
-			// Track rate limit errors to enable adaptive rate limiting
-			if isRateLimitError(result.Err) {
-				s.S3RateLimiter.RecordThrottle()
-			}
+	stats.MarkedCount = int(marked)
 
-			// If object doesn't exist in S3, treat it as successfully deleted
-			// to maintain consistency between S3 and database
-			if minio.ToErrorResponse(result.Err).Code == minio.NoSuchKey {
-				var err error
+	notify()
 
-				deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)
-				if err != nil {
-					batchErrors = append(batchErrors, err)
-				}
+	cutoff := time.Now().UTC().Add(-gracePeriod)
+	afterKey := ""
 
-				stats.DeletedCount++
-				notifyProgress()
+	for {
+		afterKey, err = s.reapBatch(ctx, cutoff, afterKey, stats)
 
-				continue
-			}
+		notify()
 
-			var (
-				newS3Errors []error
-				err         error
-			)
-
-			failedKeys, newS3Errors, err = handleFailedObject(ctx, result.ObjectName, result.Err, failedKeys, queries)
-
-			s3Errors = append(s3Errors, newS3Errors...)
-			if err != nil {
-				batchErrors = append(batchErrors, err)
-			}
-
-			stats.FailedCount++
-			notifyProgress()
-
-			continue
-		}
-
-		s.S3RateLimiter.RecordSuccess()
-
-		var err error
-
-		deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)
 		if err != nil {
-			batchErrors = append(batchErrors, err)
+			return stats, err
 		}
 
-		stats.DeletedCount++
-		notifyProgress()
-	}
-
-	// Flush remaining batches
-	if _, err := flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive); err != nil {
-		batchErrors = append(batchErrors, err)
-	}
-
-	if _, err := flushBatch(ctx, deletedKeys, queries.DeleteObjects); err != nil {
-		batchErrors = append(batchErrors, err)
-	}
-
-	return s3Errors, batchErrors
-}
-
-// cleanupOrphanObjects marks unreachable objects and deletes them from S3.
-// When onProgress is non-nil it is called after every individual
-// mark/delete/fail so callers can expose live counters.
-func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32, onProgress func(ObjectCleanupStats)) (*ObjectCleanupStats, error) {
-	// limit channel size to 1000, as minio limits to 1000 in one request
-	objectCh := make(chan minio.ObjectInfo, DeletionBatchSize)
-
-	stats := &ObjectCleanupStats{}
-
-	var queryErr error
-
-	go s.getObjectsForDeletion(ctx, objectCh, &queryErr, stats, gracePeriod, onProgress)
-
-	s3Errs, batchErrs := s.removeS3Objects(ctx, objectCh, stats, onProgress)
-
-	if queryErr != nil {
-		return stats, queryErr
-	}
-
-	// Prioritize batch errors (database operations) over S3 errors
-	// as they're more critical for data integrity
-	if len(batchErrs) > 0 {
-		batchErr := errors.Join(batchErrs...)
-		if len(s3Errs) > 0 {
-			s3Err := errors.Join(s3Errs...)
-
-			return stats, fmt.Errorf("%d batch operation failures: %w (also %d S3 failures: %w)",
-				len(batchErrs), batchErr, len(s3Errs), s3Err)
+		if afterKey == "" {
+			break
 		}
-
-		return stats, fmt.Errorf("%d batch operation failures: %w", len(batchErrs), batchErr)
 	}
 
-	if len(s3Errs) > 0 {
-		return stats, fmt.Errorf("%d S3 failures: %w", len(s3Errs), errors.Join(s3Errs...))
+	if stats.FailedCount > 0 {
+		return stats, fmt.Errorf("failed to delete %d objects from S3", stats.FailedCount)
 	}
 
 	return stats, nil

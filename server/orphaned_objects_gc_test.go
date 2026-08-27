@@ -53,29 +53,6 @@ func createOrphanedObjects(t *testing.T, service *server.Service, objects []stru
 	}
 }
 
-func deleteObjectsFromS3AndDB(t *testing.T, service *server.Service, queries *pg.Queries, objsToDelete []string) {
-	t.Helper()
-	ctx := t.Context()
-
-	// Delete from S3
-	objectsCh := make(chan minio.ObjectInfo, len(objsToDelete))
-	for _, obj := range objsToDelete {
-		objectsCh <- minio.ObjectInfo{Key: obj}
-	}
-
-	close(objectsCh)
-
-	for result := range service.MinioClient.RemoveObjectsWithResult(ctx, service.Bucket, objectsCh, minio.RemoveObjectsOptions{}) {
-		if result.Err != nil {
-			t.Errorf("Failed to delete object %s: %v", result.ObjectName, result.Err)
-		}
-	}
-
-	// Delete from database
-	err := queries.DeleteObjects(ctx, objsToDelete)
-	ok(t, err)
-}
-
 // TestOrphanedObjectsGC validates that orphaned objects (objects that reference
 // each other but are not reachable from any closure) are properly garbage collected.
 //
@@ -217,18 +194,12 @@ func TestOrphanedObjectsGC(t *testing.T) {
 		t.Error("Orphaned Y NAR SHOULD be marked for deletion")
 	}
 
-	// Actually delete the objects (simulate full GC)
-	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
-		GracePeriodSeconds: 0,
-		LimitCount:         1000,
-	})
+	stats, err := service.CleanupOrphanObjectsForTest(ctx, 0)
 	ok(t, err)
 
-	if len(objsToDelete) == 0 {
-		t.Fatal("Expected objects to be ready for deletion")
+	if stats.DeletedCount == 0 {
+		t.Fatal("Expected objects to be deleted")
 	}
-
-	deleteObjectsFromS3AndDB(t, service, queries, objsToDelete)
 
 	// Verify final state
 	checkObjectExists := func(key string) bool {
@@ -292,7 +263,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	t.Logf("  - Deleted: %d objects from closure B", 2)
 	t.Logf("  - Deleted: %d orphaned chain objects (X1->X2->X3)", 6)
 	t.Logf("  - Deleted: %d orphaned single objects (Y)", 2)
-	t.Logf("  - Total deleted: %d objects", len(objsToDelete))
+	t.Logf("  - Total deleted: %d objects", stats.DeletedCount)
 }
 
 // TestOrphanedObjectsGCStressTest is a more intensive stress test that creates
@@ -433,44 +404,14 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	ok(t, err)
 
 	// ===== Run GC =====
-	_, err = queries.MarkStaleObjects(ctx)
+	stats, err := service.CleanupOrphanObjectsForTest(ctx, 0)
 	ok(t, err)
 
-	// Get objects ready for deletion
-	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
-		GracePeriodSeconds: 0,
-		LimitCount:         10000,
-	})
-	ok(t, err)
-
-	t.Logf("Marked %d objects for deletion", len(objsToDelete))
-
-	// Delete from S3
-	objectsCh := make(chan minio.ObjectInfo, len(objsToDelete))
-	for _, obj := range objsToDelete {
-		objectsCh <- minio.ObjectInfo{Key: obj}
+	if stats.FailedCount > 0 {
+		t.Fatalf("Encountered %d deletion errors", stats.FailedCount)
 	}
 
-	close(objectsCh)
-
-	deletionErrors := 0
-
-	for result := range service.MinioClient.RemoveObjectsWithResult(ctx, service.Bucket,
-		objectsCh, minio.RemoveObjectsOptions{}) {
-		if result.Err != nil {
-			t.Errorf("Failed to delete object %s: %v", result.ObjectName, result.Err)
-
-			deletionErrors++
-		}
-	}
-
-	if deletionErrors > 0 {
-		t.Fatalf("Encountered %d deletion errors", deletionErrors)
-	}
-
-	// Delete from database
-	err = queries.DeleteObjects(ctx, objsToDelete)
-	ok(t, err)
+	objsToDelete := stats.DeletedCount
 
 	// ===== Verify all active objects still exist =====
 	for key := range activeKeys {
@@ -509,108 +450,5 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	t.Logf("Stress test completed successfully:")
 	t.Logf("  - Active objects preserved: %d", len(activeKeys))
 	t.Logf("  - Objects deleted: %d", len(deletedKeys))
-	t.Logf("  - Total GC'd: %d", len(objsToDelete))
-}
-
-// TestResurrectedObjectNotDeleted tests the critical bug where objects marked
-// as active after S3 deletion failure would still be selected for deletion
-// on the next GC run because GetObjectsReadyForDeletion only checked
-// first_deleted_at, not deleted_at.
-//
-// Bug scenario:
-// 1. Create closure A with objects
-// 2. Delete closure A (objects become orphaned and marked for deletion)
-// 3. Delete objects from S3 manually (simulating S3 deletion)
-// 4. Resurrect closure A (objects should become active again)
-// 5. Mark objects as active (simulating S3 deletion failure recovery)
-// 6. Run GC again - objects should NOT be selected for deletion
-//
-// Without the fix, step 6 would incorrectly return the resurrected objects,
-// causing active objects to be deleted.
-func TestResurrectedObjectNotDeleted(t *testing.T) {
-	t.Parallel()
-
-	service := createTestService(t)
-	defer service.Close()
-
-	ctx := t.Context()
-	queries := pg.New(service.Pool)
-
-	// Step 1: Create a closure with objects
-	hash := "testobject111111111111111111111"
-	createTestClosure(t, service, queries, hash)
-
-	objectKey := hash + ".narinfo"
-	narKey := "nar/" + hash + ".nar.zst"
-
-	// Step 2: Delete the closure (objects become orphaned)
-	// Use a cutoff time slightly in the future to ensure deletion
-	time.Sleep(10 * time.Millisecond)
-
-	cutoffTime := time.Now().UTC().Add(1 * time.Second)
-
-	deletedCount, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
-		Time:  cutoffTime,
-		Valid: true,
-	})
-	ok(t, err)
-
-	if deletedCount < 1 {
-		t.Fatalf("Expected at least 1 closure to be deleted, got %d", deletedCount)
-	}
-
-	// Step 3: Run GC marking phase - objects should be marked for deletion
-	markedCount, err := queries.MarkStaleObjects(ctx)
-	ok(t, err)
-
-	if markedCount < 2 {
-		t.Fatalf("Expected at least 2 objects to be marked, got %d", markedCount)
-	}
-
-	// Verify objects are marked for deletion
-	var deletedAt, firstDeletedAt pgtype.Timestamp
-
-	err = service.Pool.QueryRow(ctx,
-		"SELECT deleted_at, first_deleted_at FROM objects WHERE key = $1",
-		objectKey).Scan(&deletedAt, &firstDeletedAt)
-	ok(t, err)
-
-	if !deletedAt.Valid || !firstDeletedAt.Valid {
-		t.Fatal("Objects should be marked for deletion after MarkStaleObjects")
-	}
-
-	// Step 4 & 5: Simulate S3 deletion failure scenario
-	// In real code, this happens when S3 deletion fails in removeS3Objects
-	// and MarkObjectsAsActive is called in handleFailedObject
-	err = queries.MarkObjectsAsActive(ctx, []string{objectKey, narKey})
-	ok(t, err)
-
-	// Verify objects are resurrected (deleted_at = NULL, first_deleted_at still set)
-	err = service.Pool.QueryRow(ctx,
-		"SELECT deleted_at, first_deleted_at FROM objects WHERE key = $1",
-		objectKey).Scan(&deletedAt, &firstDeletedAt)
-	ok(t, err)
-
-	if deletedAt.Valid {
-		t.Fatal("Object should be resurrected (deleted_at should be NULL)")
-	}
-
-	if !firstDeletedAt.Valid {
-		t.Fatal("Object should still have first_deleted_at set (this is the bug trigger)")
-	}
-
-	// Step 6: Next GC run - GetObjectsReadyForDeletion should NOT return resurrected objects
-	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
-		GracePeriodSeconds: 0,
-		LimitCount:         1000,
-	})
-	ok(t, err)
-
-	// Check if the resurrected objects were incorrectly selected for deletion
-	for _, key := range objsToDelete {
-		if key == objectKey || key == narKey {
-			t.Fatalf("BUG: Resurrected object %q was incorrectly selected for deletion! "+
-				"This would cause active objects to be deleted from S3.", key)
-		}
-	}
+	t.Logf("  - Total GC'd: %d", objsToDelete)
 }

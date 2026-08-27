@@ -20,7 +20,7 @@ BEGIN
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
-    -- Commit the pending objects with their references
+    -- Upsert all closure objects, resurrecting tombstones. Skip no-op updates.
     INSERT INTO objects (key, refs, size)
     SELECT key, refs, size FROM pending_objects
     WHERE pending_closure_id = closure_id
@@ -36,9 +36,10 @@ BEGIN
         ),
         -- Keep an existing size; set it only when currently unknown.
         size = COALESCE(objects.size, EXCLUDED.size),
-        -- Resurrect previously tombstoned objects
-        deleted_at = NULL,
-        first_deleted_at = NULL;
+        deleted_at = NULL
+    WHERE objects.deleted_at IS NOT NULL
+        OR (objects.size IS NULL AND EXCLUDED.size IS NOT NULL)
+        OR NOT (objects.refs @> EXCLUDED.refs);
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;

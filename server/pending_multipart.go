@@ -138,12 +138,6 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 	for i := range numParts {
 		partNumber := startPartNumber + i
 
-		// Wait for rate limiter
-		if err := s.S3RateLimiter.Wait(ctx); err != nil {
-			return nil, err
-		}
-
-		// Use Client.Presign with query parameters for multipart
 		reqParams := make(url.Values)
 		reqParams.Set("uploadId", uploadID)
 		reqParams.Set("partNumber", strconv.Itoa(partNumber))
@@ -155,14 +149,9 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 			maxSignedURLDuration,
 			reqParams)
 		if err != nil {
-			if isRateLimitError(err) {
-				s.S3RateLimiter.RecordThrottle()
-			}
-
 			return nil, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
 		}
 
-		s.S3RateLimiter.RecordSuccess()
 		partURLs[i] = presignedURL.String()
 	}
 

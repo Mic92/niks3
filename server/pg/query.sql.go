@@ -23,14 +23,13 @@ old_closures AS (
 ),
 
 inserted_objects AS (
-    INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+    INSERT INTO objects (key, refs, deleted_at)
     SELECT
         po.key,
         po.refs,
-        cutoff_time.time,
-        cutoff_time.time
+        timezone('UTC', now())
     FROM pending_objects AS po
-    JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
+    JOIN old_closures oc ON po.pending_closure_id = oc.id
     ON CONFLICT (key) DO NOTHING
     RETURNING key
 ),
@@ -47,8 +46,8 @@ USING old_closures
 WHERE pending_closures.id = old_closures.id
 `
 
-// Insert pending objects into objects table if they don't already exist
-// We mark them as deleted so they can be cleaned up later
+// Whatever an abandoned upload left in S3 becomes a tombstone so the reaper
+// removes it after the normal grace period.
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
@@ -105,16 +104,6 @@ func (q *Queries) DeleteMultipartUpload(ctx context.Context, uploadID string) er
 	return err
 }
 
-const deleteObjects = `-- name: DeleteObjects :exec
-DELETE FROM objects
-WHERE key = any($1::varchar [])
-`
-
-func (q *Queries) DeleteObjects(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, deleteObjects, dollar_1)
-	return err
-}
-
 const deletePin = `-- name: DeletePin :exec
 DELETE FROM pins
 WHERE name = $1
@@ -123,6 +112,19 @@ WHERE name = $1
 func (q *Queries) DeletePin(ctx context.Context, name string) error {
 	_, err := q.db.Exec(ctx, deletePin, name)
 	return err
+}
+
+const deleteTombstonedObjects = `-- name: DeleteTombstonedObjects :execrows
+DELETE FROM objects
+WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) DeleteTombstonedObjects(ctx context.Context, dollar_1 []string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTombstonedObjects, dollar_1)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getClosure = `-- name: GetClosure :one
@@ -188,39 +190,34 @@ func (q *Queries) GetClosureObjects(ctx context.Context, key string) ([]string, 
 	return items, nil
 }
 
-const getExistingObjects = `-- name: GetExistingObjects :many
-WITH ct AS (
-    SELECT timezone('UTC', now()) AS now
+const getLiveObjects = `-- name: GetLiveObjects :many
+WITH locked AS (
+    SELECT key, deleted_at FROM objects
+    WHERE key = any($1::varchar [])
+    FOR SHARE
 )
 
-SELECT
-    o.key AS key,
-    (CASE
-        WHEN o.first_deleted_at IS NULL THEN NULL
-        ELSE ct.now - o.first_deleted_at
-    END)::interval AS deleted_at
-FROM objects AS o, ct
-WHERE key = any($1::varchar [])
+SELECT key FROM locked WHERE deleted_at IS NULL
 `
 
-type GetExistingObjectsRow struct {
-	Key       string          `json:"key"`
-	DeletedAt pgtype.Interval `json:"deleted_at"`
-}
-
-func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]GetExistingObjectsRow, error) {
-	rows, err := q.db.Query(ctx, getExistingObjects, dollar_1)
+// Must run after the caller's pending_objects rows are committed. FOR SHARE
+// blocks on rows the GC reaper currently holds, so once this returns any
+// reaper batch touching these keys has finished and later batches will see
+// the pending rows and skip them. Tombstoned rows are locked too but not
+// returned: their S3 object may already be gone, so the client re-uploads.
+func (q *Queries) GetLiveObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getLiveObjects, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []GetExistingObjectsRow
+	var items []string
 	for rows.Next() {
-		var i GetExistingObjectsRow
-		if err := rows.Scan(&i.Key, &i.DeletedAt); err != nil {
+		var key string
+		if err := rows.Scan(&key); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -262,41 +259,6 @@ func (q *Queries) GetObjectStats(ctx context.Context) (GetObjectStatsRow, error)
 	return i, err
 }
 
-const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
-SELECT key
-FROM objects
-WHERE first_deleted_at IS NOT NULL
-  AND deleted_at IS NOT NULL
-  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
-LIMIT $2
-`
-
-type GetObjectsReadyForDeletionParams struct {
-	GracePeriodSeconds int32 `json:"grace_period_seconds"`
-	LimitCount         int32 `json:"limit_count"`
-}
-
-// Returns objects marked for >= grace_period, safe to delete from S3
-func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.LimitCount)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
 SELECT upload_id, object_key
 FROM multipart_uploads mu
@@ -322,6 +284,33 @@ func (q *Queries) GetOldMultipartUploads(ctx context.Context, dollar_1 int32) ([
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPendingKeysAmong = `-- name: GetPendingKeysAmong :many
+SELECT DISTINCT key FROM pending_objects
+WHERE key = any($1::varchar [])
+`
+
+// Second check with a fresh snapshot after LockObjectsForDeletion took its
+// row locks: catches pending rows committed while the first statement ran.
+func (q *Queries) GetPendingKeysAmong(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getPendingKeysAmong, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -516,14 +505,45 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 	return items, nil
 }
 
-const markObjectsAsActive = `-- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar [])
+const lockObjectsForDeletion = `-- name: LockObjectsForDeletion :many
+SELECT o.key
+FROM objects AS o
+WHERE o.deleted_at IS NOT NULL
+  AND o.deleted_at <= $1::timestamp
+  AND o.key > $2::varchar
+  AND NOT EXISTS (SELECT 1 FROM pending_objects AS po WHERE po.key = o.key)
+ORDER BY o.key
+LIMIT $3
+FOR UPDATE OF o
 `
 
-func (q *Queries) MarkObjectsAsActive(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, markObjectsAsActive, dollar_1)
-	return err
+type LockObjectsForDeletionParams struct {
+	Cutoff     pgtype.Timestamp `json:"cutoff"`
+	AfterKey   string           `json:"after_key"`
+	LimitCount int32            `json:"limit_count"`
+}
+
+// Run inside a transaction that stays open while the batch is deleted from
+// S3. Keys referenced by any pending closure are excluded; see GetLiveObjects
+// for the other half of the handshake.
+func (q *Queries) LockObjectsForDeletion(ctx context.Context, arg LockObjectsForDeletionParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockObjectsForDeletion, arg.Cutoff, arg.AfterKey, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markStaleObjects = `-- name: MarkStaleObjects :execrows
@@ -558,13 +578,10 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND o.deleted_at IS NULL  -- Only mark fresh objects
-    FOR UPDATE
+        AND o.deleted_at IS NULL
 )
 UPDATE objects
-SET
-    deleted_at = ct.now,
-    first_deleted_at = COALESCE(first_deleted_at, ct.now)
+SET deleted_at = ct.now
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 `
@@ -588,8 +605,7 @@ ON CONFLICT (key) DO UPDATE SET
         )
     ),
     size = coalesce(objects.size, excluded.size),
-    deleted_at = NULL,
-    first_deleted_at = NULL
+    deleted_at = NULL
 `
 
 type RegisterCompletedObjectParams struct {

@@ -67,3 +67,8 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
 }
+
+// CleanupOrphanObjectsForTest runs mark+reap synchronously.
+func (s *Service) CleanupOrphanObjectsForTest(ctx context.Context, gracePeriod time.Duration) (*ObjectCleanupStats, error) {
+	return s.cleanupOrphanObjects(ctx, gracePeriod, nil)
+}

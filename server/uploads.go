@@ -134,7 +134,7 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		objectsMap[object.Key] = object
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap, req.VerifyS3)
+	upload, err := s.createPendingClosure(r.Context(), *req.Closure, objectsMap, req.VerifyS3)
 	if err != nil {
 		if s.handleS3Error(w, err, "create pending closure") {
 			return
