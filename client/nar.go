@@ -52,17 +52,49 @@ var (
 	targetEncoded          = encodeStaticString("target")
 )
 
-// stripCaseHackSuffix removes the case hack suffix from filenames on macOS.
+// stripCaseHackSuffix undoes Nix's "~nix~case~hack~<N>" mangling
+// (libutil/archive.cc truncates at the first occurrence).
 func stripCaseHackSuffix(name string) string {
 	if !useCaseHack {
 		return name
 	}
 
-	if strings.HasSuffix(name, caseHackSuffix) {
-		return name[:len(name)-len(caseHackSuffix)]
+	if i := strings.Index(name, caseHackSuffix); i >= 0 {
+		return name[:i]
 	}
 
 	return name
+}
+
+type narDirEntry struct {
+	name  string // name inside the NAR
+	entry os.DirEntry
+}
+
+// readNarDirectory lists path sorted by NAR name (case-hack stripped).
+func readNarDirectory(path string) ([]narDirEntry, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading directory %s: %w", path, err)
+	}
+
+	out := make([]narDirEntry, len(entries))
+	for i, e := range entries {
+		out[i] = narDirEntry{name: stripCaseHackSuffix(e.Name()), entry: e}
+	}
+
+	if useCaseHack {
+		slices.SortFunc(out, func(a, b narDirEntry) int { return strings.Compare(a.name, b.name) })
+
+		for i := 1; i < len(out); i++ {
+			if out[i].name == out[i-1].name {
+				return nil, fmt.Errorf("file name collision in %s between %q and %q",
+					path, out[i-1].entry.Name(), out[i].entry.Name())
+			}
+		}
+	}
+
+	return out, nil
 }
 
 // writeUint64 writes a little-endian uint64 using the narWriter's scratch
@@ -385,22 +417,17 @@ func walkNode(path, name string, mode os.FileMode, info os.FileInfo) (*narNode, 
 }
 
 func walkDirectory(path, name string) (*narNode, error) {
-	entries, err := os.ReadDir(path)
+	entries, err := readNarDirectory(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading directory %s: %w", path, err)
+		return nil, err
 	}
-
-	// Sort entries by name (NAR requirement)
-	slices.SortFunc(entries, func(a, b os.DirEntry) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
 
 	node := &narNode{name: name, path: path, kind: 'd', children: make([]*narNode, 0, len(entries))}
 
-	for _, entry := range entries {
-		entryName := entry.Name()
-		narName := stripCaseHackSuffix(entryName)
-		childPath := filepath.Join(path, entryName)
+	for _, e := range entries {
+		entry := e.entry
+		narName := e.name
+		childPath := filepath.Join(path, entry.Name())
 
 		// Use entry.Type() to avoid an extra stat syscall when possible.
 		// Fall back to entry.Info() if Type() returns DT_UNKNOWN.

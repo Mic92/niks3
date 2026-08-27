@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // GenerateListingOnly creates a directory listing by walking the filesystem
@@ -60,24 +59,16 @@ func generateRegularFileListing(_ string, info os.FileInfo) (NarListingEntry, er
 }
 
 func generateDirectoryListing(path string) (NarListingEntry, error) {
-	entries, err := os.ReadDir(path)
+	entries, err := readNarDirectory(path)
 	if err != nil {
-		return NarListingEntry{}, fmt.Errorf("reading directory %s: %w", path, err)
+		return NarListingEntry{}, err
 	}
-
-	// Sort entries by name (same as NAR format)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
 
 	entryMap := make(map[string]NarListingEntry)
 
-	for _, entry := range entries {
-		name := entry.Name()
-		// Strip case hack suffix on macOS (must match NAR serialization)
-		narName := stripCaseHackSuffix(name)
-
-		entryPath := filepath.Join(path, name)
+	for _, e := range entries {
+		narName := e.name
+		entryPath := filepath.Join(path, e.entry.Name())
 
 		listingEntry, err := generateListingEntry(entryPath)
 		if err != nil {
