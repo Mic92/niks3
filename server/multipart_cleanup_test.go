@@ -9,13 +9,13 @@ import (
 )
 
 func TestMultipartCleanup(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-
 	t.Parallel()
 
 	service := createTestService(t)
 	defer service.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
 	// Create a pending closure with multipart upload
 	closureHash := "dadb44fdadb44fdadb44fdadb44f0000"

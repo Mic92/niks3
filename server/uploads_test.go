@@ -242,13 +242,13 @@ func handlePresignedUpload(ctx context.Context, t *testing.T, presignedURL strin
 }
 
 func TestService_createPendingClosureHandler(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
 	t.Parallel()
 
 	service := createTestService(t)
 	defer service.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 
 	invalidBody, err := json.Marshal(map[string]any{})
 	ok(t, err)
@@ -368,13 +368,13 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 }
 
 func TestService_verifyS3Integrity(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
 	t.Parallel()
 
 	service := createTestService(t)
 	defer service.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 
 	// Step 1: Upload a closure
 	closureKey := "dadb44fdadb44fdadb44fdadb44f0000"
