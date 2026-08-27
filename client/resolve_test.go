@@ -45,4 +45,16 @@ func TestResolveStorePath(t *testing.T) {
 	if resolved != storePath {
 		t.Errorf("expected %q, got %q", storePath, resolved)
 	}
+
+	// Non-canonical spellings reduce to the store object.
+	for _, in := range []string{storePath + "/", storePath + "/bin/hello", storePath + "//bin"} {
+		resolved, err = c.ResolveStorePath(in)
+		if err != nil {
+			t.Fatalf("ResolveStorePath(%q): %v", in, err)
+		}
+
+		if resolved != storePath {
+			t.Errorf("ResolveStorePath(%q) = %q, want %q", in, resolved, storePath)
+		}
+	}
 }

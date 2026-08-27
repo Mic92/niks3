@@ -77,7 +77,7 @@ func getPartBuffer(partSize int) ([]byte, func()) {
 		return make([]byte, multipartPartSize), func() {}
 	}
 
-	return *ptr, func() { uploadBufferPool.Put(ptr) }
+	return (*ptr)[:partSize], func() { uploadBufferPool.Put(ptr) }
 }
 
 // ErrUploadSuperseded means a concurrent closure already finished the same NAR
@@ -212,7 +212,18 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 }
 
 // uploadMultipart uploads a stream in parts using presigned URLs (sequential).
+// uploadMultipart maps a 404 from any step to ErrUploadSuperseded if the
+// object now exists (a peer finished it and the server dropped our upload).
 func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
+	err := c.uploadMultipartSteps(ctx, r, multipartInfo, objectKey, partSize)
+	if err != nil && c.supersededByPeer(ctx, objectKey, err) {
+		return ErrUploadSuperseded
+	}
+
+	return err
+}
+
+func (c *Client) uploadMultipartSteps(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
 	slog.Debug("Uploading", "object_key", objectKey, "part_size", partSize)
 
 	var completedParts []CompletedPart
@@ -264,10 +275,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 		etag, err := c.uploadPart(ctx, partURL, partData)
 		if err != nil {
-			if c.supersededByPeer(ctx, objectKey, err) {
-				return ErrUploadSuperseded
-			}
-
 			return fmt.Errorf("uploading part %d: %w", partNumber, err)
 		}
 
@@ -293,10 +300,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	// Complete the multipart upload
 	err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, completedParts)
 	if err != nil {
-		if c.supersededByPeer(ctx, objectKey, err) {
-			return ErrUploadSuperseded
-		}
-
 		return fmt.Errorf("completing multipart upload: %w", err)
 	}
 

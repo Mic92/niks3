@@ -71,10 +71,28 @@ func resolveSymlinks(paths []string, storeDir string) ([]string, error) {
 			currentPath = linkTarget
 		}
 
-		resolved = append(resolved, currentPath)
+		top, err := toplevelStorePath(currentPath, storeDir)
+		if err != nil {
+			return nil, err
+		}
+
+		resolved = append(resolved, top)
 	}
 
 	return resolved, nil
+}
+
+// toplevelStorePath reduces a path inside the store to its store object,
+// e.g. /nix/store/<hash>-foo/bin/foo -> /nix/store/<hash>-foo.
+func toplevelStorePath(path, storeDir string) (string, error) {
+	rel, err := filepath.Rel(storeDir, filepath.Clean(path))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("not a store path: %s", path)
+	}
+
+	name, _, _ := strings.Cut(rel, string(filepath.Separator))
+
+	return filepath.Join(storeDir, name), nil
 }
 
 // ResolveStorePath resolves symlinks (e.g. a nix-build ./result link) until
@@ -323,24 +341,35 @@ nextClosure:
 	return kept, prunedInfos, skipped
 }
 
-// CreatePendingClosures creates pending closures and returns all pending objects and closure ID to narinfo key mapping.
-func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (map[string]PendingObject, map[string]string, error) {
-	pendingObjects := make(map[string]PendingObject)
-	closureIDToNarinfoKey := make(map[string]string) // Maps closure ID -> narinfo key
+// PendingClosures is the merged result of registering several closures.
+type PendingClosures struct {
+	Objects map[string]PendingObject
+	// OwnerByKey is the closure that offered the key and may sign it.
+	OwnerByKey map[string]string
+	IDs        []string
+}
+
+// CreatePendingClosures registers each closure with the server.
+func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (*PendingClosures, error) {
+	pc := &PendingClosures{Objects: map[string]PendingObject{}, OwnerByKey: map[string]string{}}
 
 	for _, closure := range closures {
 		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects, c.VerifyS3Integrity)
 		if err != nil {
-			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
+			return nil, fmt.Errorf("creating pending closure: %w", err)
 		}
 
-		closureIDToNarinfoKey[resp.ID] = closure.NarinfoKey
+		pc.IDs = append(pc.IDs, resp.ID)
 
-		// Collect pending objects
-		maps.Copy(pendingObjects, resp.PendingObjects)
+		for key, obj := range resp.PendingObjects {
+			if _, seen := pc.Objects[key]; !seen {
+				pc.Objects[key] = obj
+				pc.OwnerByKey[key] = resp.ID
+			}
+		}
 	}
 
-	return pendingObjects, closureIDToNarinfoKey, nil
+	return pc, nil
 }
 
 type narinfoTask struct {
@@ -521,14 +550,13 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 		slog.Debug("Found realisations for CA derivations", "count", len(result.RealisationsByKey))
 	}
 
-	// Create pending closures and collect what needs uploading
-	pendingObjects, closureIDToNarinfoKey, err := c.CreatePendingClosures(ctx, result.Closures)
+	pending, err := c.CreatePendingClosures(ctx, result.Closures)
 	if err != nil {
 		return nil, fmt.Errorf("creating pending closures: %w", err)
 	}
 
-	// Calculate how many paths are already cached vs need uploading
-	// Count NAR objects in pendingObjects (each NAR corresponds to one store path)
+	pendingObjects := pending.Objects
+
 	newPaths := 0
 
 	for key := range pendingObjects {
@@ -540,9 +568,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	cachedPaths := len(pathInfos) - newPaths
 
 	slog.Info(fmt.Sprintf("Uploading %d paths to %s (%d already cached)", newPaths, c.baseURL.Hostname(), cachedPaths))
-	slog.Debug("Need to upload objects", "pending", len(pendingObjects), "closures", len(closureIDToNarinfoKey))
+	slog.Debug("Need to upload objects", "pending", len(pendingObjects), "closures", len(pending.IDs))
 
-	// Upload all pending objects and collect narinfo metadata
 	narinfoMetadata, err := c.UploadPendingObjects(ctx, &UploadContext{
 		PendingObjects:    pendingObjects,
 		PathInfoByHash:    result.PathInfoByHash,
@@ -556,39 +583,22 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	slog.Debug("Uploaded all objects", "narinfos", len(narinfoMetadata))
 
-	// Build a quick lookup map: narinfo key -> closure
-	closureByNarinfoKey := make(map[string]ClosureInfo)
-	for _, closure := range result.Closures {
-		closureByNarinfoKey[closure.NarinfoKey] = closure
-	}
-
-	// Build per-closure narinfo maps for signing
-	// Only include narinfos for objects that belong to each specific closure
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
 
-	for id, topLevelNarinfoKey := range closureIDToNarinfoKey {
-		closure := closureByNarinfoKey[topLevelNarinfoKey]
-		closureNarinfos := make(map[string]NarinfoMetadata)
-
-		// Add only narinfos for objects in this closure
-		for _, obj := range closure.Objects {
-			if obj.Type == ObjectTypeNarinfo {
-				if meta, ok := narinfoMetadata[obj.Key]; ok {
-					closureNarinfos[obj.Key] = meta
-				}
-			}
+	for key, meta := range narinfoMetadata {
+		owner := pending.OwnerByKey[key]
+		if narinfosByClosureID[owner] == nil {
+			narinfosByClosureID[owner] = map[string]NarinfoMetadata{}
 		}
 
-		narinfosByClosureID[id] = closureNarinfos
+		narinfosByClosureID[owner][key] = meta
 	}
 
-	// Sign narinfos for each closure and upload them
 	if err := c.SignAndUploadNarinfos(ctx, narinfosByClosureID, pendingObjects); err != nil {
 		return nil, fmt.Errorf("signing and uploading narinfos: %w", err)
 	}
 
-	// Complete all pending closures (all objects including narinfos are now uploaded)
-	for id := range closureIDToNarinfoKey {
+	for _, id := range pending.IDs {
 		if err := c.CompletePendingClosure(ctx, id); err != nil {
 			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
 		}

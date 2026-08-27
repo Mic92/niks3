@@ -21,20 +21,26 @@ func TestUploadMultipart_SupersededByPeer(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
+		failAt       string
 		objectExists bool
 		wantErr      error
 	}{
-		{name: "exists", objectExists: true, wantErr: client.ErrUploadSuperseded},
-		{name: "missing", objectExists: false, wantErr: nil},
+		{name: "exists", failAt: "part", objectExists: true, wantErr: client.ErrUploadSuperseded},
+		{name: "missing", failAt: "part", objectExists: false, wantErr: nil},
+		{name: "request-parts", failAt: "request-parts", objectExists: true, wantErr: client.ErrUploadSuperseded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
-				case r.Method == http.MethodPut:
+				case r.Method == http.MethodPut && tc.failAt == "part":
 					// The presigned part upload: peer already aborted it.
 					http.Error(w, "no such upload", http.StatusNotFound)
+				case r.Method == http.MethodPut:
+					w.Header().Set("ETag", `"x"`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/multipart/request-parts":
+					http.Error(w, "upload not found", http.StatusNotFound)
 				case r.Method == http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/objects/"):
 					if tc.objectExists {
 						w.WriteHeader(http.StatusNoContent)
@@ -57,8 +63,9 @@ func TestUploadMultipart_SupersededByPeer(t *testing.T) {
 				PartURLs: []string{srv.URL + "/part/1"},
 			}
 
-			err = c.UploadMultipart(context.Background(), bytes.NewReader([]byte("payload")),
-				info, "nar/abc.nar.zst", client.MultipartPartSize)
+			// Two parts with one URL: the second needs request-parts.
+			err = c.UploadMultipart(context.Background(), bytes.NewReader([]byte("payload!")),
+				info, "nar/abc.nar.zst", 4)
 
 			switch {
 			case tc.wantErr != nil:

@@ -312,7 +312,7 @@ func GetStorePathHash(storePath string) (string, error) {
 	return hash, nil
 }
 
-// RealisationKey is the binary-cache object key for r.
+// Key is the binary-cache object key for r.
 func (r *RealisationInfo) Key() string { return "realisations/" + r.ID + ".doi" }
 
 // QueryRealisations returns realisations of CA paths keyed by full store

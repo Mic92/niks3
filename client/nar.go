@@ -59,11 +59,9 @@ func stripCaseHackSuffix(name string) string {
 		return name
 	}
 
-	if i := strings.Index(name, caseHackSuffix); i >= 0 {
-		return name[:i]
-	}
+	base, _, _ := strings.Cut(name, caseHackSuffix)
 
-	return name
+	return base
 }
 
 type narDirEntry struct {
