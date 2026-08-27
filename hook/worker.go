@@ -32,6 +32,8 @@ type Worker struct {
 	push      PushFunc
 	batchSize int
 	notify    <-chan struct{} // Woken on enqueue.
+
+	DrainTimeout time.Duration // 0 = unbounded
 }
 
 // NewWorker creates a Worker that reads from queue and calls push for each batch.
@@ -118,13 +120,22 @@ func (w *Worker) Run(ctx context.Context) {
 // row make no progress, since that points at the server rather than at
 // individual paths; retried paths sort behind untried ones, so little is lost.
 //
-// No timeout: the supervisor (systemd / CI post step) enforces the shutdown
-// budget and SIGKILLs on expiry.
+// Unbounded by default since systemd enforces TimeoutStopSec; DrainTimeout is
+// for unsupervised runs. Either way an external SIGKILL remains the backstop.
 func (w *Worker) drain() {
+	ctx := context.Background()
+
+	if w.DrainTimeout > 0 {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(ctx, w.DrainTimeout)
+		defer cancel()
+	}
+
 	stalled := 0
 
-	for stalled < isolationProbes {
-		batch, progress := w.step(context.Background())
+	for stalled < isolationProbes && ctx.Err() == nil {
+		batch, progress := w.step(ctx)
 		if len(batch) == 0 {
 			break
 		}
@@ -193,6 +204,11 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 	}
 
 	slog.Error("Upload failed", "error", err, "count", len(batch))
+
+	// Cancelled/timed out: not the paths' fault, leave them where they are.
+	if ctx.Err() != nil {
+		return false
+	}
 
 	if len(batch) == 1 {
 		w.retry(batch)
