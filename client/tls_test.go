@@ -137,6 +137,40 @@ func TestSetClientTLS(t *testing.T) {
 		}
 	})
 
+	// A second TLS server standing in for S3, signed by a CA the client was
+	// not told about via --ca-cert: the private CA must not replace the
+	// trust store used for presigned URLs.
+	t.Run("ca-cert does not apply to S3 requests", func(t *testing.T) {
+		t.Parallel()
+
+		s3 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(s3.Close)
+
+		s3Transport, ok := s3.Client().Transport.(*http.Transport)
+		if !ok {
+			t.Fatal("unexpected transport type")
+		}
+
+		c := client.NewTestClient(&http.Client{Transport: s3Transport.Clone()}, client.DefaultRetryConfig())
+		if err := c.SetClientTLS(clientCertPath, clientKeyPath, serverCertPath); err != nil {
+			t.Fatalf("SetClientTLS: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, s3.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := c.DoS3Request(t.Context(), req)
+		if err != nil {
+			t.Fatalf("S3 request failed after SetClientTLS: %v", err)
+		}
+
+		_ = resp.Body.Close()
+	})
+
 	t.Run("preserves debug logging transport", func(t *testing.T) {
 		t.Parallel()
 

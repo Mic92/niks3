@@ -23,9 +23,11 @@ const compressionZstd = "zstd"
 
 // Client handles uploads to the niks3 server.
 type Client struct {
-	baseURL                 *url.URL
-	tokenSource             TokenSource
-	httpClient              *http.Client
+	baseURL     *url.URL
+	tokenSource TokenSource
+	// TLS flags apply to serverHTTP only. S3 presigned URLs use system roots.
+	serverHTTP              *http.Client
+	s3HTTP                  *http.Client
 	MaxConcurrentNARUploads int                            // Maximum number of concurrent uploads (0 = unlimited)
 	NixEnv                  []string                       // Optional environment variables for nix commands (for testing)
 	Retry                   RetryConfig                    // Retry configuration for HTTP requests
@@ -112,11 +114,10 @@ func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSou
 	}
 
 	return &Client{
-		baseURL:     baseURL,
-		tokenSource: ts,
-		httpClient: &http.Client{
-			Timeout: 0, // No timeout for streaming uploads
-		},
+		baseURL:                 baseURL,
+		tokenSource:             ts,
+		serverHTTP:              &http.Client{},
+		s3HTTP:                  &http.Client{},
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
 		storeDir:                storeDir,
@@ -129,25 +130,25 @@ func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSou
 // When enabled, wraps the HTTP client transport with a logging transport.
 func (c *Client) SetDebugHTTP(enabled bool) {
 	c.DebugHTTP = enabled
-	if enabled {
-		// Wrap existing transport with logging
-		transport := c.httpClient.Transport
-		if transport == nil {
-			transport = http.DefaultTransport
-		}
-		// Only wrap if not already wrapped
-		if _, ok := transport.(*loggingTransport); !ok {
-			c.httpClient.Transport = &loggingTransport{transport: transport}
-		}
-	} else {
-		// Unwrap if it's a logging transport
-		if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
-			c.httpClient.Transport = lt.transport
+
+	for _, hc := range []*http.Client{c.serverHTTP, c.s3HTTP} {
+		lt, wrapped := hc.Transport.(*loggingTransport)
+
+		switch {
+		case enabled && !wrapped:
+			transport := hc.Transport
+			if transport == nil {
+				transport = http.DefaultTransport
+			}
+
+			hc.Transport = &loggingTransport{transport: transport}
+		case !enabled && wrapped:
+			hc.Transport = lt.transport
 		}
 	}
 }
 
-// SetClientTLS configures the HTTP client TLS settings. certFile/keyFile
+// SetClientTLS configures TLS towards the niks3 server (not S3). certFile/keyFile
 // add a client certificate for mTLS; either both or neither must be set.
 // If caFile is non-empty the server certificate is verified against that
 // CA; otherwise the system certificate pool is used.
@@ -191,10 +192,10 @@ func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
 
 	newTransport.TLSClientConfig = tlsConfig
 
-	if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
+	if lt, ok := c.serverHTTP.Transport.(*loggingTransport); ok {
 		lt.transport = newTransport
 	} else {
-		c.httpClient.Transport = newTransport
+		c.serverHTTP.Transport = newTransport
 	}
 
 	return nil

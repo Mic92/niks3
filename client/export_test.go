@@ -27,9 +27,9 @@ const MultipartPartSize = multipartPartSize
 // ScriptTokenWithClock builds a ScriptToken with an injected clock for tests.
 var ScriptTokenWithClock = scriptToken //nolint:gochecknoglobals // test-only re-export
 
-// HTTPClient exposes the underlying http.Client for testing.
+// HTTPClient exposes the server-facing http.Client for testing.
 func (c *Client) HTTPClient() *http.Client {
-	return c.httpClient
+	return c.serverHTTP
 }
 
 // NewTestClient creates a Client for testing with a custom HTTP client and retry config.
@@ -40,7 +40,8 @@ func NewTestClient(httpClient *http.Client, retry RetryConfig) *Client {
 // NewTestClientWithToken is like NewTestClient but with an explicit TokenSource.
 func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts TokenSource) *Client {
 	return &Client{
-		httpClient:        httpClient,
+		serverHTTP:        httpClient,
+		s3HTTP:            &http.Client{Transport: httpClient.Transport},
 		tokenSource:       ts,
 		Retry:             retry,
 		S3RateLimiter:     ratelimit.NewAdaptiveRateLimiter(0, "s3-test"),
