@@ -155,9 +155,21 @@ func (m *Metrics) Instrument(next http.Handler) http.Handler {
 			route = "unmatched"
 		}
 
-		m.httpRequests.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
-		m.httpDuration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+		method := metricMethod(r.Method)
+		m.httpRequests.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
+		m.httpDuration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
 	})
+}
+
+// metricMethod bounds the method label. net/http accepts any token as method.
+func metricMethod(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodDelete, http.MethodOptions, http.MethodPatch:
+		return m
+	default:
+		return "other"
+	}
 }
 
 // Handler serves the metrics in the Prometheus text format.

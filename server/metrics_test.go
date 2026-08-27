@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -66,5 +67,28 @@ func TestMetricsInventory(t *testing.T) {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("metrics output missing %q", want)
 		}
+	}
+}
+
+func TestMetricsMethodLabelBounded(t *testing.T) {
+	t.Parallel()
+
+	m := server.NewMetrics()
+	h := m.Instrument(http.NewServeMux())
+
+	for _, method := range []string{"BREW1", "BREW2", "BREW3"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/x", nil))
+	}
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := rec.Body.String()
+	if strings.Contains(body, "BREW") {
+		t.Error("arbitrary method leaked into labels")
+	}
+
+	if !strings.Contains(body, `niks3_http_requests_total{method="other",route="unmatched",status="404"} 3`) {
+		t.Errorf("expected aggregated 'other' method label, got:\n%s", body)
 	}
 }

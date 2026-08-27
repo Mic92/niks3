@@ -219,12 +219,6 @@ func parseArgs() (*options, error) {
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 
-	if opts.Debug {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})))
-	}
-
 	// Parse signing key paths from environment variable (space-separated for backward compatibility)
 	signKeyPaths := (*stringSliceFlag)(&opts.SignKeyPaths)
 
@@ -238,6 +232,12 @@ func parseArgs() (*options, error) {
 
 	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
 	flag.Parse()
+
+	if opts.Debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+	}
 
 	var err error
 
