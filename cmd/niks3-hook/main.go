@@ -63,6 +63,8 @@ func printServeHelp() {
 	fmt.Fprintln(os.Stderr, "        Paths per upload batch (default: 50)")
 	fmt.Fprintln(os.Stderr, "  --idle-exit-timeout string")
 	fmt.Fprintln(os.Stderr, `        Exit after no activity; "0" to disable (default: "60s")`)
+	fmt.Fprintln(os.Stderr, "  --drain-timeout duration")
+	fmt.Fprintln(os.Stderr, "        Give up draining the queue on shutdown after this long (default: 0, unbounded)")
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Concurrent upload limit (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
@@ -141,6 +143,7 @@ func runServe() error {
 	dbPath := fs.String("db-path", "/var/lib/niks3-hook/upload-queue.db", "SQLite database path")
 	batchSize := fs.Int("batch-size", 50, "Paths per upload batch")
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
+	drainTimeout := fs.Duration("drain-timeout", 0, "Give up draining on shutdown after this long; 0 = unbounded")
 	maxConcurrent := fs.Int("max-concurrent-uploads", 30, "Concurrent upload limit")
 	verifyS3 := fs.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 	tf := cmdutil.AddTLSFlags(fs)
@@ -232,10 +235,12 @@ func runServe() error {
 		"db-path", *dbPath,
 		"batch-size", *batchSize,
 		"idle-exit-timeout", idleTimeout,
+		"drain-timeout", *drainTimeout,
 	)
 
 	// Start the upload worker.
 	worker := hook.NewWorker(queue, c.PushPaths, *batchSize, workerNotify)
+	worker.DrainTimeout = *drainTimeout
 	workerDone := make(chan struct{})
 
 	workerCtx, workerCancel := context.WithCancel(ctx)

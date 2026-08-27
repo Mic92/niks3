@@ -119,7 +119,21 @@ func runWorkerUntilDrained(t *testing.T, q *hook.Queue, push hook.PushFunc, batc
 func drainWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) {
 	t.Helper()
 
+	drainWorkerTimeout(t, q, push, batchSize, 0)
+}
+
+// drainWorkerTimeout is drainWorker with a DrainTimeout budget.
+func drainWorkerTimeout(
+	t *testing.T,
+	q *hook.Queue,
+	push hook.PushFunc,
+	batchSize int,
+	drainTimeout time.Duration,
+) {
+	t.Helper()
+
 	w := hook.NewWorker(q, push, batchSize, make(chan struct{}))
+	w.DrainTimeout = drainTimeout
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -364,5 +378,39 @@ func TestWorkerPrunesClosureDeps(t *testing.T) {
 
 	if count != 0 {
 		t.Errorf("expected empty queue, got %d remaining", count)
+	}
+}
+
+// A hung server must not keep an unsupervised drain alive forever, and the
+// interrupted paths must stay queued in their original order.
+func TestDrainTimeout(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "a", "b", "c", "d")
+
+	var calls atomic.Int32
+
+	push := func(ctx context.Context, _ []string) ([]string, error) {
+		calls.Add(1)
+		<-ctx.Done()
+
+		return nil, ctx.Err()
+	}
+
+	start := time.Now()
+
+	drainWorkerTimeout(t, q, push, 2, 200*time.Millisecond)
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("drain ignored its timeout, took %s", elapsed)
+	}
+
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected no isolation probes after timeout, got %d pushes", n)
+	}
+
+	if left := remaining(t, q); !slices.Equal(left, paths) {
+		t.Errorf("expected queue untouched %v, got %v", paths, left)
 	}
 }
