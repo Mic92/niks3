@@ -2,7 +2,6 @@
 {
   pkgs,
   lib,
-  postBuildHookSocketPath ? "/run/niks3/upload-to-cache.sock",
 }:
 
 let
@@ -25,11 +24,6 @@ pkgs.buildGoModule {
       common.srcsNoTests.cmd-niks3-hook
     ];
   };
-
-  ldflags = [
-    "-X"
-    "main.socketPath=${postBuildHookSocketPath}"
-  ];
 
   subPackages = [ "cmd/niks3-hook" ];
 

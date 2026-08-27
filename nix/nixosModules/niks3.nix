@@ -782,6 +782,8 @@ in
         locations."/" = {
           proxyPass = "http://${cfg.httpAddr}";
           extraConfig = ''
+            # server/uploads.go MaxClosureRequestBody
+            client_max_body_size 128m;
             proxy_connect_timeout ${cfg.nginx.proxyTimeout};
             proxy_send_timeout ${cfg.nginx.proxyTimeout};
             proxy_read_timeout ${cfg.nginx.proxyTimeout};

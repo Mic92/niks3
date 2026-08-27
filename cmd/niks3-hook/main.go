@@ -16,11 +16,6 @@ import (
 	"github.com/Mic92/niks3/hook"
 )
 
-// socketPath can be overridden at build time via ldflags:
-//
-//	-ldflags "-X main.socketPath=/custom/path"
-var socketPath = hook.DefaultSocketPath //nolint:gochecknoglobals // ldflags override
-
 func main() {
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -41,7 +36,7 @@ func printSendHelp() {
 	fmt.Fprintln(os.Stderr, "\nSend store paths from OUT_PATHS to the upload daemon via unix socket.")
 	fmt.Fprintln(os.Stderr, "Always exits 0 to avoid affecting Nix builds. Errors are logged to stderr.")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
-	fmt.Fprintf(os.Stderr, "  --socket string\n        Unix socket path (default: %s)\n", socketPath)
+	fmt.Fprintf(os.Stderr, "  --socket string\n        Unix socket path (default: %s)\n", hook.DefaultSocketPath)
 	fmt.Fprintln(os.Stderr, "  -h, --help")
 	fmt.Fprintln(os.Stderr, "        Show this help message")
 }
@@ -103,7 +98,7 @@ func runSend() error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.Usage = func() {}
 
-	socket := fs.String("socket", socketPath, "Unix socket path")
+	socket := fs.String("socket", hook.DefaultSocketPath, "Unix socket path")
 	help := fs.Bool("help", false, "Show help")
 	fs.BoolVar(help, "h", false, "Show help")
 

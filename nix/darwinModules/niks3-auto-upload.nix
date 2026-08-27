@@ -7,10 +7,9 @@
 
 let
   cfg = config.services.niks3-auto-upload;
-  hookPackage = cfg.package.override { postBuildHookSocketPath = cfg.socketPath; };
   # Nix post-build-hook must be a single executable; wrap the subcommand invocation.
   postBuildHookScript = pkgs.writeShellScript "niks3-post-build-hook" ''
-    exec ${lib.getExe' hookPackage "niks3-hook"} send "$@"
+    exec ${lib.getExe' cfg.package "niks3-hook"} send --socket ${lib.escapeShellArg cfg.socketPath} "$@"
   '';
 
   stateDir = "/var/lib/niks3-hook";

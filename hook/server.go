@@ -13,10 +13,7 @@ import (
 )
 
 // DefaultSocketPath is the default path for the niks3-hook upload socket.
-// It can be overridden at build time via:
-//
-//	-ldflags "-X github.com/Mic92/niks3/hook.DefaultSocketPath=/custom/path"
-var DefaultSocketPath = "/run/niks3/upload-to-cache.sock" //nolint:gochecknoglobals // ldflags override
+const DefaultSocketPath = "/run/niks3/upload-to-cache.sock"
 
 // QueueFunc is called by the server to persist paths. It must return nil on success.
 type QueueFunc func(paths []string) error
