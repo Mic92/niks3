@@ -99,6 +99,8 @@ func TestScopes_ConfigValidation(t *testing.T) {
 		base(&oidc.ProviderConfig{Scopes: []oidc.Scope{"root"}}),
 		base(&oidc.ProviderConfig{BoundSubject: []string{"x"}, Rules: []oidc.Rule{{Scopes: []oidc.Scope{oidc.ScopeWrite}}}}),
 		base(&oidc.ProviderConfig{Rules: []oidc.Rule{{BoundSubject: []string{"x"}}}}),
+		base(&oidc.ProviderConfig{}),
+		base(&oidc.ProviderConfig{Rules: []oidc.Rule{{Scopes: []oidc.Scope{oidc.ScopeWrite}}}}),
 	}
 
 	for i, cfg := range bad {

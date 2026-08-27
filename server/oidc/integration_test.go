@@ -19,8 +19,9 @@ func TestValidateToken_ValidToken(t *testing.T) {
 		AllowInsecure: true, // Allow HTTP for test mock server
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
-				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Issuer:       m.Issuer(),
+				Audience:     m.Config().ClientID,
+				BoundSubject: []string{"*"},
 			},
 		},
 	}
@@ -53,8 +54,9 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
-				Issuer:   m.Issuer(),
-				Audience: "https://different-audience.example.com",
+				Issuer:       m.Issuer(),
+				Audience:     "https://different-audience.example.com",
+				BoundSubject: []string{"*"},
 			},
 		},
 	}
@@ -81,8 +83,9 @@ func TestValidateToken_Expired(t *testing.T) {
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
-				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Issuer:       m.Issuer(),
+				Audience:     m.Config().ClientID,
+				BoundSubject: []string{"*"},
 			},
 		},
 	}
@@ -178,12 +181,14 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
-				Issuer:   m1.Issuer(),
-				Audience: m1.Config().ClientID,
+				Issuer:       m1.Issuer(),
+				Audience:     m1.Config().ClientID,
+				BoundSubject: []string{"*"},
 			},
 			"provider2": {
-				Issuer:   m2.Issuer(),
-				Audience: m2.Config().ClientID,
+				Issuer:       m2.Issuer(),
+				Audience:     m2.Config().ClientID,
+				BoundSubject: []string{"*"},
 			},
 		},
 	}
@@ -221,8 +226,9 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
-				Issuer:   m1.Issuer(),
-				Audience: m1.Config().ClientID,
+				Issuer:       m1.Issuer(),
+				Audience:     m1.Config().ClientID,
+				BoundSubject: []string{"*"},
 			},
 		},
 	}

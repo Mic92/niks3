@@ -66,12 +66,14 @@ func TestAudienceForIssuer(t *testing.T) {
 		config: &Config{
 			Providers: map[string]*ProviderConfig{
 				"github": {
-					Issuer:   "https://token.actions.githubusercontent.com",
-					Audience: "https://cache.example.com",
+					Issuer:       "https://token.actions.githubusercontent.com",
+					Audience:     "https://cache.example.com",
+					BoundSubject: []string{"*"},
 				},
 				"gitlab": {
-					Issuer:   "https://gitlab.com",
-					Audience: "niks3",
+					Issuer:       "https://gitlab.com",
+					Audience:     "niks3",
+					BoundSubject: []string{"*"},
 				},
 			},
 		},

@@ -58,8 +58,11 @@ app.kubernetes.io/component: server
 {{- $providers := deepCopy (.Values.auth.oidcProviders | default dict) }}
 {{- with .Values.auth.workloadIdentity }}
 {{- if .enabled }}
+{{- if empty .allowedServiceAccounts }}
+{{- fail "auth.workloadIdentity.allowedServiceAccounts must not be empty" }}
+{{- end }}
 {{- $subjects := list }}
-{{- range (required "auth.workloadIdentity.allowedServiceAccounts must not be empty" .allowedServiceAccounts) }}
+{{- range .allowedServiceAccounts }}
 {{- $subjects = append $subjects (printf "system:serviceaccount:%s" .) }}
 {{- end }}
 {{- $_ := set $providers "kubernetes" (dict

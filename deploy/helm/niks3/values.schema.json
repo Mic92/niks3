@@ -97,7 +97,8 @@
               "type": "boolean"
             },
             "allowedServiceAccounts": {
-              "type": "array"
+              "type": "array",
+              "items": { "type": "string" }
             },
             "scopes": {
               "type": "array",

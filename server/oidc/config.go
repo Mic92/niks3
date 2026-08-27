@@ -111,21 +111,23 @@ func validateScopes(scopes []Scope) error {
 }
 
 func (p *ProviderConfig) validateRules() error {
-	if len(p.Rules) == 0 {
-		return validateScopes(p.Scopes)
-	}
-
-	if len(p.BoundClaims) > 0 || len(p.BoundSubject) > 0 || len(p.Scopes) > 0 {
+	if len(p.Rules) > 0 && (len(p.BoundClaims) > 0 || len(p.BoundSubject) > 0 || len(p.Scopes) > 0) {
 		return errors.New("rules cannot be combined with top-level bound_claims/bound_subject/scopes")
 	}
 
-	for i, r := range p.Rules {
+	for i, r := range p.effectiveRules() {
 		if len(r.Scopes) == 0 {
 			return fmt.Errorf("rules[%d]: scopes must not be empty", i)
 		}
 
 		if err := validateScopes(r.Scopes); err != nil {
 			return fmt.Errorf("rules[%d]: %w", i, err)
+		}
+
+		// Issuer+audience alone would trust every identity the IdP can mint
+		// (any repo on GitHub, any pod in the cluster).
+		if len(r.BoundSubject) == 0 && len(r.BoundClaims) == 0 {
+			return fmt.Errorf("rules[%d]: set bound_subject or bound_claims", i)
 		}
 	}
 
