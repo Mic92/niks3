@@ -574,3 +574,74 @@ func TestReadProxyRangeRequest(t *testing.T) {
 		t.Fatalf("unsatisfiable: status = %d, want 416", resp.StatusCode)
 	}
 }
+
+// Compressed non-narinfo objects must either carry Content-Encoding or be
+// decoded. Headers are derived from the key, not from what the writer stored.
+func TestReadProxyCompressedLog(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	plain := []byte("building...\ndone\n")
+	putTestObject(ctx, t, service, "log/abc-hello.drv", zstdCompress(t, plain),
+		minio.PutObjectOptions{ContentType: "text/html", ContentEncoding: "zstd"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	header, body := proxyGet(t, ts, "/log/abc-hello.drv", http.StatusOK)
+
+	if !bytes.Equal(body, plain) {
+		t.Errorf("body = %q, want decoded %q", body, plain)
+	}
+
+	if ct := header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+
+	if header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("missing nosniff")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/log/abc-hello.drv", nil)
+	ok(t, err)
+	req.Header.Set("Accept-Encoding", "gzip, zstd")
+
+	resp, err := (&http.Transport{DisableCompression: true}).RoundTrip(req)
+	ok(t, err)
+
+	defer func() { _ = resp.Body.Close() }()
+
+	if ce := resp.Header.Get("Content-Encoding"); ce != "zstd" {
+		t.Errorf("Content-Encoding = %q, want zstd passthrough", ce)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	ok(t, err)
+
+	if !bytes.Equal(raw, zstdCompress(t, plain)) {
+		t.Errorf("expected raw zstd bytes")
+	}
+}
+
+func TestReadProxyPins(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	putTestObject(t.Context(), t, service, "pins/release-1.0", []byte("/nix/store/abc-hello\n"),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	_, body := proxyGet(t, ts, "/pins/release-1.0", http.StatusOK)
+
+	if string(body) != "/nix/store/abc-hello\n" {
+		t.Errorf("body = %q", body)
+	}
+}
