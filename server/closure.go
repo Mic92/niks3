@@ -4,56 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// gcAdvisoryLockKey serializes GC across replicas sharing one database.
-// GCTaskStore only dedupes within a process.
-const gcAdvisoryLockKey int64 = 0x6e696b73336763 // "niks3gc"
-
-var errGCAlreadyRunning = errors.New("another garbage collection is already running on this database")
-
-// acquireGCLock takes the GC advisory lock on a dedicated connection. The
-// returned func unlocks and releases the connection. Returns
-// errGCAlreadyRunning if the lock is held elsewhere.
-func acquireGCLock(ctx context.Context, pool *pgxpool.Pool) (func(), error) {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire connection for GC lock: %w", err)
-	}
-
-	var acquired bool
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", gcAdvisoryLockKey).Scan(&acquired); err != nil {
-		conn.Release()
-
-		return nil, fmt.Errorf("failed to query GC advisory lock: %w", err)
-	}
-
-	if !acquired {
-		conn.Release()
-
-		return nil, errGCAlreadyRunning
-	}
-
-	// Fresh context so unlock runs even if the GC context is done.
-	//nolint:contextcheck // detached on purpose
-	release := func() {
-		if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", gcAdvisoryLockKey); err != nil {
-			slog.Error("failed to release GC advisory lock", "error", err)
-		}
-
-		conn.Release()
-	}
-
-	return release, nil
-}
 
 // GetClosureHandler handles the GET /closures/<key> endpoint.
 func (s *Service) GetClosureHandler(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +107,13 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		Force:                  force,
 	}
 
-	result := s.GCTasks.Start(params)
+	result, err := s.GCTasks.Start(r.Context(), params)
+	if err != nil {
+		slog.Error("failed to start GC", "error", err)
+		http.Error(w, "failed to start garbage collection", http.StatusInternalServerError)
+
+		return
+	}
 
 	if result.Conflict {
 		w.Header().Set("Content-Type", "application/json")
@@ -174,43 +137,24 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 }
 
 // runGarbageCollection executes the full GC sequence in a background goroutine,
-// updating the task snapshot after each phase. It uses context.Background() so
+// recording progress after each phase. It uses context.Background() so
 // that client disconnects or reverse-proxy timeouts do not cancel the work.
 func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Duration, force bool) {
 	ctx := context.Background()
 	stats := &api.GCStats{}
 
 	start := time.Now()
-	defer func() {
-		snap := task.snapshot()
-		result := "succeeded"
-		if snap.State == api.GCTaskStateFailed {
-			result = "failed"
-		}
 
-		s.Metrics.recordGC(result, time.Since(start), snap.Stats)
-	}()
-
-	release, err := acquireGCLock(ctx, s.Pool)
-	if err != nil {
-		if errors.Is(err, errGCAlreadyRunning) {
-			task.fail(*stats, err.Error())
-
-			return
-		}
-
-		task.fail(*stats, "failed to acquire GC lock: "+err.Error())
-
-		return
+	fail := func(msg string) {
+		task.fail(*stats, msg)
+		s.Metrics.recordGC("failed", time.Since(start), *stats)
 	}
-
-	defer release()
 
 	task.setPhase(api.GCTaskPhaseCleanupPendingUploads)
 
 	failedUploadsCount, err := s.cleanupPendingClosures(ctx, pendingAge)
 	if err != nil {
-		task.fail(*stats, "failed to cleanup pending closures: "+err.Error())
+		fail("failed to cleanup pending closures: " + err.Error())
 
 		return
 	}
@@ -222,7 +166,7 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 
 	oldClosuresCount, err := cleanupClosureOlderThan(ctx, s.Pool, age)
 	if err != nil {
-		task.fail(*stats, "failed to cleanup old closures: "+err.Error())
+		fail("failed to cleanup old closures: " + err.Error())
 
 		return
 	}
@@ -256,7 +200,7 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	}
 
 	if err != nil {
-		task.fail(*stats, "failed to cleanup orphan objects: "+err.Error())
+		fail("failed to cleanup orphan objects: " + err.Error())
 
 		return
 	}
@@ -274,11 +218,18 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	s.vacuumGCTables(ctx)
 
 	task.succeed(*stats)
+	s.Metrics.recordGC("succeeded", time.Since(start), *stats)
 }
 
 // GCStatusHandler handles GET /api/gc/status.
 func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
-	status, ok := s.GCTasks.Get()
+	status, ok, err := s.GCTasks.Get(r.Context())
+	if err != nil {
+		http.Error(w, "failed to read GC status", http.StatusInternalServerError)
+
+		return
+	}
+
 	if !ok {
 		http.Error(w, "no garbage collection has run yet", http.StatusNotFound)
 

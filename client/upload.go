@@ -86,11 +86,29 @@ func toplevelStorePath(path, storeDir string) (string, error) {
 	return filepath.Join(storeDir, name), nil
 }
 
+// StoreDir returns the Nix store directory, honouring NixEnv.
+func (c *Client) StoreDir(ctx context.Context) (string, error) {
+	c.storeDirOnce.Do(func() {
+		c.storeDir, c.storeDirErr = GetStoreDir(ctx, c.NixEnv)
+	})
+
+	if c.storeDirErr != nil {
+		return "", fmt.Errorf("getting store directory: %w", c.storeDirErr)
+	}
+
+	return c.storeDir, nil
+}
+
 // ResolveStorePath resolves symlinks (e.g. a nix-build ./result link) until
 // the path points into the Nix store. Needed wherever a raw user-supplied
 // path is sent to the server, which only accepts store paths.
-func (c *Client) ResolveStorePath(path string) (string, error) {
-	resolved, err := resolveSymlinks([]string{path}, c.storeDir)
+func (c *Client) ResolveStorePath(ctx context.Context, path string) (string, error) {
+	storeDir, err := c.StoreDir(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	resolved, err := resolveSymlinks([]string{path}, storeDir)
 	if err != nil {
 		return "", err
 	}
@@ -477,7 +495,12 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths
-	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
+	storeDir, err := c.StoreDir(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedPaths, err := resolveSymlinks(paths, storeDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving symlinks: %w", err)
 	}

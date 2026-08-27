@@ -51,7 +51,10 @@ func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts Token
 
 // NewTestClientWithStoreDir creates a Client with only storeDir set, for path resolution tests.
 func NewTestClientWithStoreDir(storeDir string) *Client {
-	return &Client{storeDir: storeDir}
+	c := &Client{}
+	c.storeDirOnce.Do(func() { c.storeDir = storeDir })
+
+	return c
 }
 
 // NewTestClientForServer returns a Client whose server requests target serverURL.

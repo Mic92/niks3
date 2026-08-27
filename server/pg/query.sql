@@ -237,3 +237,25 @@ WHERE name = $1;
 SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name;
+
+-- name: InsertGCRun :one
+INSERT INTO gc_runs (state, params) VALUES ('running', $1)
+RETURNING *;
+
+-- name: GetLatestGCRun :one
+SELECT * FROM gc_runs ORDER BY id DESC LIMIT 1;
+
+-- name: UpdateGCRunProgress :exec
+UPDATE gc_runs SET phase = $2, stats = $3, updated_at = now()
+WHERE id = $1;
+
+-- name: FinishGCRun :exec
+UPDATE gc_runs
+SET state = $2, phase = '', stats = $3, error = $4, updated_at = now(), finished_at = now()
+WHERE id = $1;
+
+-- name: FailInterruptedGCRuns :exec
+-- Caller holds the GC lock, so any "running" row is from a dead process.
+UPDATE gc_runs
+SET state = 'failed', error = 'interrupted', updated_at = now(), finished_at = now()
+WHERE state = 'running';

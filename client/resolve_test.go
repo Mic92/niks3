@@ -27,7 +27,7 @@ func TestResolveStorePath(t *testing.T) {
 
 	c := client.NewTestClientWithStoreDir(storeDir)
 
-	resolved, err := c.ResolveStorePath(link)
+	resolved, err := c.ResolveStorePath(t.Context(), link)
 	if err != nil {
 		t.Fatalf("ResolveStorePath(%q): %v", link, err)
 	}
@@ -37,7 +37,7 @@ func TestResolveStorePath(t *testing.T) {
 	}
 
 	// A path already in the store is returned unchanged
-	resolved, err = c.ResolveStorePath(storePath)
+	resolved, err = c.ResolveStorePath(t.Context(), storePath)
 	if err != nil {
 		t.Fatalf("ResolveStorePath(%q): %v", storePath, err)
 	}
@@ -48,7 +48,7 @@ func TestResolveStorePath(t *testing.T) {
 
 	// Non-canonical spellings reduce to the store object.
 	for _, in := range []string{storePath + "/", storePath + "/bin/hello", storePath + "//bin"} {
-		resolved, err = c.ResolveStorePath(in)
+		resolved, err = c.ResolveStorePath(t.Context(), in)
 		if err != nil {
 			t.Fatalf("ResolveStorePath(%q): %v", in, err)
 		}

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"sync"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -28,10 +29,12 @@ type Client struct {
 	// TLS flags apply to serverHTTP only. S3 presigned URLs use system roots.
 	serverHTTP              *http.Client
 	s3HTTP                  *http.Client
-	MaxConcurrentNARUploads int                            // Maximum number of concurrent uploads (0 = unlimited)
-	NixEnv                  []string                       // Optional environment variables for nix commands (for testing)
-	Retry                   RetryConfig                    // Retry configuration for HTTP requests
-	storeDir                string                         // Cached Nix store directory (e.g., "/nix/store")
+	MaxConcurrentNARUploads int         // Maximum number of concurrent uploads (0 = unlimited)
+	NixEnv                  []string    // Optional environment variables for nix commands (for testing). Set before first use
+	Retry                   RetryConfig // Retry configuration for HTTP requests
+	storeDirOnce            sync.Once
+	storeDir                string
+	storeDirErr             error
 	VerifyS3Integrity       bool                           // Enable S3 integrity checking when creating pending closures
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
@@ -101,16 +104,10 @@ func NewClient(ctx context.Context, serverURL, authToken string) (*Client, error
 // NewClientWithTokenSource creates a new upload client that resolves its
 // auth token via ts before each server request. Use this for short-lived
 // tokens (OIDC, vault) that need to refresh during a long-running upload.
-func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSource) (*Client, error) {
+func NewClientWithTokenSource(_ context.Context, serverURL string, ts TokenSource) (*Client, error) {
 	baseURL, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing server URL: %w", err)
-	}
-
-	// Get the Nix store directory at startup
-	storeDir, err := GetStoreDir(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("getting store directory: %w", err)
 	}
 
 	return &Client{
@@ -120,7 +117,6 @@ func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSou
 		s3HTTP:                  &http.Client{},
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
-		storeDir:                storeDir,
 		S3RateLimiter:           ratelimit.NewAdaptiveRateLimiter(0, "s3"),
 		ServerRateLimiter:       ratelimit.NewAdaptiveRateLimiter(0, "server"),
 	}, nil

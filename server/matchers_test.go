@@ -39,7 +39,9 @@ func waitForGC(tb testing.TB, service *server.Service) api.GCTaskStatus {
 	deadline := time.Now().Add(30 * time.Second)
 
 	for {
-		status, found := service.GCTasks.Get()
+		status, found, err := service.GCTasks.Get(tb.Context())
+		ok(tb, err)
+
 		if !found {
 			tb.Fatal("no GC task found")
 		}

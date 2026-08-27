@@ -187,7 +187,7 @@ func runServer(opts *options) error {
 		ServerURL:             opts.ServerURL,
 		MaxNarSize:            opts.MaxNarSize,
 		CachePriority:         opts.CachePriority,
-		GCTasks:               NewGCTaskStore(),
+		GCTasks:               NewGCTaskStore(pool),
 		Metrics:               NewMetrics(),
 	}
 

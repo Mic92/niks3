@@ -13,6 +13,18 @@ type Closure struct {
 	UpdatedAt pgtype.Timestamp `json:"updated_at"`
 }
 
+type GcRun struct {
+	ID         int64              `json:"id"`
+	State      string             `json:"state"`
+	Phase      string             `json:"phase"`
+	Params     []byte             `json:"params"`
+	Stats      []byte             `json:"stats"`
+	Error      string             `json:"error"`
+	StartedAt  pgtype.Timestamptz `json:"started_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	FinishedAt pgtype.Timestamptz `json:"finished_at"`
+}
+
 type MultipartUpload struct {
 	PendingClosureID int64  `json:"pending_closure_id"`
 	ObjectKey        string `json:"object_key"`

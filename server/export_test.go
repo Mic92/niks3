@@ -27,17 +27,6 @@ func RunWatchdogForTest(ctx context.Context, interval time.Duration, check func(
 // GCAdvisoryLockKey exposes the GC advisory lock key to tests.
 const GCAdvisoryLockKey = gcAdvisoryLockKey
 
-// RunGCForTest runs a full garbage collection synchronously and returns the
-// final task status.
-func (s *Service) RunGCForTest(age, pendingAge time.Duration, force bool) api.GCTaskStatus {
-	result := s.GCTasks.Start(api.GCTaskParams{})
-	s.runGarbageCollection(result.Task, age, pendingAge, force)
-
-	snap, _ := s.GCTasks.Get()
-
-	return snap
-}
-
 // Test-only exports for gcTask methods, callable from server_test package.
 
 func (t *gcTask) TestSucceed(stats api.GCStats)             { t.succeed(stats) }
@@ -71,4 +60,21 @@ func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 // CleanupOrphanObjectsForTest runs mark+reap synchronously.
 func (s *Service) CleanupOrphanObjectsForTest(ctx context.Context, gracePeriod time.Duration) (*ObjectCleanupStats, error) {
 	return s.cleanupOrphanObjects(ctx, gracePeriod, nil)
+}
+
+// RunGCForTest runs a full garbage collection synchronously and returns the
+// final task status.
+func (s *Service) RunGCForTest(age, pendingAge time.Duration, force bool) api.GCTaskStatus {
+	ctx := context.Background()
+
+	result, err := s.GCTasks.Start(ctx, api.GCTaskParams{})
+	if err != nil || !result.IsNew {
+		panic("RunGCForTest: could not start GC")
+	}
+
+	s.runGarbageCollection(result.Task, age, pendingAge, force)
+
+	snap, _, _ := s.GCTasks.Get(ctx)
+
+	return snap
 }

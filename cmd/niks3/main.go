@@ -199,7 +199,7 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 	if pinName != "" {
 		// The server only accepts store paths, but users typically pass a
 		// ./result symlink as produced by nix-build.
-		storePath, err := c.ResolveStorePath(paths[0])
+		storePath, err := c.ResolveStorePath(ctx, paths[0])
 		if err != nil {
 			return fmt.Errorf("resolving store path for pin %q: %w", pinName, err)
 		}
@@ -278,7 +278,7 @@ func pinsCreateCommandNew(serverURL string, ts client.TokenSource, name, storePa
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
-	resolvedPath, err := c.ResolveStorePath(storePath)
+	resolvedPath, err := c.ResolveStorePath(ctx, storePath)
 	if err != nil {
 		return fmt.Errorf("resolving store path: %w", err)
 	}

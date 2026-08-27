@@ -7,205 +7,107 @@ import (
 	"github.com/Mic92/niks3/server"
 )
 
-func TestGCTaskStore_StartNew(t *testing.T) {
+func TestGCTaskStore(t *testing.T) {
 	t.Parallel()
 
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{
-		OlderThan:              "720h",
-		FailedUploadsOlderThan: "6h",
-		Force:                  false,
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	// Two stores on one database stand in for two replicas.
+	a := server.NewGCTaskStore(service.Pool)
+	b := server.NewGCTaskStore(service.Pool)
+
+	if _, found, err := a.Get(ctx); err != nil || found {
+		t.Fatalf("fresh store: found=%v err=%v", found, err)
 	}
 
-	result := store.Start(params)
+	params := api.GCTaskParams{OlderThan: "720h", FailedUploadsOlderThan: "6h"}
 
-	if !result.IsNew {
-		t.Fatal("expected new task")
+	first, err := a.Start(ctx, params)
+	ok(t, err)
+
+	if !first.IsNew || first.Conflict || first.Status.State != api.GCTaskStateRunning || first.Status.Params != params {
+		t.Fatalf("first start: %+v", first)
 	}
 
-	if result.Conflict {
-		t.Fatal("expected no conflict")
+	same, err := b.Start(ctx, params)
+	ok(t, err)
+
+	if same.IsNew || same.Conflict {
+		t.Fatalf("same params on other replica should join: %+v", same)
 	}
 
-	if result.Status.State != api.GCTaskStateRunning {
-		t.Errorf("expected running state, got %s", result.Status.State)
+	other, err := b.Start(ctx, api.GCTaskParams{OlderThan: "1h", FailedUploadsOlderThan: "1h", Force: true})
+	ok(t, err)
+
+	if !other.Conflict {
+		t.Fatalf("different params should conflict: %+v", other)
 	}
 
-	if result.Status.Params != params {
-		t.Errorf("expected params %+v, got %+v", params, result.Status.Params)
+	first.Task.TestSetPhase(api.GCTaskPhaseCleanupOrphanObjects)
+	first.Task.TestUpdateStats(api.GCStats{FailedUploadsDeleted: 3})
+
+	st, found, err := b.Get(ctx)
+	ok(t, err)
+
+	if !found || st.Phase != api.GCTaskPhaseCleanupOrphanObjects || st.Stats.FailedUploadsDeleted != 3 {
+		t.Fatalf("progress not visible from other replica: %+v", st)
+	}
+
+	first.Task.TestFail(api.GCStats{FailedUploadsDeleted: 3, OldClosuresDeleted: 1}, "S3 connection refused")
+
+	st, _, err = b.Get(ctx)
+	ok(t, err)
+
+	if st.State != api.GCTaskStateFailed || st.Error != "S3 connection refused" || st.FinishedAt == nil || st.Stats.OldClosuresDeleted != 1 {
+		t.Fatalf("failed state not recorded: %+v", st)
+	}
+
+	next, err := b.Start(ctx, api.GCTaskParams{OlderThan: "24h", FailedUploadsOlderThan: "6h"})
+	ok(t, err)
+
+	if !next.IsNew {
+		t.Fatalf("expected new task after previous finished: %+v", next)
+	}
+
+	next.Task.TestSucceed(api.GCStats{})
+
+	st, _, err = a.Get(ctx)
+	ok(t, err)
+
+	if st.State != api.GCTaskStateSucceeded {
+		t.Fatalf("succeeded state not recorded: %+v", st)
 	}
 }
 
-func TestGCTaskStore_DeduplicateSameParams(t *testing.T) {
+// A "running" row whose process died must not block GC forever.
+func TestGCTaskStoreInterruptedRun(t *testing.T) {
 	t.Parallel()
 
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{
-		OlderThan:              "720h",
-		FailedUploadsOlderThan: "6h",
-		Force:                  false,
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	_, err := service.Pool.Exec(ctx, `INSERT INTO gc_runs (state, params) VALUES ('running', '{}')`)
+	ok(t, err)
+
+	res, err := service.GCTasks.Start(ctx, api.GCTaskParams{OlderThan: "1h"})
+	ok(t, err)
+
+	if !res.IsNew {
+		t.Fatalf("stale running row blocked new GC: %+v", res)
 	}
 
-	first := store.Start(params)
-	if !first.IsNew {
-		t.Fatal("expected first start to be new")
-	}
+	defer res.Task.TestSucceed(api.GCStats{})
 
-	second := store.Start(params)
-	if second.IsNew {
-		t.Fatal("expected second start to be deduplicated")
-	}
+	var interrupted int
 
-	if second.Conflict {
-		t.Fatal("expected no conflict for same params")
-	}
-}
+	ok(t, service.Pool.QueryRow(ctx, `SELECT count(*) FROM gc_runs WHERE error = 'interrupted'`).Scan(&interrupted))
 
-func TestGCTaskStore_ConflictDifferentParams(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-	params1 := api.GCTaskParams{
-		OlderThan:              "720h",
-		FailedUploadsOlderThan: "6h",
-		Force:                  false,
-	}
-	params2 := api.GCTaskParams{
-		OlderThan:              "24h",
-		FailedUploadsOlderThan: "1h",
-		Force:                  true,
-	}
-
-	first := store.Start(params1)
-	if !first.IsNew {
-		t.Fatal("expected first start to be new")
-	}
-
-	second := store.Start(params2)
-	if second.IsNew {
-		t.Fatal("expected conflict, not new task")
-	}
-
-	if !second.Conflict {
-		t.Fatal("expected conflict for different params")
-	}
-}
-
-func TestGCTaskStore_GetEmpty(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-
-	_, ok := store.Get()
-	if ok {
-		t.Fatal("expected no task in fresh store")
-	}
-}
-
-func TestGCTaskStore_GetReturnsLatest(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{OlderThan: "1h", FailedUploadsOlderThan: "1h"}
-
-	result := store.Start(params)
-
-	status, ok := store.Get()
-	if !ok {
-		t.Fatal("expected to find task")
-	}
-
-	if status.State != api.GCTaskStateRunning {
-		t.Errorf("expected running state, got %s", status.State)
-	}
-
-	result.Task.TestSucceed(api.GCStats{FailedUploadsDeleted: 5})
-
-	status, _ = store.Get()
-	if status.State != api.GCTaskStateSucceeded {
-		t.Errorf("expected succeeded state, got %s", status.State)
-	}
-
-	if status.Stats.FailedUploadsDeleted != 5 {
-		t.Errorf("expected FailedUploadsDeleted=5, got %d", status.Stats.FailedUploadsDeleted)
-	}
-}
-
-func TestGCTaskStore_CompletedAllowsNewTask(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{OlderThan: "1h", FailedUploadsOlderThan: "1h"}
-
-	first := store.Start(params)
-	first.Task.TestSucceed(api.GCStats{FailedUploadsDeleted: 5})
-
-	params2 := api.GCTaskParams{OlderThan: "24h", FailedUploadsOlderThan: "6h"}
-	second := store.Start(params2)
-
-	if !second.IsNew {
-		t.Fatal("expected new task after previous one completed")
-	}
-}
-
-func TestGCTaskStore_PhaseUpdates(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{OlderThan: "1h", FailedUploadsOlderThan: "1h"}
-	result := store.Start(params)
-	task := result.Task
-
-	task.TestSetPhase(api.GCTaskPhaseCleanupPendingUploads)
-	s, _ := store.Get()
-
-	if s.Phase != api.GCTaskPhaseCleanupPendingUploads {
-		t.Errorf("expected phase %s, got %s", api.GCTaskPhaseCleanupPendingUploads, s.Phase)
-	}
-
-	task.TestUpdateStats(api.GCStats{FailedUploadsDeleted: 3})
-	s, _ = store.Get()
-
-	if s.Stats.FailedUploadsDeleted != 3 {
-		t.Errorf("expected FailedUploadsDeleted=3, got %d", s.Stats.FailedUploadsDeleted)
-	}
-
-	task.TestSetPhase(api.GCTaskPhaseCleanupOrphanObjects)
-	s, _ = store.Get()
-
-	if s.Phase != api.GCTaskPhaseCleanupOrphanObjects {
-		t.Errorf("expected phase %s, got %s", api.GCTaskPhaseCleanupOrphanObjects, s.Phase)
-	}
-}
-
-func TestGCTaskStore_Fail(t *testing.T) {
-	t.Parallel()
-
-	store := server.NewGCTaskStore()
-	params := api.GCTaskParams{OlderThan: "1h", FailedUploadsOlderThan: "1h"}
-	result := store.Start(params)
-
-	partialStats := api.GCStats{FailedUploadsDeleted: 2, OldClosuresDeleted: 1}
-	result.Task.TestFail(partialStats, "S3 connection refused")
-
-	s, ok := store.Get()
-	if !ok {
-		t.Fatal("expected to find failed task")
-	}
-
-	if s.State != api.GCTaskStateFailed {
-		t.Errorf("expected failed state, got %s", s.State)
-	}
-
-	if s.Error != "S3 connection refused" {
-		t.Errorf("expected error message, got %q", s.Error)
-	}
-
-	if s.Stats.FailedUploadsDeleted != 2 || s.Stats.OldClosuresDeleted != 1 {
-		t.Errorf("expected partial stats preserved, got %+v", s.Stats)
-	}
-
-	if s.FinishedAt == nil {
-		t.Error("expected FinishedAt to be set")
+	if interrupted != 1 {
+		t.Fatalf("interrupted rows = %d", interrupted)
 	}
 }

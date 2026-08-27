@@ -113,7 +113,6 @@ func (h *Hash) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-
 // Nix32 returns "<algo>:<nix32>", the form used in narinfo files.
 func (h *Hash) Nix32() string { return h.Algorithm + ":" + EncodeNixBase32(h.Digest) }
 

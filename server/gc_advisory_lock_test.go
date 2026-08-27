@@ -1,25 +1,22 @@
 package server_test
 
 import (
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
 )
 
-// TestGCAdvisoryLockBlocksConcurrentRun checks GC fails fast when another
-// instance already holds the advisory lock.
-//
-//nolint:paralleltest // goose globals in pg.Connect race when createTestService runs in parallel
+// Another process holding the advisory lock (but no row yet visible) must
+// still be reported as a conflict rather than starting a second GC.
 func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
+	t.Parallel()
+
 	service := createTestService(t)
 	defer service.Close()
 
 	ctx := t.Context()
 
-	// Hold the lock on a dedicated connection to simulate another instance.
 	conn, err := service.Pool.Acquire(ctx)
 	ok(t, err)
 
@@ -27,8 +24,7 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 
 	var acquired bool
 
-	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired)
-	ok(t, err)
+	ok(t, conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired))
 
 	if !acquired {
 		t.Fatal("expected to acquire GC advisory lock for the simulated peer")
@@ -39,14 +35,20 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 		ok(t, err)
 	}()
 
-	// GC must not proceed while the lock is held elsewhere.
-	status := service.RunGCForTest(720*time.Hour, 6*time.Hour, false)
+	_, err = service.Pool.Exec(ctx, `INSERT INTO gc_runs (state, params) VALUES ('running', '{"older_than":"1h","failed_uploads_older_than":"","force":false}')`)
+	ok(t, err)
 
-	if status.State != api.GCTaskStateFailed {
-		t.Fatalf("expected GC to fail while advisory lock is held, got state %q", status.State)
+	res, err := service.GCTasks.Start(ctx, api.GCTaskParams{OlderThan: "2h"})
+	ok(t, err)
+
+	if res.IsNew || !res.Conflict {
+		t.Fatalf("expected conflict while lock is held elsewhere, got %+v", res)
 	}
 
-	if !strings.Contains(status.Error, "already running") {
-		t.Fatalf("expected lock-held error, got %q", status.Error)
+	res, err = service.GCTasks.Start(ctx, api.GCTaskParams{OlderThan: "1h"})
+	ok(t, err)
+
+	if res.IsNew || res.Conflict {
+		t.Fatalf("expected join for identical params, got %+v", res)
 	}
 }

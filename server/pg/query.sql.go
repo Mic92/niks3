@@ -127,6 +127,42 @@ func (q *Queries) DeleteTombstonedObjects(ctx context.Context, dollar_1 []string
 	return result.RowsAffected(), nil
 }
 
+const failInterruptedGCRuns = `-- name: FailInterruptedGCRuns :exec
+UPDATE gc_runs
+SET state = 'failed', error = 'interrupted', updated_at = now(), finished_at = now()
+WHERE state = 'running'
+`
+
+// Called while holding the GC advisory lock: any row still "running" was
+// left behind by a process that died.
+func (q *Queries) FailInterruptedGCRuns(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, failInterruptedGCRuns)
+	return err
+}
+
+const finishGCRun = `-- name: FinishGCRun :exec
+UPDATE gc_runs
+SET state = $2, phase = '', stats = $3, error = $4, updated_at = now(), finished_at = now()
+WHERE id = $1
+`
+
+type FinishGCRunParams struct {
+	ID    int64  `json:"id"`
+	State string `json:"state"`
+	Stats []byte `json:"stats"`
+	Error string `json:"error"`
+}
+
+func (q *Queries) FinishGCRun(ctx context.Context, arg FinishGCRunParams) error {
+	_, err := q.db.Exec(ctx, finishGCRun,
+		arg.ID,
+		arg.State,
+		arg.Stats,
+		arg.Error,
+	)
+	return err
+}
+
 const getClosure = `-- name: GetClosure :one
 SELECT updated_at FROM closures
 WHERE key = $1 LIMIT 1
@@ -188,6 +224,27 @@ func (q *Queries) GetClosureObjects(ctx context.Context, key string) ([]string, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const getLatestGCRun = `-- name: GetLatestGCRun :one
+SELECT id, state, phase, params, stats, error, started_at, updated_at, finished_at FROM gc_runs ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestGCRun(ctx context.Context) (GcRun, error) {
+	row := q.db.QueryRow(ctx, getLatestGCRun)
+	var i GcRun
+	err := row.Scan(
+		&i.ID,
+		&i.State,
+		&i.Phase,
+		&i.Params,
+		&i.Stats,
+		&i.Error,
+		&i.StartedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
 }
 
 const getLiveObjects = `-- name: GetLiveObjects :many
@@ -437,6 +494,28 @@ func (q *Queries) GetRedundantMultipartUploads(ctx context.Context, arg GetRedun
 	return items, nil
 }
 
+const insertGCRun = `-- name: InsertGCRun :one
+INSERT INTO gc_runs (state, params) VALUES ('running', $1)
+RETURNING id, state, phase, params, stats, error, started_at, updated_at, finished_at
+`
+
+func (q *Queries) InsertGCRun(ctx context.Context, params []byte) (GcRun, error) {
+	row := q.db.QueryRow(ctx, insertGCRun, params)
+	var i GcRun
+	err := row.Scan(
+		&i.ID,
+		&i.State,
+		&i.Phase,
+		&i.Params,
+		&i.Stats,
+		&i.Error,
+		&i.StartedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3)
@@ -619,6 +698,22 @@ type RegisterCompletedObjectParams struct {
 // commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
 func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
 	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs, arg.Size)
+	return err
+}
+
+const updateGCRunProgress = `-- name: UpdateGCRunProgress :exec
+UPDATE gc_runs SET phase = $2, stats = $3, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateGCRunProgressParams struct {
+	ID    int64  `json:"id"`
+	Phase string `json:"phase"`
+	Stats []byte `json:"stats"`
+}
+
+func (q *Queries) UpdateGCRunProgress(ctx context.Context, arg UpdateGCRunProgressParams) error {
+	_, err := q.db.Exec(ctx, updateGCRunProgress, arg.ID, arg.Phase, arg.Stats)
 	return err
 }
 

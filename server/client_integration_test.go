@@ -610,7 +610,7 @@ func TestPinProtectsFromGC(t *testing.T) {
 		APIToken:      testAuthToken,
 		S3RateLimiter: service.S3RateLimiter,
 		S3Concurrency: service.S3Concurrency,
-		GCTasks:       server.NewGCTaskStore(),
+		GCTasks:       server.NewGCTaskStore(service.Pool),
 		Metrics:       service.Metrics,
 	}
 
