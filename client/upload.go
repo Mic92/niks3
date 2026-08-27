@@ -113,14 +113,14 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 	narKeyToHash := make(map[string]string)
 	logPathsByKey := make(map[string]string)
 
-	// Query realisations for CA paths
 	realisations, err := QueryRealisations(ctx, pathInfos, nixEnv)
 	if err != nil {
-		// Log warning but don't fail - realisations are optional
 		slog.Warn("Failed to query realisations (CA derivations may not upload correctly)", "error", err)
 
-		realisations = make(map[string]*RealisationInfo)
+		realisations = map[string][]RealisationInfo{}
 	}
+
+	realisationsByKey := make(map[string]*RealisationInfo)
 
 	// First pass: collect all objects for all paths
 	allObjects := make(map[string][]ObjectWithRefs) // storePath -> objects for that path
@@ -133,68 +133,19 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 		pathInfoByHash[hash] = pathInfo
 
-		// Extract references as object keys (hash.narinfo)
-		var references []string
-
-		for _, ref := range pathInfo.References {
-			refHash, err := GetStorePathHash(ref)
-			if err != nil {
-				return nil, fmt.Errorf("getting reference hash: %w", err)
-			}
-
-			// Store reference as object key (hash.narinfo) so GC can follow it
-			references = append(references, refHash+".narinfo")
-		}
-
-		// NAR file object - use NarHash for content-based deduplication
 		narKey, err := getNARKey(pathInfo.NarHash.String())
 		if err != nil {
 			return nil, fmt.Errorf("getting NAR key: %w", err)
 		}
 
-		// Map NAR key back to store path hash for later lookup
 		narKeyToHash[narKey] = hash
 
-		// .ls file (directory listing with brotli compression)
-		lsKey := hash + ".ls"
-
-		// Check if this path has realisation objects
-		var realisationKeys []string
-
-		for realisationKey, realisation := range realisations {
-			if realisation.OutPath == storePath {
-				realisationKeys = append(realisationKeys, realisationKey)
-			}
+		// The narinfo references all siblings so GC keeps them together.
+		siblings := []ObjectWithRefs{
+			{Key: narKey, Type: ObjectTypeNAR, Refs: []string{}, NarSize: &pathInfo.NarSize},
+			{Key: hash + ".ls", Type: ObjectTypeListing, Refs: []string{}},
 		}
 
-		// Narinfo references both dependencies, its own NAR file, .ls file, and any realisations
-		narinfoRefs := make([]string, 0, len(references)+2+len(realisationKeys))
-		narinfoRefs = append(narinfoRefs, references...)
-		narinfoRefs = append(narinfoRefs, narKey, lsKey)
-		narinfoRefs = append(narinfoRefs, realisationKeys...)
-		narinfoKey := hash + ".narinfo"
-
-		// Create objects for this closure
-		objects := []ObjectWithRefs{
-			{
-				Key:  narinfoKey,
-				Type: ObjectTypeNarinfo,
-				Refs: narinfoRefs,
-			},
-			{
-				Key:     narKey,
-				Type:    ObjectTypeNAR,
-				Refs:    []string{},
-				NarSize: &pathInfo.NarSize, // Include NarSize for multipart estimation
-			},
-			{
-				Key:  lsKey,
-				Type: ObjectTypeListing,
-				Refs: []string{},
-			},
-		}
-
-		// Check if this path has a deriver (i.e., was built) and has a build log
 		if pathInfo.Deriver != nil && *pathInfo.Deriver != "" {
 			drvPath := *pathInfo.Deriver
 
@@ -202,34 +153,36 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 			if err != nil {
 				slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
 			} else if logPath != "" {
-				// Build log exists - add log object
-				// Use filepath.Base to get just the derivation filename (works with any store directory)
-				drvName := filepath.Base(drvPath)
-				logKey := "log/" + drvName
-
-				objects = append(objects, ObjectWithRefs{
-					Key:  logKey,
-					Type: ObjectTypeBuildLog,
-					Refs: []string{}, // Logs don't reference anything
-				})
-
-				// Track the log path for later upload
+				logKey := "log/" + filepath.Base(drvPath)
+				siblings = append(siblings, ObjectWithRefs{Key: logKey, Type: ObjectTypeBuildLog, Refs: []string{}})
 				logPathsByKey[logKey] = logPath
-
-				slog.Debug("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
 			}
 		}
 
-		// Add realisation objects for CA derivations
-		for _, realisationKey := range realisationKeys {
-			objects = append(objects, ObjectWithRefs{
-				Key:  realisationKey,
-				Type: ObjectTypeRealisation,
-				Refs: []string{}, // Realisations don't reference other objects
-			})
+		for i := range realisations[storePath] {
+			r := &realisations[storePath][i]
+			siblings = append(siblings, ObjectWithRefs{Key: r.Key(), Type: ObjectTypeRealisation, Refs: []string{}})
+			realisationsByKey[r.Key()] = r
 		}
 
-		allObjects[storePath] = objects
+		narinfoRefs := make([]string, 0, len(pathInfo.References)+len(siblings))
+
+		for _, ref := range pathInfo.References {
+			refHash, err := GetStorePathHash(ref)
+			if err != nil {
+				return nil, fmt.Errorf("getting reference hash: %w", err)
+			}
+
+			narinfoRefs = append(narinfoRefs, refHash+".narinfo")
+		}
+
+		for _, o := range siblings {
+			narinfoRefs = append(narinfoRefs, o.Key)
+		}
+
+		allObjects[storePath] = append(
+			[]ObjectWithRefs{{Key: hash + ".narinfo", Type: ObjectTypeNarinfo, Refs: narinfoRefs}},
+			siblings...)
 	}
 
 	// Second pass: compute closure membership for each top-level path
@@ -269,7 +222,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		PathInfoByHash:    pathInfoByHash,
 		NARKeyToHash:      narKeyToHash,
 		LogPathsByKey:     logPathsByKey,
-		RealisationsByKey: realisations,
+		RealisationsByKey: realisationsByKey,
 	}, nil
 }
 

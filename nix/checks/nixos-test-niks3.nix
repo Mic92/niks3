@@ -375,6 +375,13 @@ testers.nixosTest {
     # Push CA derivation to cache
     server.succeed(f"{niks3_push_env} {niks3_cmd} push {ca_output}")
 
+    # The realisation object must actually be in the bucket.
+    server.succeed(f"""
+      {s3_env}
+      export S3_ENDPOINT_URL=http://server:9000
+      ${s5cmd}/bin/s5cmd ls 's3://niks3-test/realisations/*' | grep -F '.doi'
+    """)
+
     # Use a chroot store to test retrieval from cache WITH signature verification
     server.succeed("mkdir -p /tmp/chroot-store")
 

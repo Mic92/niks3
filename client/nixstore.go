@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,34 +312,39 @@ func GetStorePathHash(storePath string) (string, error) {
 	return hash, nil
 }
 
-// QueryRealisations queries realisations from Nix's local database using `nix realisation info`.
-// It only queries paths that have the CA field set, as non-CA paths don't have realisations.
-// Returns a map from realisation key ("realisations/<id>.doi") to RealisationInfo.
-func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string]*RealisationInfo, error) {
-	// OPTIMIZATION: Only query paths that have CA field set
-	// Non-CA paths don't have realisations, so skip them
-	caPaths := make([]string, 0, len(pathInfos))
-	for _, info := range pathInfos {
-		if info.CA != nil && info.CA.String() != "" {
-			caPaths = append(caPaths, info.Path)
+// RealisationKey is the binary-cache object key for r.
+func (r *RealisationInfo) Key() string { return "realisations/" + r.ID + ".doi" }
+
+// QueryRealisations returns realisations of CA paths keyed by full store
+// path. Nix only answers for `<drv>^*`, not for store paths, and reports
+// outPath as a basename.
+func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string][]RealisationInfo, error) {
+	byBase := make(map[string]string) // basename -> full store path
+	drvs := make(map[string]struct{})
+
+	for storePath, info := range pathInfos {
+		if info.CA == nil || info.CA.String() == "" || info.Deriver == nil || *info.Deriver == "" {
+			continue
 		}
+
+		byBase[filepath.Base(storePath)] = storePath
+		drvs[*info.Deriver+"^*"] = struct{}{}
 	}
 
-	if len(caPaths) == 0 {
-		return make(map[string]*RealisationInfo), nil
+	result := make(map[string][]RealisationInfo)
+	if len(drvs) == 0 {
+		return result, nil
 	}
 
-	result := make(map[string]*RealisationInfo)
+	installables := make([]string, 0, len(drvs))
+	for d := range drvs {
+		installables = append(installables, d)
+	}
 
-	// Chunk paths to avoid ARG_MAX overflow (typically 2MB on most systems)
-	// Store paths are ~60 chars, so 1000 paths per chunk is safe (~300KB with overhead)
-	const maxPathsPerChunk = 1000
-	for i := 0; i < len(caPaths); i += maxPathsPerChunk {
-		end := min(i+maxPathsPerChunk, len(caPaths))
+	const maxPerChunk = 1000
+	for i := 0; i < len(installables); i += maxPerChunk {
+		chunk := installables[i:min(i+maxPerChunk, len(installables))]
 
-		chunk := caPaths[i:end]
-
-		// Batch query chunk of CA paths
 		args := append([]string{"--extra-experimental-features", "nix-command ca-derivations", "realisation", "info", "--json"}, chunk...)
 
 		cmd := exec.CommandContext(ctx, "nix", args...)
@@ -348,7 +354,9 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 
 		output, err := cmd.Output()
 		if err != nil {
-			// Some CA paths might not have realisations yet - this is OK
+			// e.g. deriver not present locally. Realisations are best effort.
+			slog.Debug("nix realisation info failed", "error", err)
+
 			continue
 		}
 
@@ -357,11 +365,14 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 			return nil, fmt.Errorf("parsing realisation info: %w", err)
 		}
 
-		// Build map: realisations/<id>.doi -> RealisationInfo
 		for _, r := range realisations {
-			key := "realisations/" + r.ID + ".doi"
-			rCopy := r
-			result[key] = &rCopy
+			if r.ID == "" {
+				continue
+			}
+
+			if storePath, ok := byBase[filepath.Base(r.OutPath)]; ok {
+				result[storePath] = append(result[storePath], r)
+			}
 		}
 	}
 
