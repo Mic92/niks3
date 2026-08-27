@@ -2,9 +2,14 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
+	"strings"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
@@ -62,6 +67,58 @@ type ValidatedClaims struct {
 	RawClaims map[string]any
 }
 
+// bearerFileTransport re-reads the token per request to follow rotation.
+type bearerFileTransport struct {
+	path string
+	base http.RoundTripper
+}
+
+func (t *bearerFileTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := os.ReadFile(t.path)
+	if err != nil {
+		return nil, fmt.Errorf("reading bearer token file: %w", err)
+	}
+
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("oidc discovery request: %w", err)
+	}
+
+	return resp, nil
+}
+
+func httpClientFor(p *ProviderConfig) (*http.Client, error) {
+	if p.CAFile == "" && p.BearerTokenFile == "" {
+		return http.DefaultClient, nil
+	}
+
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+
+	if p.CAFile != "" {
+		pem, err := os.ReadFile(p.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading ca_file: %w", err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca_file %s contains no certificates", p.CAFile)
+		}
+
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+
+	var rt http.RoundTripper = transport
+	if p.BearerTokenFile != "" {
+		rt = &bearerFileTransport{path: p.BearerTokenFile, base: transport}
+	}
+
+	return &http.Client{Transport: rt}, nil
+}
+
 // NewValidator creates a new OIDC validator from config.
 func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	v := &Validator{
@@ -73,8 +130,13 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	for name, providerCfg := range cfg.Providers {
 		slog.Debug("Initializing OIDC provider", "name", name, "issuer", providerCfg.Issuer)
 
-		// Create the OIDC provider (handles discovery and JWKS)
-		provider, err := gooidc.NewProvider(ctx, providerCfg.Issuer)
+		client, err := httpClientFor(providerCfg)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+
+		// go-oidc reuses this context's client for later JWKS fetches.
+		provider, err := gooidc.NewProvider(gooidc.ClientContext(ctx, client), providerCfg.Issuer)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", providerCfg.Issuer, err)
 		}

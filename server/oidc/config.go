@@ -41,6 +41,11 @@ type ProviderConfig struct {
 	// Example: ["repo:myorg/*:*"]
 	BoundSubject []string `json:"bound_subject,omitempty"`
 
+	// CAFile and BearerTokenFile are used when fetching discovery/JWKS,
+	// e.g. from a Kubernetes API server (private CA, authenticated).
+	CAFile          string `json:"ca_file,omitempty"`
+	BearerTokenFile string `json:"bearer_token_file,omitempty"`
+
 	// name is set from the map key during config loading
 	name string
 }

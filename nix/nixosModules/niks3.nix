@@ -55,6 +55,18 @@ let
         '';
         example = [ "repo:myorg/*:*" ];
       };
+
+      caFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "CA bundle to verify the issuer with, for issuers behind a private CA (e.g. a Kubernetes API server).";
+      };
+
+      bearerTokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "Bearer token sent when fetching discovery/JWKS, for issuers that require authentication (e.g. a Kubernetes API server).";
+      };
     };
   };
 
@@ -73,6 +85,12 @@ let
           }
           // lib.optionalAttrs (provider.boundSubject != [ ]) {
             bound_subject = provider.boundSubject;
+          }
+          // lib.optionalAttrs (provider.caFile != null) {
+            ca_file = toString provider.caFile;
+          }
+          // lib.optionalAttrs (provider.bearerTokenFile != null) {
+            bearer_token_file = toString provider.bearerTokenFile;
           }
         ) cfg.oidc.providers;
       }
