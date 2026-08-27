@@ -31,6 +31,7 @@ type Client struct {
 	Retry                   RetryConfig                    // Retry configuration for HTTP requests
 	storeDir                string                         // Cached Nix store directory (e.g., "/nix/store")
 	VerifyS3Integrity       bool                           // Enable S3 integrity checking when creating pending closures
+	NoClosure               bool                           // Upload exactly the given paths instead of expanding their closures
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls

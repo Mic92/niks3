@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -108,7 +110,14 @@ type PrepareClosuresResult struct {
 // Build logs are automatically discovered for output paths and included by default.
 // Realisations are queried for CA derivations and included automatically.
 // topLevelPaths specifies which paths are closure roots - one ClosureInfo is created per top-level path.
-func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo, nixEnv []string) (*PrepareClosuresResult, error) {
+// With noClosure set, each ClosureInfo carries only its own path's objects instead of its whole closure.
+func PrepareClosures(
+	ctx context.Context,
+	topLevelPaths []string,
+	pathInfos map[string]*PathInfo,
+	nixEnv []string,
+	noClosure bool,
+) (*PrepareClosuresResult, error) {
 	pathInfoByHash := make(map[string]*PathInfo)
 	narKeyToHash := make(map[string]string)
 	logPathsByKey := make(map[string]string)
@@ -233,7 +242,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 	}
 
 	// Second pass: compute closure membership for each top-level path
-	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
+	closureMembership := computeClosureMembership(topLevelPaths, pathInfos, noClosure)
 
 	// Third pass: create one ClosureInfo per top-level path with only its reachable objects
 	closures := make([]ClosureInfo, 0, len(topLevelPaths))
@@ -247,13 +256,12 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 		narinfoKey := topLevelHash + ".narinfo"
 
-		// Collect objects only for paths reachable from this top-level path
+		// Iterate the reachable set, not allObjects: it is the smaller side,
+		// which matters with --no-closure where root count scales with paths.
 		var closureObjects []ObjectWithRefs
 
-		reachable := closureMembership[topLevelPath]
-
-		for storePath, objects := range allObjects {
-			if reachable[storePath] {
+		for storePath := range closureMembership[topLevelPath] {
+			if objects, ok := allObjects[storePath]; ok {
 				closureObjects = append(closureObjects, objects...)
 			}
 		}
@@ -274,12 +282,21 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 }
 
 // computeClosureMembership returns, for each top-level path, the set of store
-// paths reachable from it via references.
-func computeClosureMembership(topLevelPaths []string, pathInfos map[string]*PathInfo) map[string]map[string]bool {
-	closureMembership := make(map[string]map[string]bool) // topLevelPath -> set of reachable paths
+// paths reachable from it via references. With noClosure, each path maps to
+// just itself: the requested set is often reference-closed, so traversal must
+// be suppressed explicitly.
+func computeClosureMembership(topLevelPaths []string, pathInfos map[string]*PathInfo, noClosure bool) map[string]map[string]bool {
+	closureMembership := make(map[string]map[string]bool, len(topLevelPaths)) // topLevelPath -> set of reachable paths
 
 	for _, topLevelPath := range topLevelPaths {
 		reachable := make(map[string]bool)
+
+		if noClosure {
+			reachable[topLevelPath] = true
+			closureMembership[topLevelPath] = reachable
+
+			continue
+		}
 
 		var visit func(string)
 
@@ -318,12 +335,18 @@ type skippedUploads struct {
 // top-level paths, pathInfos pruned to paths still reachable from them, and
 // counts of what was skipped. Skipping only warns, never errors, so pushes
 // and the build hook keep succeeding under a server-side size policy.
-func filterOversizedClosures(topLevelPaths []string, pathInfos map[string]*PathInfo, maxNarSize uint64) ([]string, map[string]*PathInfo, skippedUploads) {
+// With noClosure, each path is judged on its own NarSize.
+func filterOversizedClosures(
+	topLevelPaths []string,
+	pathInfos map[string]*PathInfo,
+	maxNarSize uint64,
+	noClosure bool,
+) ([]string, map[string]*PathInfo, skippedUploads) {
 	if maxNarSize == 0 {
 		return topLevelPaths, pathInfos, skippedUploads{}
 	}
 
-	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
+	closureMembership := computeClosureMembership(topLevelPaths, pathInfos, noClosure)
 	kept := make([]string, 0, len(topLevelPaths))
 
 nextClosure:
@@ -370,21 +393,66 @@ nextClosure:
 	return kept, prunedInfos, skipped
 }
 
+// runConcurrently applies fn to every item, running at most limit at a time,
+// and returns the first error. A limit of 0 or less means unbounded.
+func runConcurrently[T any](ctx context.Context, limit int, items []T, fn func(context.Context, T) error) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(limit)
+
+	for _, item := range items {
+		g.Go(func() error {
+			return fn(ctx, item)
+		})
+	}
+
+	return g.Wait() //nolint:wrapcheck // errgroup returns the first task's already-wrapped error
+}
+
+// closureCallConcurrency bounds concurrent per-closure server calls.
+// --no-closure closures hold one path each, so their commits never upsert the
+// same object row and can overlap. Ordinary closures overlap heavily and their
+// concurrent upserts can deadlock in Postgres, so they stay sequential.
+func (c *Client) closureCallConcurrency() int {
+	if !c.NoClosure {
+		return 1
+	}
+
+	return c.MaxConcurrentNARUploads
+}
+
 // CreatePendingClosures creates pending closures and returns all pending objects and closure ID to narinfo key mapping.
 func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (map[string]PendingObject, map[string]string, error) {
 	pendingObjects := make(map[string]PendingObject)
 	closureIDToNarinfoKey := make(map[string]string) // Maps closure ID -> narinfo key
 
-	for _, closure := range closures {
+	var mu sync.Mutex
+
+	err := runConcurrently(ctx, c.closureCallConcurrency(), closures, func(ctx context.Context, closure ClosureInfo) error {
 		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects, c.VerifyS3Integrity)
 		if err != nil {
-			return nil, nil, fmt.Errorf("creating pending closure: %w", err)
+			return fmt.Errorf("creating pending closure: %w", err)
 		}
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		closureIDToNarinfoKey[resp.ID] = closure.NarinfoKey
 
 		// Collect pending objects
 		maps.Copy(pendingObjects, resp.PendingObjects)
+
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return pendingObjects, closureIDToNarinfoKey, nil
@@ -418,13 +486,25 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, narinfosByClosureID 
 	// Sign narinfos for each closure
 	signaturesByKey := make(map[string][]string)
 
-	for closureID, narinfos := range narinfosByClosureID {
-		signatures, err := c.SignPendingClosure(ctx, closureID, narinfos)
+	var mu sync.Mutex
+
+	closureIDs := slices.Collect(maps.Keys(narinfosByClosureID))
+
+	err := runConcurrently(ctx, c.closureCallConcurrency(), closureIDs, func(ctx context.Context, closureID string) error {
+		signatures, err := c.SignPendingClosure(ctx, closureID, narinfosByClosureID[closureID])
 		if err != nil {
 			return fmt.Errorf("signing narinfos for closure %s: %w", closureID, err)
 		}
 
+		mu.Lock()
+		defer mu.Unlock()
+
 		maps.Copy(signaturesByKey, signatures)
+
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	// Generate, compress, and upload narinfos in parallel
@@ -504,6 +584,10 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 // It returns the full list of store paths that were part of the uploaded
 // closures (including transitive dependencies), which callers can use to
 // prune queues of dependency paths that no longer need separate uploads.
+//
+// With c.NoClosure, only the given paths are uploaded and each becomes its own
+// gcroot. Narinfos still record full references, so dependencies already in the
+// cache stay reachable, but callers must push every path they want available.
 func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error) {
 	startTime := time.Now()
 
@@ -516,9 +600,15 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
 
 	// Get path info for all paths and their closures
-	slog.Debug("Getting path info", "count", len(resolvedPaths))
+	slog.Debug("Getting path info", "count", len(resolvedPaths), "no_closure", c.NoClosure)
 
-	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths, c.NixEnv)
+	var pathInfos map[string]*PathInfo
+	if c.NoClosure {
+		pathInfos, err = GetPathInfo(ctx, resolvedPaths, c.NixEnv)
+	} else {
+		pathInfos, err = GetPathInfoRecursive(ctx, resolvedPaths, c.NixEnv)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("getting path info: %w", err)
 	}
@@ -545,7 +635,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	var skipped skippedUploads
 
-	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
+	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize, c.NoClosure)
 	c.ReportSkippedUploads(ctx, skipped.Paths, skipped.NarBytes)
 
 	if len(resolvedPaths) == 0 {
@@ -555,7 +645,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	}
 
 	// Prepare closures - one per top-level path
-	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv)
+	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv, c.NoClosure)
 	if err != nil {
 		return nil, fmt.Errorf("preparing closures: %w", err)
 	}
@@ -635,10 +725,16 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	}
 
 	// Complete all pending closures (all objects including narinfos are now uploaded)
-	for id := range closureIDToNarinfoKey {
+	completeIDs := slices.Collect(maps.Keys(closureIDToNarinfoKey))
+
+	if err := runConcurrently(ctx, c.closureCallConcurrency(), completeIDs, func(ctx context.Context, id string) error {
 		if err := c.CompletePendingClosure(ctx, id); err != nil {
-			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
+			return fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	duration := time.Since(startTime)

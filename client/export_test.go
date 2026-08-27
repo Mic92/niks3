@@ -21,6 +21,12 @@ var PartSizeForNAR = partSizeForNAR //nolint:gochecknoglobals // test-only re-ex
 // FilterOversizedClosures re-exports filterOversizedClosures for the external test package.
 var FilterOversizedClosures = filterOversizedClosures //nolint:gochecknoglobals // test-only re-export
 
+// ChunkStorePaths re-exports chunkStorePaths for the external test package.
+var ChunkStorePaths = chunkStorePaths //nolint:gochecknoglobals // test-only re-export
+
+// MaxPathInfoArgBytes re-exports the path-info argument budget for tests.
+const MaxPathInfoArgBytes = maxPathInfoArgBytes
+
 // MultipartPartSize re-exports the default part size for tests.
 const MultipartPartSize = multipartPartSize
 

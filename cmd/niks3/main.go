@@ -47,6 +47,11 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --no-closure")
+	fmt.Fprintln(os.Stderr, "        Upload exactly the given store paths instead of their closures.")
+	fmt.Fprintln(os.Stderr, "        Each path becomes its own garbage collection root. Callers must pass")
+	fmt.Fprintln(os.Stderr, "        every path they want cached, including dependencies; anything left out")
+	fmt.Fprintln(os.Stderr, "        is only usable if some other push already uploaded it.")
 	fmt.Fprintln(os.Stderr, cmdutil.TLSHelp)
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
@@ -97,6 +102,7 @@ func run() error {
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 		pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
+		noClosure := pushCmd.Bool("no-closure", false, "Upload only the given paths, not their closures")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
 		ts, err := cmdutil.ParseCommand(pushCmd, cf, tf, os.Args[2:], printPushHelp)
@@ -113,7 +119,20 @@ func run() error {
 			return errors.New("--pin requires exactly one store path")
 		}
 
-		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *cf.Debug, tf)
+		// A pin protects paths reachable from its root narinfo. Under
+		// --no-closure that is one path, not the closure the user meant.
+		if *pinName != "" && *noClosure {
+			return errors.New("--pin cannot be combined with --no-closure")
+		}
+
+		return pushCommand(*cf.ServerURL, ts, paths, pushOptions{
+			MaxConcurrent:     *maxConcurrent,
+			VerifyS3Integrity: *verifyS3Integrity,
+			NoClosure:         *noClosure,
+			PinName:           *pinName,
+			Debug:             *cf.Debug,
+			TLS:               tf,
+		})
 
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
@@ -176,27 +195,36 @@ func run() error {
 	}
 }
 
-func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, verifyS3Integrity bool, pinName string, debug bool, tf cmdutil.TLSFlags) error {
+// pushOptions carries the tunables of the push subcommand.
+type pushOptions struct {
+	MaxConcurrent     int
+	VerifyS3Integrity bool
+	NoClosure         bool
+	PinName           string
+	Debug             bool
+	TLS               cmdutil.TLSFlags
+}
+
+func pushCommand(serverURL string, ts client.TokenSource, paths []string, opts pushOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if maxConcurrent < 1 {
-		maxConcurrent = 1
-	}
+	maxConcurrent := max(opts.MaxConcurrent, 1)
 
-	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, opts.TLS, opts.Debug)
 	if err != nil {
 		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 
 	c.MaxConcurrentNARUploads = maxConcurrent
-	c.VerifyS3Integrity = verifyS3Integrity
+	c.VerifyS3Integrity = opts.VerifyS3Integrity
+	c.NoClosure = opts.NoClosure
 
 	if _, err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
 	}
 
-	if pinName != "" {
+	if pinName := opts.PinName; pinName != "" {
 		// The server only accepts store paths, but users typically pass a
 		// ./result symlink as produced by nix-build.
 		storePath, err := c.ResolveStorePath(paths[0])

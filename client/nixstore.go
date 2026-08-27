@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,10 +222,75 @@ type RealisationInfo struct {
 	DependentRealisations map[string]string `json:"dependentRealisations,omitempty"` //nolint:tagliatelle
 }
 
+// maxPathInfoArgBytes bounds the store paths per `nix path-info` call, well
+// under the execve argument limit (~256 KiB on macOS) shared with the environment.
+const maxPathInfoArgBytes = 128 * 1024
+
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
 func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []string) (map[string]*PathInfo, error) {
+	return getPathInfo(ctx, storePaths, nixEnv, true)
+}
+
+// GetPathInfo queries Nix for exactly the given store paths, without
+// descending into their references.
+func GetPathInfo(ctx context.Context, storePaths []string, nixEnv []string) (map[string]*PathInfo, error) {
+	return getPathInfo(ctx, storePaths, nixEnv, false)
+}
+
+// getPathInfo runs `nix path-info` in chunks and merges the results. Paths
+// repeated across chunks resolve identically, so overwrites are harmless.
+func getPathInfo(ctx context.Context, storePaths []string, nixEnv []string, recursive bool) (map[string]*PathInfo, error) {
+	result := make(map[string]*PathInfo, len(storePaths))
+
+	for chunk := range chunkStorePaths(storePaths, maxPathInfoArgBytes) {
+		infos, err := runPathInfo(ctx, chunk, nixEnv, recursive)
+		if err != nil {
+			return nil, err
+		}
+
+		maps.Copy(result, infos)
+	}
+
+	return result, nil
+}
+
+// chunkStorePaths splits storePaths into groups under maxBytes. An oversized
+// path still gets its own chunk rather than being dropped.
+func chunkStorePaths(storePaths []string, maxBytes int) iter.Seq[[]string] {
+	return func(yield func([]string) bool) {
+		start := 0
+		size := 0
+
+		for i, path := range storePaths {
+			// +1 for the NUL separator execve adds between arguments.
+			cost := len(path) + 1
+			if i > start && size+cost > maxBytes {
+				if !yield(storePaths[start:i]) {
+					return
+				}
+
+				start = i
+				size = 0
+			}
+
+			size += cost
+		}
+
+		if start < len(storePaths) {
+			yield(storePaths[start:])
+		}
+	}
+}
+
+func runPathInfo(ctx context.Context, storePaths []string, nixEnv []string, recursive bool) (map[string]*PathInfo, error) {
 	args := make([]string, 0, 6+len(storePaths))
-	args = append(args, "--extra-experimental-features", "nix-command", "path-info", "--recursive", "--json", "--")
+	args = append(args, "--extra-experimental-features", "nix-command", "path-info")
+
+	if recursive {
+		args = append(args, "--recursive")
+	}
+
+	args = append(args, "--json", "--")
 	args = append(args, storePaths...)
 
 	cmd := exec.CommandContext(ctx, "nix", args...)
