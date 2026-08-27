@@ -1,0 +1,55 @@
+{{- if .Values.gc.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "niks3.fullname" . }}-gc
+  labels: {{- include "niks3.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.gc.schedule | quote }}
+  startingDeadlineSeconds: 3600
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: {{- include "niks3.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: gc
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "niks3.serviceAccountName" . }}
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: gc
+              image: {{ include "niks3.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/bin/niks3"]
+              args:
+                - gc
+                - --server-url=http://{{ include "niks3.fullname" . }}:{{ .Values.service.port }}
+                - --auth-token-path=/secrets/token/token
+                - --older-than={{ .Values.gc.olderThan }}
+                - --failed-uploads-older-than={{ .Values.gc.failedUploadsOlderThan }}
+              securityContext: {{- toYaml .Values.securityContext | nindent 16 }}
+              {{- with .Values.gc.resources }}
+              resources: {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: token
+                  mountPath: /secrets/token
+                  readOnly: true
+          volumes:
+            - name: token
+              secret:
+                secretName: {{ include "niks3.tokenSecretName" . }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

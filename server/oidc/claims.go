@@ -3,8 +3,50 @@ package oidc
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
+
+// Has reports whether the token was granted scope s.
+func (c *ValidatedClaims) Has(s Scope) bool {
+	return slices.Contains(c.Scopes, s)
+}
+
+// matchRules returns the union of scopes of all matching rules, or the first
+// rule's mismatch reason if none match.
+func matchRules(claims map[string]any, rules []Rule) ([]Scope, error) {
+	var (
+		scopes   []Scope
+		firstErr error
+	)
+
+	for _, r := range rules {
+		err := validateBoundClaims(claims, r.BoundClaims)
+		if err == nil {
+			err = validateBoundSubject(claims, r.BoundSubject)
+		}
+
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+
+			continue
+		}
+
+		for _, s := range r.Scopes {
+			if !slices.Contains(scopes, s) {
+				scopes = append(scopes, s)
+			}
+		}
+	}
+
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("no rule matched: %w", firstErr)
+	}
+
+	return scopes, nil
+}
 
 // validateBoundClaims checks that all bound claims match.
 // All specified claims must match (AND logic).

@@ -2,9 +2,15 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
@@ -58,8 +64,62 @@ type ValidatedClaims struct {
 	Issuer string
 	// Provider is the provider name from config
 	Provider string
+	// Scopes is the union of scopes of all matching rules.
+	Scopes []Scope
 	// RawClaims contains all claims for logging/debugging
 	RawClaims map[string]any
+}
+
+// bearerFileTransport re-reads the token per request to follow rotation.
+type bearerFileTransport struct {
+	path string
+	base http.RoundTripper
+}
+
+func (t *bearerFileTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := os.ReadFile(t.path)
+	if err != nil {
+		return nil, fmt.Errorf("reading bearer token file: %w", err)
+	}
+
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("oidc discovery request: %w", err)
+	}
+
+	return resp, nil
+}
+
+func httpClientFor(p *ProviderConfig) (*http.Client, error) {
+	if p.CAFile == "" && p.BearerTokenFile == "" {
+		return http.DefaultClient, nil
+	}
+
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+
+	if p.CAFile != "" {
+		pem, err := os.ReadFile(p.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading ca_file: %w", err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca_file %s contains no certificates", p.CAFile)
+		}
+
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+
+	var rt http.RoundTripper = transport
+	if p.BearerTokenFile != "" {
+		rt = &bearerFileTransport{path: p.BearerTokenFile, base: transport}
+	}
+
+	return &http.Client{Transport: rt}, nil
 }
 
 // NewValidator creates a new OIDC validator from config.
@@ -73,8 +133,13 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	for name, providerCfg := range cfg.Providers {
 		slog.Debug("Initializing OIDC provider", "name", name, "issuer", providerCfg.Issuer)
 
-		// Create the OIDC provider (handles discovery and JWKS)
-		provider, err := gooidc.NewProvider(ctx, providerCfg.Issuer)
+		client, err := httpClientFor(providerCfg)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+
+		// go-oidc reuses this context's client for later JWKS fetches.
+		provider, err := gooidc.NewProvider(gooidc.ClientContext(ctx, client), providerCfg.Issuer)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", providerCfg.Issuer, err)
 		}
@@ -94,6 +159,19 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	}
 
 	return v, nil
+}
+
+// GrantsScope reports whether any configured rule can grant s.
+func (v *Validator) GrantsScope(s Scope) bool {
+	for _, p := range v.config.Providers {
+		for _, r := range p.effectiveRules() {
+			if slices.Contains(r.Scopes, s) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // AudienceForIssuer returns the configured audience for the given issuer URL,
@@ -138,24 +216,12 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			}
 		}
 
-		// Validate bound claims (our custom authorization logic)
-		if err := validateBoundClaims(claims, pv.config.BoundClaims); err != nil {
-			slog.Debug("Bound claims validation failed", "provider", pv.config.Name(), "error", err)
+		scopes, err := matchRules(claims, pv.config.effectiveRules())
+		if err != nil {
+			slog.Debug("No rule matched", "provider", pv.config.Name(), "error", err)
 
 			return nil, &ValidationError{
-				Reason:         fmt.Sprintf("bound claims validation failed: %v", err),
-				Provider:       pv.config.Name(),
-				Claims:         claims,
-				TriedProviders: triedProviders,
-			}
-		}
-
-		// Validate bound subject
-		if err := validateBoundSubject(claims, pv.config.BoundSubject); err != nil {
-			slog.Debug("Bound subject validation failed", "provider", pv.config.Name(), "error", err)
-
-			return nil, &ValidationError{
-				Reason:         fmt.Sprintf("bound subject validation failed: %v", err),
+				Reason:         err.Error(),
 				Provider:       pv.config.Name(),
 				Claims:         claims,
 				TriedProviders: triedProviders,
@@ -166,6 +232,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			Subject:   idToken.Subject,
 			Issuer:    issuer,
 			Provider:  pv.config.Name(),
+			Scopes:    scopes,
 			RawClaims: claims,
 		}, nil
 	}

@@ -8,6 +8,11 @@
 
 let
   cfg = config.services.niks3;
+  scopeType = lib.types.enum [
+    "read"
+    "write"
+    "admin"
+  ];
 
   # OIDC provider submodule
   providerModule = lib.types.submodule {
@@ -55,6 +60,52 @@ let
         '';
         example = [ "repo:myorg/*:*" ];
       };
+
+      scopes = lib.mkOption {
+        type = lib.types.listOf scopeType;
+        default = [ "write" ];
+        description = "Scopes granted when boundClaims/boundSubject match. Ignored when rules is set.";
+      };
+
+      rules = lib.mkOption {
+        type = lib.types.listOf (
+          lib.types.submodule {
+            options = {
+              boundClaims = lib.mkOption {
+                type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+                default = { };
+              };
+              boundSubject = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [ ];
+              };
+              scopes = lib.mkOption {
+                type = lib.types.nonEmptyListOf scopeType;
+              };
+            };
+          }
+        );
+        default = [ ];
+        description = "Grant scopes per matching rule (union). Replaces top-level boundClaims/boundSubject/scopes.";
+        example = lib.literalExpression ''
+          [
+            { boundSubject = [ "repo:myorg/*:ref:refs/heads/main" ]; scopes = [ "write" ]; }
+            { boundSubject = [ "repo:myorg/infra:*" ]; scopes = [ "write" "admin" ]; }
+          ]
+        '';
+      };
+
+      caFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "CA bundle to verify the issuer with, for issuers behind a private CA (e.g. a Kubernetes API server).";
+      };
+
+      bearerTokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "Bearer token sent when fetching discovery/JWKS, for issuers that require authentication (e.g. a Kubernetes API server).";
+      };
     };
   };
 
@@ -68,11 +119,27 @@ let
             issuer = provider.issuer;
             audience = provider.audience;
           }
-          // lib.optionalAttrs (provider.boundClaims != { }) {
-            bound_claims = provider.boundClaims;
+          // (
+            if provider.rules != [ ] then
+              {
+                rules = map (r: {
+                  bound_claims = r.boundClaims;
+                  bound_subject = r.boundSubject;
+                  scopes = r.scopes;
+                }) provider.rules;
+              }
+            else
+              {
+                bound_claims = provider.boundClaims;
+                bound_subject = provider.boundSubject;
+                scopes = provider.scopes;
+              }
+          )
+          // lib.optionalAttrs (provider.caFile != null) {
+            ca_file = toString provider.caFile;
           }
-          // lib.optionalAttrs (provider.boundSubject != [ ]) {
-            bound_subject = provider.boundSubject;
+          // lib.optionalAttrs (provider.bearerTokenFile != null) {
+            bearer_token_file = toString provider.bearerTokenFile;
           }
         ) cfg.oidc.providers;
       }

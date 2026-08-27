@@ -1,0 +1,17 @@
+niks3 is reachable in-cluster at http://{{ include "niks3.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+{{- range .Values.ingress.hosts }}{{ if $.Values.ingress.enabled }}
+and at http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ end }}{{ end }}
+
+Push from a machine holding the API token:
+  NIKS3_SERVER_URL=<url> NIKS3_AUTH_TOKEN_FILE=<token file> niks3 push ./result
+{{- if .Values.auth.workloadIdentity.enabled }}
+
+Pods running as {{ join ", " .Values.auth.workloadIdentity.allowedServiceAccounts }} can push with a
+projected service account token (audience "{{ .Values.auth.workloadIdentity.audience }}"), see
+https://github.com/Mic92/niks3/wiki/Kubernetes
+{{- end }}
+{{- if .Values.gc.enabled }}
+
+Garbage collection runs on schedule "{{ .Values.gc.schedule }}". Trigger manually:
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "niks3.fullname" . }}-gc gc-manual
+{{- end }}

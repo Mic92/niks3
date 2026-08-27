@@ -83,4 +83,7 @@ packages
     niks3 = selfPackages.niks3;
     rustfs = pkgs.rustfs;
   };
+  nixos-test-k3s = pkgs.callPackage ./nixos-test-k3s.nix {
+    inherit (selfPackages) niks3 niks3-docker;
+  };
 }

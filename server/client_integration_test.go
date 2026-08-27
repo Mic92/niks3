@@ -17,6 +17,7 @@ import (
 
 	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/oidc"
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
@@ -294,8 +295,8 @@ func TestClientIntegration(t *testing.T) {
 
 	// Test garbage collection
 	t.Log("Testing garbage collection...")
-	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
-	mux.HandleFunc("GET /api/gc/status", testService.AuthMiddleware(testService.GCStatusHandler))
+	mux.HandleFunc("DELETE /api/closures", testService.RequireScope(oidc.ScopeWrite, testService.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", testService.RequireScope(oidc.ScopeWrite, testService.GCStatusHandler))
 
 	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
@@ -620,9 +621,9 @@ func TestPinProtectsFromGC(t *testing.T) {
 
 	mux := http.NewServeMux()
 	registerTestHandlers(mux, testService)
-	mux.HandleFunc("POST /api/pins/{name}", testService.AuthMiddleware(testService.CreatePinHandler))
-	mux.HandleFunc("DELETE /api/closures", testService.AuthMiddleware(testService.CleanupClosuresOlder))
-	mux.HandleFunc("GET /api/gc/status", testService.AuthMiddleware(testService.GCStatusHandler))
+	mux.HandleFunc("POST /api/pins/{name}", testService.RequireScope(oidc.ScopeWrite, testService.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/closures", testService.RequireScope(oidc.ScopeWrite, testService.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", testService.RequireScope(oidc.ScopeWrite, testService.GCStatusHandler))
 
 	ts := httptest.NewServer(mux)
 
