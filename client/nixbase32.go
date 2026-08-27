@@ -1,7 +1,6 @@
 package client
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 )
@@ -48,30 +47,45 @@ func EncodeNixBase32(input []byte) string {
 	return string(result)
 }
 
-// ConvertHashToNix32 converts a hash from SRI format (sha256-base64) or
-// Nix32 format (sha256:nix32) to Nix32 format (sha256:nix32).
-// If the hash is already in Nix32 format, it returns it unchanged.
-func ConvertHashToNix32(hash string) (string, error) {
-	// Check if already in Nix32 format (sha256:...)
-	if strings.HasPrefix(hash, "sha256:") && !strings.Contains(hash, "-") && !strings.Contains(hash, "+") && !strings.Contains(hash, "/") && !strings.Contains(hash, "=") {
-		// Already in Nix32 format (no base64 chars)
-		return hash, nil
+func nixBase32Len(n int) int {
+	if n == 0 {
+		return 0
 	}
 
-	// Parse SRI format (sha256-base64)
-	if !strings.HasPrefix(hash, "sha256-") {
-		return "", fmt.Errorf("unsupported hash format: %s (expected sha256-... or sha256:...)", hash)
+	return (n*8-1)/5 + 1
+}
+
+// DecodeNixBase32 is the inverse of EncodeNixBase32 (libutil/base-nix-32.cc).
+func DecodeNixBase32(s string) ([]byte, error) {
+	n := len(s) * 5 / 8
+	if nixBase32Len(n) != len(s) {
+		return nil, fmt.Errorf("invalid nix32 length %d", len(s))
 	}
 
-	// Extract base64 part
-	base64Hash := strings.TrimPrefix(hash, "sha256-")
+	out := make([]byte, n)
 
-	// Decode from base64
-	hashBytes, err := base64.StdEncoding.DecodeString(base64Hash)
-	if err != nil {
-		return "", fmt.Errorf("decoding base64 hash: %w", err)
+	for pos := range len(s) {
+		c := s[len(s)-1-pos]
+
+		idx := strings.IndexByte(nixBase32Alphabet, c)
+		if idx < 0 {
+			return nil, fmt.Errorf("invalid nix32 character %q", c)
+		}
+
+		digit := byte(idx) //nolint:gosec // idx < 32
+
+		b := pos * 5
+		i := b / 8
+		j := b % 8
+		out[i] |= digit << j
+
+		carry := digit >> (8 - j)
+		if i+1 < n {
+			out[i+1] |= carry
+		} else if carry != 0 {
+			return nil, fmt.Errorf("invalid nix32 string %q: trailing bits", s)
+		}
 	}
 
-	// Encode to Nix32
-	return "sha256:" + EncodeNixBase32(hashBytes), nil
+	return out, nil
 }

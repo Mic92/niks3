@@ -78,7 +78,7 @@ func TestPathInfoHashCompatibility(t *testing.T) {
 		{
 			name:           "old string format with colon",
 			jsonInput:      `{"narHash":"sha256:FePFYIlMuycIXPZbWi7LGEiMmZSX9FMbaQenWBzm1Sc=","narSize":1000,"references":[]}`,
-			expectedString: "sha256:FePFYIlMuycIXPZbWi7LGEiMmZSX9FMbaQenWBzm1Sc=",
+			expectedString: "sha256-FePFYIlMuycIXPZbWi7LGEiMmZSX9FMbaQenWBzm1Sc=",
 			wantErr:        false,
 		},
 		{
@@ -88,10 +88,9 @@ func TestPathInfoHashCompatibility(t *testing.T) {
 			wantErr:        false,
 		},
 		{
-			name:           "new structured format with sha512",
-			jsonInput:      `{"narHash":{"algorithm":"sha512","format":"base64","hash":"abcdef123456"},"narSize":1000,"references":[]}`,
-			expectedString: "sha512-abcdef123456",
-			wantErr:        false,
+			name:      "digest length mismatch",
+			jsonInput: `{"narHash":{"algorithm":"sha512","format":"base64","hash":"abcdef123456"},"narSize":1000,"references":[]}`,
+			wantErr:   true,
 		},
 	}
 
@@ -220,13 +219,13 @@ func TestParsePathInfoJSONMultiplePaths(t *testing.T) {
 	t.Parallel()
 
 	nixJSON := `{
-		"/nix/store/aaaa-foo": {"narHash": "sha256-abc=", "narSize": 100, "references": []},
-		"/nix/store/bbbb-bar": {"narHash": "sha256-def=", "narSize": 200, "references": []}
+		"/nix/store/aaaa-foo": {"narHash": "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=", "narSize": 100, "references": []},
+		"/nix/store/bbbb-bar": {"narHash": "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=", "narSize": 200, "references": []}
 	}`
 
 	lixJSON := `[
-		{"path": "/nix/store/aaaa-foo", "narHash": "sha256-abc=", "narSize": 100, "references": []},
-		{"path": "/nix/store/bbbb-bar", "narHash": "sha256-def=", "narSize": 200, "references": []}
+		{"path": "/nix/store/aaaa-foo", "narHash": "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=", "narSize": 100, "references": []},
+		{"path": "/nix/store/bbbb-bar", "narHash": "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=", "narSize": 200, "references": []}
 	]`
 
 	for _, tt := range []struct {
@@ -309,15 +308,15 @@ func TestPathInfoCACompatibility(t *testing.T) {
 		},
 		{
 			name:          "new structured format - text",
-			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"FePFYIlM"},"narSize":1000,"references":[],"ca":{"method":"text","hash":{"algorithm":"sha256","format":"base64","hash":"h1JyyIYA"}}}`,
-			expectedCAStr: "text:sha256:00hv474ll7",
+			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="},"narSize":1000,"references":[],"ca":{"method":"text","hash":{"algorithm":"sha256","format":"base64","hash":"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="}}}`,
+			expectedCAStr: "text:sha256:020ay2q1av2xs4n842rb3d7vz8qms1dcb87a5yd6azaci20x11lz",
 			expectNil:     false,
 			wantErr:       false,
 		},
 		{
 			name:          "new structured format - nar method",
-			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"FePF"},"narSize":1000,"references":[],"ca":{"method":"nar","hash":{"algorithm":"sha256","format":"base64","hash":"abcd1234"}}}`,
-			expectedCAStr: "fixed:r:sha256:7qdpbivdv9",
+			jsonInput:     `{"narHash":{"algorithm":"sha256","format":"base64","hash":"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="},"narSize":1000,"references":[],"ca":{"method":"nar","hash":{"algorithm":"sha256","format":"base64","hash":"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="}}}`,
+			expectedCAStr: "fixed:r:sha256:020ay2q1av2xs4n842rb3d7vz8qms1dcb87a5yd6azaci20x11lz",
 			expectNil:     false,
 			wantErr:       false,
 		},

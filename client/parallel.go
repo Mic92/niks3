@@ -139,17 +139,8 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 			continue
 		}
 
-		// Convert NarHash to Nix32 format for the narinfo
-		narHash := pathInfo.NarHash.String()
-		if convertedHash, err := ConvertHashToNix32(pathInfo.NarHash.String()); err == nil {
-			narHash = convertedHash
-		}
-
-		// Use NarHash-based key for URL (content-based deduplication)
-		narURL, err := getNARKey(pathInfo.NarHash.String())
-		if err != nil {
-			return nil, fmt.Errorf("getting NAR key for %s: %w", pathInfo.Path, err)
-		}
+		narHash := pathInfo.NarHash.Nix32()
+		narURL := narKey(pathInfo.NarHash)
 
 		// Convert CA to string if present
 		var caStr *string

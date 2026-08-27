@@ -15,18 +15,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// getNARKey generates the NAR object key based on content hash (NarHash) for deduplication.
-func getNARKey(narHash string) (string, error) {
-	// Convert NarHash to Nix32 format and strip "sha256:" prefix for filename
-	narHashNix32, err := ConvertHashToNix32(narHash)
-	if err != nil {
-		return "", fmt.Errorf("converting nar hash: %w", err)
-	}
-
-	narHashPart := strings.TrimPrefix(narHashNix32, "sha256:")
-	narFilename := narHashPart + ".nar.zst"
-
-	return "nar/" + narFilename, nil
+// narKey is the content-addressed object key for a NAR.
+func narKey(narHash Hash) string {
+	return "nar/" + narHash.BareNix32() + ".nar.zst"
 }
 
 // resolveSymlinks resolves any symlinks in the given paths to their actual store paths.
@@ -151,11 +142,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 
 		pathInfoByHash[hash] = pathInfo
 
-		narKey, err := getNARKey(pathInfo.NarHash.String())
-		if err != nil {
-			return nil, fmt.Errorf("getting NAR key: %w", err)
-		}
-
+		narKey := narKey(pathInfo.NarHash)
 		narKeyToHash[narKey] = hash
 
 		// The narinfo references all siblings so GC keeps them together.

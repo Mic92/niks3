@@ -49,72 +49,6 @@ func GetStoreDir(ctx context.Context, nixEnv []string) (string, error) {
 	return "/nix/store", nil
 }
 
-// Hash represents a Nix hash value.
-// It supports both the old string format (e.g., "sha256-base64hash")
-// and the new structured format from Nix 2.33+.
-type Hash struct {
-	algorithm string
-	format    string
-	hash      string
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling to support both
-// old string format and new structured format from nix path-info.
-func (h *Hash) UnmarshalJSON(data []byte) error {
-	// Try to unmarshal as string (old format)
-	var hashStr string
-	if err := json.Unmarshal(data, &hashStr); err == nil {
-		// Old format: store the string as-is
-		h.hash = hashStr
-
-		// Parse algorithm from string for consistency
-		if strings.HasPrefix(hashStr, "sha256:") || strings.HasPrefix(hashStr, "sha256-") {
-			h.algorithm = "sha256"
-		} else if strings.HasPrefix(hashStr, "sha512:") || strings.HasPrefix(hashStr, "sha512-") {
-			h.algorithm = "sha512"
-		}
-
-		return nil
-	}
-
-	// Try to unmarshal as structured object (new format)
-	var hashObj struct {
-		Algorithm string `json:"algorithm"`
-		Format    string `json:"format"`
-		Hash      string `json:"hash"`
-	}
-	if err := json.Unmarshal(data, &hashObj); err != nil {
-		return fmt.Errorf("hash must be either a string or structured object: %w", err)
-	}
-
-	h.algorithm = hashObj.Algorithm
-	h.format = hashObj.Format
-	h.hash = hashObj.Hash
-
-	return nil
-}
-
-// String returns the hash in SRI format (e.g., "sha256-base64hash").
-// This format is compatible with the existing ConvertHashToNix32 function.
-func (h *Hash) String() string {
-	if h.hash == "" {
-		return ""
-	}
-
-	// If we stored the old string format directly, return it as-is
-	if strings.Contains(h.hash, ":") || strings.Contains(h.hash, "-") {
-		return h.hash
-	}
-
-	// For new structured format, construct SRI format (algorithm-hash)
-	// This is the standard format that ConvertHashToNix32 already handles
-	if h.algorithm != "" {
-		return h.algorithm + "-" + h.hash
-	}
-
-	return h.hash
-}
-
 // ContentAddress represents a Nix content address.
 // It supports both the old string format (e.g., "fixed:r:sha256:abc...")
 // and the new structured format from Nix 2.33+.
@@ -173,14 +107,7 @@ func (ca *ContentAddress) String() string {
 	//   "nar"  -> "fixed:r:"
 	//   "git"  -> "fixed:git:"
 	if ca.method != "" {
-		// Convert hash from SRI format to nix32 format for narinfo
-		hashStr := ca.hash.String()
-
-		nix32Hash, err := ConvertHashToNix32(hashStr)
-		if err != nil {
-			// Fall back to original format if conversion fails
-			nix32Hash = hashStr
-		}
+		nix32Hash := ca.hash.Nix32()
 
 		switch ca.method {
 		case "text":
