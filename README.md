@@ -94,6 +94,12 @@ For detailed pricing comparison and alternative providers, see the [S3 Provider 
 
 For complete setup instructions, see the [Setup Guide](https://github.com/Mic92/niks3/wiki/Setup-Guide) in the wiki.
 
+## Kubernetes
+
+Chart: `oci://ghcr.io/mic92/charts/niks3` (source in [`deploy/helm/niks3`](deploy/helm/niks3)), image: `ghcr.io/mic92/niks3`.
+See the [Kubernetes](https://github.com/Mic92/niks3/wiki/Kubernetes) wiki page
+for Postgres/S3 wiring and letting pods push via their service account token.
+
 ## OIDC Authentication (CI/CD)
 
 niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:
