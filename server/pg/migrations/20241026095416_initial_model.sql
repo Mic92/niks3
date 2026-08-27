@@ -31,7 +31,7 @@ CREATE INDEX closures_updated_at_idx ON closures (updated_at);
 CREATE TABLE objects
 (
     key varchar(1024) PRIMARY KEY,
-    refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects (not transitive)
+    refs varchar(1024)[] NOT NULL DEFAULT '{}', -- Direct references to other objects (not transitive)
     deleted_at timestamp,
     first_deleted_at timestamp -- Track initial deletion time to prevent resurrection race
 );
@@ -56,7 +56,7 @@ CREATE TABLE pending_objects
 (
     pending_closure_id bigint NOT NULL REFERENCES pending_closures (id) ON DELETE CASCADE,
     key varchar(1024) NOT NULL,
-    refs varchar(1024) [] NOT NULL DEFAULT '{}', -- Direct references to other objects
+    refs varchar(1024)[] NOT NULL DEFAULT '{}', -- Direct references to other objects
     PRIMARY KEY (key, pending_closure_id)
 );
 CREATE INDEX pending_objects_pending_closure_id_idx ON pending_objects (
