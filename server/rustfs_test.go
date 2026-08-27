@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -23,6 +24,9 @@ import (
 var (
 	testRustfsServer *rustfsServer //nolint:gochecknoglobals
 	testBucketCount  atomic.Int32  //nolint:gochecknoglobals
+	// rustfs rejects concurrent CreateBucket calls with 503 SlowDown, which
+	// minio-go retries with backoff long enough to blow the test deadline.
+	testBucketMu sync.Mutex //nolint:gochecknoglobals
 )
 
 type rustfsServer struct {

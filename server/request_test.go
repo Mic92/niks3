@@ -54,15 +54,9 @@ func createTestService(tb testing.TB) *server.Service {
 	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
 	minioClient := testRustfsServer.Client(tb)
 
-	// rustfs throttles concurrent CreateBucket calls; parallel tests hit that.
-	for {
-		err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-		if err == nil || !strings.Contains(err.Error(), "concurrency limit") {
-			break
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
+	testBucketMu.Lock()
+	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	testBucketMu.Unlock()
 	ok(tb, err)
 
 	return &server.Service{
