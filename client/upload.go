@@ -349,14 +349,12 @@ nextClosure:
 // PendingClosures is the merged result of registering several closures.
 type PendingClosures struct {
 	Objects map[string]PendingObject
-	// OwnerByKey is the closure that offered the key and may sign it.
-	OwnerByKey map[string]string
-	IDs        []string
+	IDs     []string
 }
 
 // CreatePendingClosures registers each closure with the server.
 func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureInfo) (*PendingClosures, error) {
-	pc := &PendingClosures{Objects: map[string]PendingObject{}, OwnerByKey: map[string]string{}}
+	pc := &PendingClosures{Objects: map[string]PendingObject{}}
 
 	for _, closure := range closures {
 		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects, c.VerifyS3Integrity)
@@ -368,8 +366,8 @@ func (c *Client) CreatePendingClosures(ctx context.Context, closures []ClosureIn
 
 		for key, obj := range resp.PendingObjects {
 			if _, seen := pc.Objects[key]; !seen {
+				obj.ClosureID = resp.ID
 				pc.Objects[key] = obj
-				pc.OwnerByKey[key] = resp.ID
 			}
 		}
 	}
@@ -477,7 +475,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 				return fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
 			}
 
-			c.RegisterUploadedObject(ctx, task.key)
+			c.RegisterUploadedObject(ctx, task.closureID, task.key)
 			slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
 
 			return nil
@@ -596,7 +594,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
 
 	for key, meta := range narinfoMetadata {
-		owner := pending.OwnerByKey[key]
+		owner := pending.Objects[key].ClosureID
 		if narinfosByClosureID[owner] == nil {
 			narinfosByClosureID[owner] = map[string]NarinfoMetadata{}
 		}

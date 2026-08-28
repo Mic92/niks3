@@ -1,11 +1,14 @@
 package server_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/minio/minio-go/v7"
 )
@@ -185,5 +188,101 @@ func TestReapCountsEachObjectOnce(t *testing.T) {
 
 	if remaining != 0 {
 		t.Fatalf("%d rows left after reap", remaining)
+	}
+}
+
+// gc.qnt counterexample 1: mark takes its snapshot, a push then commits a
+// closure over a row that was already live (so the upsert changes nothing
+// visible), and mark's UPDATE must not tombstone that now-reachable row.
+func TestMarkConflictsWithCommitOfUnchangedRow(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	queries := pg.New(service.Pool)
+
+	hash := "gcgcgcgcgcgcgcgcgcgcgcgcgcgcgc04"
+	narinfoKey := hash + ".narinfo"
+	narKey := narKeyFor(hash)
+
+	commitClosure(t, service, narinfoKey, narKey)
+
+	// Closure expires; rows stay live and are now unreachable.
+	_, err := queries.DeleteClosures(ctx, pgtype.Timestamp{Time: time.Now().UTC().Add(time.Minute), Valid: true})
+	ok(t, err)
+
+	markTx, err := service.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	ok(t, err)
+
+	defer func() { _ = markTx.Rollback(ctx) }()
+
+	// Snapshot is taken by the first statement.
+	var n int
+	ok(t, markTx.QueryRow(ctx, "SELECT count(*) FROM objects").Scan(&n))
+
+	// Same closure pushed again: GetLiveObjects reports both rows live, so
+	// nothing is uploaded, then commit.
+	commitClosure(t, service, narinfoKey, narKey)
+
+	_, err = pg.New(markTx).MarkStaleObjects(ctx)
+	if err == nil {
+		ok(t, markTx.Commit(ctx))
+
+		live, qerr := queries.GetLiveObjects(ctx, []string{narinfoKey, narKey})
+		ok(t, qerr)
+
+		if len(live) != 2 {
+			t.Fatalf("mark tombstoned objects of a closure committed after its snapshot: live=%v", live)
+		}
+
+		return
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "40001" {
+		t.Fatalf("expected serialization failure, got %v", err)
+	}
+}
+
+// gc.qnt counterexample 2: a client whose pending closure was cleaned up
+// must not be able to register objects via another closure's pending row.
+func TestRegisterCompletedObjectOnlyFromOwnPendingRow(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	queries := pg.New(service.Pool)
+
+	narKey := narKeyFor("gcgcgcgcgcgcgcgcgcgcgcgcgcgcgc05")
+
+	abandoned, err := queries.InsertPendingClosure(ctx, "gcgcgcgcgcgcgcgcgcgcgcgcgcgcgc05.narinfo")
+	ok(t, err)
+	_, err = queries.InsertPendingObjects(ctx, []pg.InsertPendingObjectsParams{{PendingClosureID: abandoned.ID, Key: narKey, Refs: []string{}}})
+	ok(t, err)
+
+	_, err = queries.CleanupPendingClosures(ctx, -1)
+	ok(t, err)
+
+	other, err := queries.InsertPendingClosure(ctx, "gcgcgcgcgcgcgcgcgcgcgcgcgcgcgc06.narinfo")
+	ok(t, err)
+	_, err = queries.InsertPendingObjects(ctx, []pg.InsertPendingObjectsParams{{PendingClosureID: other.ID, Key: narKey, Refs: []string{}}})
+	ok(t, err)
+
+	n, err := queries.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{PendingClosureID: abandoned.ID, Key: narKey})
+	ok(t, err)
+
+	if n != 0 {
+		t.Fatal("abandoned closure registered an object")
+	}
+
+	n, err = queries.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{PendingClosureID: other.ID, Key: narKey})
+	ok(t, err)
+
+	if n != 1 {
+		t.Fatal("live closure could not register its object")
 	}
 }

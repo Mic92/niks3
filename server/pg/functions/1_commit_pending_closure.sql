@@ -20,7 +20,9 @@ BEGIN
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
-    -- Upsert all closure objects, resurrecting tombstones. Skip no-op updates.
+    -- Upsert all closure objects, resurrecting tombstones. Every row is
+    -- written, even if unchanged, so a concurrent REPEATABLE READ mark
+    -- transaction that judged it stale fails with 40001 (see gc.qnt).
     INSERT INTO objects (key, refs, size)
     SELECT key, refs, size FROM pending_objects
     WHERE pending_closure_id = closure_id
@@ -36,10 +38,7 @@ BEGIN
         ),
         -- Keep an existing size; set it only when currently unknown.
         size = COALESCE(objects.size, EXCLUDED.size),
-        deleted_at = NULL
-    WHERE objects.deleted_at IS NOT NULL
-        OR (objects.size IS NULL AND EXCLUDED.size IS NOT NULL)
-        OR NOT (objects.refs @> EXCLUDED.refs);
+        deleted_at = NULL;
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;

@@ -5,9 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Mic92/niks3/server"
-
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/server"
 )
 
 func TestGetStorePathHash(t *testing.T) {

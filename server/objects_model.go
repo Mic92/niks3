@@ -37,11 +37,11 @@ func (s *Service) markStaleObjects(ctx context.Context) (int64, error) {
 		}
 
 		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "40001" {
+		if !errors.As(err, &pgErr) || (pgErr.Code != "40001" && pgErr.Code != "40P01") {
 			return 0, err
 		}
 
-		slog.Info("mark phase raced a closure commit, retrying", "attempt", attempt+1)
+		slog.Info("mark phase conflicted with a push, retrying", "attempt", attempt+1, "code", pgErr.Code)
 		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 	}
 

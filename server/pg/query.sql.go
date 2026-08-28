@@ -133,8 +133,7 @@ SET state = 'failed', error = 'interrupted', updated_at = now(), finished_at = n
 WHERE state = 'running'
 `
 
-// Called while holding the GC advisory lock: any row still "running" was
-// left behind by a process that died.
+// Caller holds the GC lock, so any "running" row is from a dead process.
 func (q *Queries) FailInterruptedGCRuns(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, failInterruptedGCRuns)
 	return err
@@ -257,11 +256,9 @@ WITH locked AS (
 SELECT key FROM locked WHERE deleted_at IS NULL
 `
 
-// Must run after the caller's pending_objects rows are committed. FOR SHARE
-// blocks on rows the GC reaper currently holds, so once this returns any
-// reaper batch touching these keys has finished and later batches will see
-// the pending rows and skip them. Tombstoned rows are locked too but not
-// returned: their S3 object may already be gone, so the client re-uploads.
+// Run after the pending_objects rows are committed. FOR SHARE waits for any
+// reaper batch holding these rows. Later batches see the pending rows and
+// skip them. Tombstoned rows count as absent: their S3 object may be gone.
 func (q *Queries) GetLiveObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
 	rows, err := q.db.Query(ctx, getLiveObjects, dollar_1)
 	if err != nil {
@@ -353,8 +350,7 @@ SELECT DISTINCT key FROM pending_objects
 WHERE key = any($1::varchar [])
 `
 
-// Second check with a fresh snapshot after LockObjectsForDeletion took its
-// row locks: catches pending rows committed while the first statement ran.
+// Fresh-snapshot recheck after the row locks are taken.
 func (q *Queries) GetPendingKeysAmong(ctx context.Context, dollar_1 []string) ([]string, error) {
 	rows, err := q.db.Query(ctx, getPendingKeysAmong, dollar_1)
 	if err != nil {
@@ -373,48 +369,6 @@ func (q *Queries) GetPendingKeysAmong(ctx context.Context, dollar_1 []string) ([
 		return nil, err
 	}
 	return items, nil
-}
-
-const getPendingObject = `-- name: GetPendingObject :one
-SELECT refs, size FROM pending_objects
-WHERE pending_closure_id = $1 AND key = $2
-`
-
-type GetPendingObjectParams struct {
-	PendingClosureID int64  `json:"pending_closure_id"`
-	Key              string `json:"key"`
-}
-
-type GetPendingObjectRow struct {
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
-}
-
-func (q *Queries) GetPendingObject(ctx context.Context, arg GetPendingObjectParams) (GetPendingObjectRow, error) {
-	row := q.db.QueryRow(ctx, getPendingObject, arg.PendingClosureID, arg.Key)
-	var i GetPendingObjectRow
-	err := row.Scan(&i.Refs, &i.Size)
-	return i, err
-}
-
-const getPendingObjectByKey = `-- name: GetPendingObjectByKey :one
-SELECT refs, size FROM pending_objects
-WHERE key = $1
-LIMIT 1
-`
-
-type GetPendingObjectByKeyRow struct {
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
-}
-
-// Any pending closure's row for this key; used to recover refs/size when the
-// upload is registered outside closure commit.
-func (q *Queries) GetPendingObjectByKey(ctx context.Context, key string) (GetPendingObjectByKeyRow, error) {
-	row := q.db.QueryRow(ctx, getPendingObjectByKey, key)
-	var i GetPendingObjectByKeyRow
-	err := row.Scan(&i.Refs, &i.Size)
-	return i, err
 }
 
 const getPendingObjectKeys = `-- name: GetPendingObjectKeys :many
@@ -602,9 +556,7 @@ type LockObjectsForDeletionParams struct {
 	LimitCount int32            `json:"limit_count"`
 }
 
-// Run inside a transaction that stays open while the batch is deleted from
-// S3. Keys referenced by any pending closure are excluded; see GetLiveObjects
-// for the other half of the handshake.
+// The transaction stays open across the S3 delete. Pairs with GetLiveObjects.
 func (q *Queries) LockObjectsForDeletion(ctx context.Context, arg LockObjectsForDeletionParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, lockObjectsForDeletion, arg.Cutoff, arg.AfterKey, arg.LimitCount)
 	if err != nil {
@@ -674,9 +626,15 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
-const registerCompletedObject = `-- name: RegisterCompletedObject :exec
+const registerCompletedObject = `-- name: RegisterCompletedObject :execrows
+WITH po AS (
+    SELECT p.key, p.refs, p.size FROM pending_objects AS p
+    WHERE p.pending_closure_id = $1 AND p.key = $2
+    FOR KEY SHARE
+)
+
 INSERT INTO objects (key, refs, size)
-VALUES ($1, $2::varchar [], $3)
+SELECT po.key, po.refs, po.size FROM po
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -688,17 +646,20 @@ ON CONFLICT (key) DO UPDATE SET
 `
 
 type RegisterCompletedObjectParams struct {
-	Key  string      `json:"key"`
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
+	PendingClosureID int64  `json:"pending_closure_id"`
+	Key              string `json:"key"`
 }
 
-// Record an object as soon as its upload completes so later closures don't
-// re-offer it if this closure never commits. Conflict handling matches
-// commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
-func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
-	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs, arg.Size)
-	return err
+// Record an uploaded object before its closure commits so later closures do
+// not re-offer it. Reads refs/size from the caller's own pending_objects row
+// and key-share locks it, so CleanupPendingClosures cannot remove the row
+// between the check and the write. No row means the closure was cleaned up.
+func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, registerCompletedObject, arg.PendingClosureID, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateGCRunProgress = `-- name: UpdateGCRunProgress :exec

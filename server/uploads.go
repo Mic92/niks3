@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
-	"github.com/jackc/pgx/v5"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -358,7 +358,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// re-offering this NAR and leak an orphaned multipart upload each time.
 	// On error fail the request before dropping the tracking row, so a retry
 	// re-attempts the idempotent registration.
-	if err := s.registerCompletedObject(r.Context(), upload.PendingClosureID, req.ObjectKey); err != nil {
+	if _, err := s.registerCompletedObject(r.Context(), upload.PendingClosureID, req.ObjectKey); err != nil {
 		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
 		http.Error(w, "failed to register completed object", http.StatusInternalServerError)
 
@@ -380,44 +380,28 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// registerCompletedObject records an uploaded object in the objects table,
-// using refs/size from its pending_objects row in the given closure. A
-// missing row (closure already cleaned up) is not an error; the object is
-// registered with empty refs and unknown size.
-func (s *Service) registerCompletedObject(ctx context.Context, pendingClosureID int64, objectKey string) error {
-	queries := pg.New(s.Pool)
-
-	row, err := queries.GetPendingObject(ctx, pg.GetPendingObjectParams{
+// registerCompletedObject records an uploaded object from its pending row.
+// Returns false if the pending closure no longer exists.
+func (s *Service) registerCompletedObject(ctx context.Context, pendingClosureID int64, objectKey string) (bool, error) {
+	n, err := pg.New(s.Pool).RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
 		PendingClosureID: pendingClosureID,
 		Key:              objectKey,
 	})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("get pending object %q: %w", objectKey, err)
+	if err != nil {
+		return false, fmt.Errorf("register completed object %q: %w", objectKey, err)
 	}
 
-	if row.Refs == nil {
-		row.Refs = []string{}
-	}
-
-	if err := queries.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
-		Key:  objectKey,
-		Refs: row.Refs,
-		Size: row.Size,
-	}); err != nil {
-		return fmt.Errorf("register completed object %q: %w", objectKey, err)
-	}
-
-	return nil
+	return n > 0, nil
 }
 
 type completeUploadRequest struct {
+	ClosureID string `json:"closure_id"`
 	ObjectKey string `json:"object_key"`
 }
 
 // CompleteUploadHandler handles POST /api/uploads/complete. Clients call it
 // after a successful presigned PUT so the object is recorded even if its
-// closure never commits. The key must belong to a pending object and the
-// object must exist in S3, so clients cannot register arbitrary keys.
+// closure never commits.
 func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -426,30 +410,11 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.ObjectKey == "" {
-		http.Error(w, "missing object_key", http.StatusBadRequest)
+	closureID, err := strconv.ParseInt(req.ClosureID, 10, 64)
+	if err != nil || req.ObjectKey == "" {
+		http.Error(w, "missing closure_id or object_key", http.StatusBadRequest)
 
 		return
-	}
-
-	queries := pg.New(s.Pool)
-
-	row, err := queries.GetPendingObjectByKey(r.Context(), req.ObjectKey)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "object is not pending upload", http.StatusNotFound)
-
-			return
-		}
-
-		slog.Error("Failed to look up pending object", "error", err, "object_key", req.ObjectKey)
-		http.Error(w, "failed to look up pending object", http.StatusInternalServerError)
-
-		return
-	}
-
-	if row.Refs == nil {
-		row.Refs = []string{}
 	}
 
 	exists, err := s.objectExistsInS3(r.Context(), req.ObjectKey)
@@ -466,13 +431,16 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := queries.RegisterCompletedObject(r.Context(), pg.RegisterCompletedObjectParams{
-		Key:  req.ObjectKey,
-		Refs: row.Refs,
-		Size: row.Size,
-	}); err != nil {
+	ok, err := s.registerCompletedObject(r.Context(), closureID, req.ObjectKey)
+	if err != nil {
 		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
 		http.Error(w, "failed to register completed object", http.StatusInternalServerError)
+
+		return
+	}
+
+	if !ok {
+		http.Error(w, "object is not pending in this closure", http.StatusNotFound)
 
 		return
 	}

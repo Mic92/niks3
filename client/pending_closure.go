@@ -18,6 +18,7 @@ type PendingObject struct {
 	Type          string               `json:"type"`                     // Object type (narinfo, listing, build_log, nar)
 	PresignedURL  string               `json:"presigned_url,omitempty"`  // For small files
 	MultipartInfo *MultipartUploadInfo `json:"multipart_info,omitempty"` // For large files
+	ClosureID     string               `json:"-"`                        // pending closure that issued this
 }
 
 // CreatePendingClosureResponse is the response from creating a pending closure.

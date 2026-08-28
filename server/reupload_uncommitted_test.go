@@ -110,7 +110,7 @@ func TestPresignedUploadRegisteredBeforeCommit(t *testing.T) {
 	handlePresignedUpload(ctx, t, nar.PresignedURL)
 
 	// Registering an unknown key must be rejected.
-	body, err := json.Marshal(map[string]any{"object_key": narKeyFor("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjj99")})
+	body, err := json.Marshal(map[string]any{"closure_id": first.ID, "object_key": narKeyFor("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjj99")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestPresignedUploadRegisteredBeforeCommit(t *testing.T) {
 		checkResponse: &checkNotFound,
 	})
 
-	body, err = json.Marshal(map[string]any{"object_key": narKey})
+	body, err = json.Marshal(map[string]any{"closure_id": first.ID, "object_key": narKey})
 	if err != nil {
 		t.Fatal(err)
 	}

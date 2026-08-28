@@ -31,12 +31,19 @@ SELECT key FROM locked WHERE deleted_at IS NULL;
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
 
--- name: RegisterCompletedObject :exec
--- Record an object as soon as its upload completes so later closures don't
--- re-offer it if this closure never commits. Conflict handling matches
--- commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
+-- name: RegisterCompletedObject :execrows
+-- Record an uploaded object before its closure commits so later closures do
+-- not re-offer it. Reads refs/size from the caller's own pending_objects row
+-- and key-share locks it, so CleanupPendingClosures cannot remove the row
+-- between the check and the write. No row means the closure was cleaned up.
+WITH po AS (
+    SELECT p.key, p.refs, p.size FROM pending_objects AS p
+    WHERE p.pending_closure_id = $1 AND p.key = $2
+    FOR KEY SHARE
+)
+
 INSERT INTO objects (key, refs, size)
-VALUES (sqlc.arg(key), sqlc.arg(refs)::varchar [], sqlc.arg(size))
+SELECT po.key, po.refs, po.size FROM po
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -45,17 +52,6 @@ ON CONFLICT (key) DO UPDATE SET
     ),
     size = coalesce(objects.size, excluded.size),
     deleted_at = NULL;
-
--- name: GetPendingObject :one
-SELECT refs, size FROM pending_objects
-WHERE pending_closure_id = $1 AND key = $2;
-
--- name: GetPendingObjectByKey :one
--- Any pending closure's row for this key; used to recover refs/size when the
--- upload is registered outside closure commit.
-SELECT refs, size FROM pending_objects
-WHERE key = $1
-LIMIT 1;
 
 -- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
