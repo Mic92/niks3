@@ -28,6 +28,12 @@ packages
     '';
   });
 
+  gc-model = pkgs.runCommand "niks3-gc-model" { nativeBuildInputs = [ pkgs.quint ]; } ''
+    HOME=$TMPDIR
+    quint verify ${../../server/gc.qnt} --invariant safe --inductive-invariant indInv
+    touch $out
+  '';
+
   go-unit-tests =
     pkgs.runCommand "niks3-go-unit-tests"
       {

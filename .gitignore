@@ -16,3 +16,4 @@ result-*
 
 # Ignore NixOS interactive test driver history
 **/.nixos-test-history
+_apalache-out/
