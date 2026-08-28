@@ -42,7 +42,7 @@ archives:
 release:
   # Use GitHub's auto-generated release notes
   mode: keep-existing
-  make_latest: true
+  prerelease: auto
 changelog:
   # Use GitHub's release notes instead of goreleaser's changelog
   use: github-native
