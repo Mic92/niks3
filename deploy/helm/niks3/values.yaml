@@ -65,7 +65,8 @@ affinity: {}
 topologySpreadConstraints: [] # labelSelector is filled in
 podDisruptionBudget:
   enabled: false
-  minAvailable: 1
+  maxUnavailable: 1
+  minAvailable: null # must stay below replicaCount
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65534

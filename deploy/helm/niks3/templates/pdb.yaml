@@ -5,7 +5,14 @@ metadata:
   name: {{ include "niks3.fullname" . }}
   labels: {{- include "niks3.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- with .Values.podDisruptionBudget.minAvailable }}
+  {{- if ge (int .) (int $.Values.replicaCount) }}
+  {{- fail "podDisruptionBudget.minAvailable must be below replicaCount, otherwise node drains block forever" }}
+  {{- end }}
+  minAvailable: {{ . }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
   selector:
     matchLabels: {{- include "niks3.serverSelectorLabels" . | nindent 6 }}
 {{- end }}
