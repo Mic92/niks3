@@ -106,6 +106,14 @@ spec:
           ports:
             - name: http
               containerPort: 5751
+          # The listener only opens after DB migrations. Give those time
+          # before liveness starts killing the pod.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
