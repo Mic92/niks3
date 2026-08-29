@@ -27,6 +27,9 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
+            # The Helm chart's appVersion is the git tag. The semver patterns below
+            # drop the v prefix for prereleases.
+            type=ref,event=tag
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
