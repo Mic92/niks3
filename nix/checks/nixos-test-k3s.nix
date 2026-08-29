@@ -123,6 +123,7 @@ testers.nixosTest {
                 allowedServiceAccounts = [ "ci:builder" ];
               };
             };
+            deploymentAnnotations."reloader.stakater.com/auto" = "true";
             service = {
               type = "NodePort";
               inherit nodePort;
@@ -162,6 +163,7 @@ testers.nixosTest {
 
     with subtest("chart deploys and becomes ready"):
       machine.wait_until_succeeds("kubectl -n niks3 rollout status deployment niks3 --timeout=10s", timeout=300)
+      machine.succeed("kubectl -n niks3 get deployment niks3 -o jsonpath='{.metadata.annotations.reloader\\.stakater\\.com/auto}' | grep true")
       machine.wait_until_succeeds("curl -sf http://localhost:${toString nodePort}/readyz | grep OK", timeout=60)
 
     # Same JWT a pod gets from a projected serviceAccountToken volume.
