@@ -267,7 +267,7 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 // redirectToS3 sends the client to a presigned URL for key. Presigning is
 // local; a missing object 404s from S3 rather than from here.
 func (s *Service) redirectToS3(w http.ResponseWriter, r *http.Request, key string) {
-	presigned, err := s.MinioClient.PresignedGetObject(r.Context(), s.Bucket, key, s.ReadRedirectTTL, nil)
+	presigned, err := s.PresignClient.PresignedGetObject(r.Context(), s.Bucket, key, s.ReadRedirectTTL, nil)
 	if err != nil {
 		slog.Error("Failed to presign S3 object", "key", key, "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)

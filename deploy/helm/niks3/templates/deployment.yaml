@@ -46,6 +46,10 @@ spec:
               value: /secrets/token/token
             - name: NIKS3_S3_ENDPOINT
               value: {{ required "s3.endpoint is required" .Values.s3.endpoint | quote }}
+            {{- with .Values.s3.publicURL }}
+            - name: NIKS3_S3_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: NIKS3_S3_BUCKET
               value: {{ required "s3.bucket is required" .Values.s3.bucket | quote }}
             - name: NIKS3_S3_USE_SSL

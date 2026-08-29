@@ -165,6 +165,9 @@ func parseArgs() (*options, error) {
 		"Path to file containing the Postgres connection string (e.g. a mounted Kubernetes secret)")
 	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
 	flag.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
+	flag.StringVar(&opts.S3PublicURL, "s3-public-url", getEnvOrDefault("NIKS3_S3_PUBLIC_URL", ""),
+		"Externally reachable S3 base URL (http(s)://host[:port]) used in presigned URLs handed to clients; "+
+			"defaults to --s3-endpoint. Set this when the server reaches S3 via an internal address")
 	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
 	flag.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
 	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefault("NIKS3_S3_USE_SSL", "true") == "true", "Use SSL for S3")

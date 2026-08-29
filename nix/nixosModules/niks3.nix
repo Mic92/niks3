@@ -170,6 +170,10 @@ let
     "--s3-region"
     cfg.s3.region
   ]
+  ++ lib.optionals (cfg.s3.publicUrl != null) [
+    "--s3-public-url"
+    cfg.s3.publicUrl
+  ]
   ++ (
     if cfg.s3.useIAM then
       [ "--s3-use-iam" ]
@@ -302,6 +306,18 @@ in
         type = lib.types.bool;
         default = true;
         description = "Whether to use SSL for S3 connections.";
+      };
+
+      publicUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://s3.example.com";
+        description = ''
+          Externally reachable S3 base URL (http(s)://host[:port]) used in
+          presigned URLs handed to clients. Defaults to the endpoint. Set this
+          when the server reaches S3 via an internal address that clients
+          cannot resolve.
+        '';
       };
 
       bucketLookup = lib.mkOption {

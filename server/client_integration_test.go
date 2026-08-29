@@ -607,6 +607,7 @@ func TestPinProtectsFromGC(t *testing.T) {
 	testService := &server.Service{
 		Pool:          service.Pool,
 		MinioClient:   service.MinioClient,
+		PresignClient: service.PresignClient,
 		Bucket:        service.Bucket,
 		APIToken:      testAuthToken,
 		S3RateLimiter: service.S3RateLimiter,
