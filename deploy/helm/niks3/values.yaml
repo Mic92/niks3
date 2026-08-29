@@ -38,7 +38,7 @@ auth:
     allowedServiceAccounts: [] # "<namespace>:<name>", globs allowed
     scopes: [write] # read | write | admin
     audience: niks3
-    issuer: https://kubernetes.default.svc.cluster.local
+    issuer: "" # detected from the pod's service account token
   # Further OIDC providers in the server's JSON schema, keyed by name.
   oidcProviders: {}
 signing:

@@ -122,6 +122,15 @@ func httpClientFor(p *ProviderConfig) (*http.Client, error) {
 	return &http.Client{Transport: rt}, nil
 }
 
+// asymmetricAlgs is accepted when discovery is skipped. The JWKS key type
+// still pins the actual algorithm.
+var asymmetricAlgs = []string{ //nolint:gochecknoglobals
+	gooidc.RS256, gooidc.RS384, gooidc.RS512,
+	gooidc.ES256, gooidc.ES384, gooidc.ES512,
+	gooidc.PS256, gooidc.PS384, gooidc.PS512,
+	gooidc.EdDSA,
+}
+
 // NewValidator creates a new OIDC validator from config.
 func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 	v := &Validator{
@@ -139,8 +148,16 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 		}
 
 		// go-oidc reuses this context's client for later JWKS fetches.
-		provider, err := gooidc.NewProvider(gooidc.ClientContext(ctx, client), providerCfg.Issuer)
-		if err != nil {
+		clientCtx := gooidc.ClientContext(ctx, client)
+
+		var provider *gooidc.Provider
+		if providerCfg.JWKSURL != "" {
+			provider = (&gooidc.ProviderConfig{
+				IssuerURL:  providerCfg.Issuer,
+				JWKSURL:    providerCfg.JWKSURL,
+				Algorithms: asymmetricAlgs,
+			}).NewProvider(clientCtx)
+		} else if provider, err = gooidc.NewProvider(clientCtx, providerCfg.Issuer); err != nil {
 			return nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", providerCfg.Issuer, err)
 		}
 
@@ -155,7 +172,7 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 			config:   providerCfg,
 		}
 
-		slog.Info("OIDC provider initialized", "name", name)
+		slog.Info("OIDC provider initialized", "name", name, "issuer", providerCfg.Issuer)
 	}
 
 	return v, nil

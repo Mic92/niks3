@@ -145,3 +145,76 @@ func TestNewValidator_KubernetesRequiresCA(t *testing.T) {
 		t.Fatal("expected discovery against private CA without ca_file to fail")
 	}
 }
+
+// Managed clusters (EKS/GKE/AKS) use an issuer that is not the API server.
+// With issuer left empty and jwks_url pointing at the API server, niks3
+// learns the issuer from its own service account token and never contacts
+// the issuer host.
+func TestValidateToken_KubernetesIssuerFromOwnToken(t *testing.T) {
+	t.Parallel()
+
+	kp, err := mockoidc.NewKeypair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const issuer = "https://oidc.eks.invalid/id/ABC123"
+
+	dir := t.TempDir()
+
+	ownToken, err := kp.SignJWT(jwt.MapClaims{
+		"iss": issuer,
+		"aud": []string{"https://kubernetes.default.svc"},
+		"sub": "system:serviceaccount:niks3:niks3",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := kubeAPIServer(t, kp, ownToken)
+
+	caFile := filepath.Join(dir, "ca.crt")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+
+	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte(ownToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := oidc.Config{
+		Providers: map[string]*oidc.ProviderConfig{
+			"kubernetes": {
+				Audience:        "niks3",
+				BoundSubject:    []string{"system:serviceaccount:ci:*"},
+				CAFile:          caFile,
+				BearerTokenFile: tokenFile,
+				JWKSURL:         srv.URL + "/openid/v1/jwks",
+			},
+		},
+	}
+	ctx, validator := oidctest.NewValidator(t, config)
+
+	tok, err := kp.SignJWT(jwt.MapClaims{
+		"iss": issuer,
+		"aud": []string{"niks3"},
+		"sub": "system:serviceaccount:ci:builder",
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := validator.ValidateToken(ctx, tok); err != nil {
+		t.Fatalf("expected token with auto-detected issuer to validate: %v", err)
+	}
+
+	if got, ok := validator.AudienceForIssuer(issuer); !ok || got != "niks3" {
+		t.Errorf("AudienceForIssuer(%q) = %q, %v", issuer, got, ok)
+	}
+}

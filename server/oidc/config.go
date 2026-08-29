@@ -2,11 +2,13 @@
 package oidc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 )
 
 // Config holds the OIDC configuration with multiple providers.
@@ -43,10 +45,12 @@ type Rule struct {
 
 // ProviderConfig configures a single OIDC provider.
 type ProviderConfig struct {
-	// Issuer is the OIDC issuer URL (required).
-	// Used to construct discovery URL: {issuer}/.well-known/openid-configuration
-	// Example: "https://token.actions.githubusercontent.com"
+	// Issuer is the OIDC issuer URL, e.g. "https://token.actions.githubusercontent.com".
+	// Empty means: take the iss claim of BearerTokenFile (Kubernetes).
 	Issuer string `json:"issuer"`
+
+	// JWKSURL skips discovery and fetches signing keys from here.
+	JWKSURL string `json:"jwks_url,omitempty"`
 
 	// Audience is the expected audience claim (required).
 	// Should be your service URL or a unique identifier.
@@ -144,6 +148,19 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
+	for name, provider := range cfg.Providers {
+		if provider.Issuer != "" || provider.BearerTokenFile == "" {
+			continue
+		}
+
+		iss, err := issuerFromTokenFile(provider.BearerTokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: detecting issuer from bearer_token_file: %w", name, err)
+		}
+
+		provider.Issuer = iss
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
@@ -165,7 +182,13 @@ func (c *Config) validate() error {
 
 	for name, provider := range c.Providers {
 		if provider.Issuer == "" {
-			return fmt.Errorf("provider %q: missing issuer", name)
+			return fmt.Errorf("provider %q: missing issuer (or bearer_token_file to detect it from)", name)
+		}
+
+		if provider.JWKSURL != "" {
+			if u, err := url.Parse(provider.JWKSURL); err != nil || u.Scheme != "https" && !c.AllowInsecure || u.Host == "" {
+				return fmt.Errorf("provider %q: jwks_url %q must be an absolute HTTPS URL", name, provider.JWKSURL)
+			}
 		}
 
 		// Validate issuer URL format and require HTTPS (unless AllowInsecure)
@@ -200,4 +223,34 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+func issuerFromTokenFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading token: %w", err)
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(data)), ".")
+	if len(parts) != 3 { //nolint:mnd // header.payload.signature
+		return "", errors.New("not a JWT")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decoding JWT payload: %w", err)
+	}
+
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("parsing JWT payload: %w", err)
+	}
+
+	if claims.Iss == "" {
+		return "", errors.New("token has no iss claim")
+	}
+
+	return claims.Iss, nil
 }
