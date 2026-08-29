@@ -57,6 +57,7 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}
+deploymentAnnotations: {}
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}

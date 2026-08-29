@@ -195,6 +195,9 @@
       },
       "additionalProperties": false
     },
+    "deploymentAnnotations": {
+      "type": "object"
+    },
     "podAnnotations": {
       "type": "object"
     },
