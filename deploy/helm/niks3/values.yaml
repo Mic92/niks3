@@ -28,7 +28,7 @@ s3:
   accessKey: ""
   secretKey: ""
 auth:
-  # Shared API token (>= 36 chars) for uploads and GC; Secret key `token`.
+  # Shared API token (>= 36 chars) for uploads and GC. Secret key `token`.
   # Always required (the GC CronJob uses it), also with workloadIdentity.
   existingSecret: ""
   token: ""
