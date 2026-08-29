@@ -60,7 +60,7 @@ type options struct {
 	// upload. 0 means unlimited.
 	MaxNarSize uint64
 
-	// CachePriority is advertised in nix-cache-info; lower wins.
+	// CachePriority is advertised in nix-cache-info. Lower wins.
 	CachePriority int
 
 	// MTLSProxyHeader, when set, names a header the reverse proxy sets to
@@ -155,7 +155,7 @@ const (
 // NewPresignClient returns a client for signing client-facing URLs against
 // publicURL (http(s)://host[:port]). Presigning is offline as long as the
 // region is known, so the bucket region is resolved via the internal client
-// up front; the public host need not be reachable from the server.
+// up front, so the public host need not be reachable from the server.
 func NewPresignClient(
 	ctx context.Context,
 	internal *minio.Client,

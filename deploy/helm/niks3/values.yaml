@@ -28,7 +28,7 @@ s3:
   accessKey: ""
   secretKey: ""
 auth:
-  # Shared API token (>= 36 chars) for uploads and GC; Secret key `token`.
+  # Shared API token (>= 36 chars) for uploads and GC. Secret key `token`.
   # Always required (the GC CronJob uses it), also with workloadIdentity.
   existingSecret: ""
   token: ""
@@ -43,7 +43,7 @@ auth:
   oidcProviders: {}
 signing:
   existingSecret: ""
-  keys: [] # file names within the Secret
+  keys: [] # file names within the Secret, required with existingSecret
 cacheURL: ""
 readProxy:
   enabled: false
@@ -65,7 +65,8 @@ affinity: {}
 topologySpreadConstraints: [] # labelSelector is filled in
 podDisruptionBudget:
   enabled: false
-  minAvailable: 1
+  maxUnavailable: 1
+  minAvailable: null # must stay below replicaCount
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65534

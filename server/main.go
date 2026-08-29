@@ -166,8 +166,8 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
 	flag.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
 	flag.StringVar(&opts.S3PublicURL, "s3-public-url", getEnvOrDefault("NIKS3_S3_PUBLIC_URL", ""),
-		"Externally reachable S3 base URL (http(s)://host[:port]) used in presigned URLs handed to clients; "+
-			"defaults to --s3-endpoint. Set this when the server reaches S3 via an internal address")
+		"Externally reachable S3 base URL (http(s)://host[:port]) used in presigned URLs handed to clients. "+
+			"Defaults to --s3-endpoint. Set this when the server reaches S3 via an internal address")
 	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
 	flag.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
 	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefault("NIKS3_S3_USE_SSL", "true") == "true", "Use SSL for S3")
@@ -186,8 +186,8 @@ func parseArgs() (*options, error) {
 	flag.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
 	flag.StringVar(&opts.ServerURL, "server-url", getEnvOrDefault("NIKS3_SERVER_URL", ""),
-		"Public niks3 server URL the landing page fetches cache stats from (e.g., https://niks3.example.com); "+
-			"defaults to a same-origin relative path")
+		"Public niks3 server URL the landing page fetches cache stats from (e.g., https://niks3.example.com). "+
+			"Defaults to a same-origin relative path")
 	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
 		"Path to OIDC configuration file (JSON format)")
 	flag.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),
@@ -195,30 +195,30 @@ func parseArgs() (*options, error) {
 	flag.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
 		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
 	flag.StringVar(&opts.MTLSProxyHeader, "mtls-proxy-header", getEnvOrDefault("NIKS3_MTLS_PROXY_HEADER", ""),
-		"Header set to SUCCESS by the reverse proxy after mTLS client cert verification (e.g. X-SSL-Client-Verify); requests with it skip bearer auth")
+		"Header set to SUCCESS by the reverse proxy after mTLS client cert verification (e.g. X-SSL-Client-Verify). Requests with it skip bearer auth")
 	flag.StringVar(&opts.MTLSSubjectHeader, "mtls-subject-header", getEnvOrDefault("NIKS3_MTLS_SUBJECT_HEADER", "X-SSL-Client-Dn"),
 		"Header carrying the verified cert's subject DN, used with --mtls-bound-subject")
 
 	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjects), "mtls-bound-subject",
-		"Restrict mTLS write auth to certs whose subject DN matches this glob; repeat for multiple patterns")
+		"Restrict mTLS write auth to certs whose subject DN matches this glob. Repeat for multiple patterns")
 	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjectsRead), "mtls-bound-subject-read",
-		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob; repeat for multiple patterns. Empty = public reads")
+		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob. Repeat for multiple patterns. Empty = public reads")
 	flag.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
-		"TLS certificate; when set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
+		"TLS certificate. When set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
 	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
 	flag.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
-		"CA bundle for native mTLS client cert verification; subjects checked against --mtls-bound-subject")
+		"CA bundle for native mTLS client cert verification. Subjects are checked against --mtls-bound-subject")
 	flag.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
 		"Maximum uncompressed NAR size accepted for upload (e.g. 2G, 512M). Empty or 0 means unlimited")
 	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
-		"Priority advertised in nix-cache-info; lower is preferred (cache.nixos.org uses 40)")
+		"Priority advertised in nix-cache-info. Lower is preferred (cache.nixos.org uses 40)")
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
 	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
 		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
 		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
-			"streaming them; requires --enable-read-proxy. 0 disables")
+			"streaming them. Requires --enable-read-proxy. 0 disables")
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
 		"Enable debug logging (may leak sensitive information)")
 

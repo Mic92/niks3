@@ -220,7 +220,16 @@
           "type": "boolean"
         },
         "minAvailable": {
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
         }
       },
       "additionalProperties": false

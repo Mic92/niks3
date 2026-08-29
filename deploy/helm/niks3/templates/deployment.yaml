@@ -31,6 +31,9 @@ spec:
           image: {{ include "niks3.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
+            {{- if and .Values.signing.existingSecret (not .Values.signing.keys) }}
+            {{- fail "signing.existingSecret is set but signing.keys is empty. List the key file names, otherwise narinfos stay unsigned" }}
+            {{- end }}
             {{- range .Values.signing.keys }}
             - --sign-key-path=/secrets/signing/{{ . }}
             {{- end }}
@@ -103,6 +106,14 @@ spec:
           ports:
             - name: http
               containerPort: 5751
+          # The listener only opens after DB migrations. Give those time
+          # before liveness starts killing the pod.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
