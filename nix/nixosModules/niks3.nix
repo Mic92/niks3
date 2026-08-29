@@ -18,10 +18,12 @@ let
   providerModule = lib.types.submodule {
     options = {
       issuer = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = ''
           OIDC issuer URL. Must use HTTPS.
-          Used to construct discovery URL: {issuer}/.well-known/openid-configuration
+          Used to construct discovery URL: {issuer}/.well-known/openid-configuration.
+          May be null when bearerTokenFile is set, the issuer is then read from that token.
         '';
         example = "https://token.actions.githubusercontent.com";
       };
@@ -106,6 +108,13 @@ let
         default = null;
         description = "Bearer token sent when fetching discovery/JWKS, for issuers that require authentication (e.g. a Kubernetes API server).";
       };
+
+      jwksUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://kubernetes.default.svc/openid/v1/jwks";
+        description = "Fetch signing keys from this URL instead of running discovery against the issuer.";
+      };
     };
   };
 
@@ -116,8 +125,13 @@ let
         providers = lib.mapAttrs (
           _name: provider:
           {
-            issuer = provider.issuer;
             audience = provider.audience;
+          }
+          // lib.optionalAttrs (provider.issuer != null) {
+            issuer = provider.issuer;
+          }
+          // lib.optionalAttrs (provider.jwksUrl != null) {
+            jwks_url = provider.jwksUrl;
           }
           // (
             if provider.rules != [ ] then

@@ -64,6 +64,7 @@ app.kubernetes.io/component: server
 {{- end }}
 {{- $_ := set $providers "kubernetes" (dict
   "issuer" .issuer
+  "jwks_url" "https://kubernetes.default.svc/openid/v1/jwks"
   "audience" .audience
   "bound_subject" $subjects
   "scopes" .scopes
