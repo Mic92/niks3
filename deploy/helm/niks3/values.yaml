@@ -43,7 +43,7 @@ auth:
   oidcProviders: {}
 signing:
   existingSecret: ""
-  keys: [] # file names within the Secret
+  keys: [] # file names within the Secret, required with existingSecret
 cacheURL: ""
 readProxy:
   enabled: false
