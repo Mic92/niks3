@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,7 +29,11 @@ type options struct {
 	DBConnectionString string
 	HTTPAddr           string
 
-	S3Endpoint     string
+	S3Endpoint string
+	// S3PublicURL, when set, is the externally reachable S3 base URL
+	// (scheme://host[:port]) used for presigned URLs handed to clients,
+	// while S3Endpoint is used for the server's own S3 traffic.
+	S3PublicURL    string
 	S3AccessKey    string
 	S3SecretKey    string
 	S3UseSSL       bool
@@ -94,8 +99,11 @@ type options struct {
 }
 
 type Service struct {
-	Pool                  *pgxpool.Pool
-	MinioClient           *minio.Client
+	Pool        *pgxpool.Pool
+	MinioClient *minio.Client
+	// PresignClient signs URLs handed out to clients. Same as MinioClient
+	// unless a separate public S3 URL is configured.
+	PresignClient         *minio.Client
 	Bucket                string
 	S3Concurrency         int
 	S3RateLimiter         *ratelimit.AdaptiveRateLimiter
@@ -144,6 +152,42 @@ const (
 	shutdownTimeout = 10 * time.Second
 )
 
+// NewPresignClient returns a client for signing client-facing URLs against
+// publicURL (http(s)://host[:port]). Presigning is offline as long as the
+// region is known, so the bucket region is resolved via the internal client
+// up front; the public host need not be reachable from the server.
+func NewPresignClient(
+	ctx context.Context,
+	internal *minio.Client,
+	creds *credentials.Credentials,
+	publicURL, bucket, region string,
+	lookup minio.BucketLookupType,
+) (*minio.Client, error) {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || (u.Path != "" && u.Path != "/") {
+		return nil, fmt.Errorf("invalid S3 public URL %q: expected http(s)://host[:port]", publicURL)
+	}
+
+	if region == "" {
+		region, err = internal.GetBucketLocation(ctx, bucket)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up bucket region for presigning: %w", err)
+		}
+	}
+
+	client, err := minio.New(u.Host, &minio.Options{
+		Creds:        creds,
+		Secure:       u.Scheme == "https",
+		Region:       region,
+		BucketLookup: lookup,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create presign s3 client: %w", err)
+	}
+
+	return client, nil
+}
+
 func runServer(opts *options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
 	defer cancel()
@@ -171,9 +215,19 @@ func runServer(opts *options) error {
 		return fmt.Errorf("failed to create minio s3 client: %w", err)
 	}
 
+	presignClient := minioClient
+	if opts.S3PublicURL != "" {
+		presignClient, err = NewPresignClient(ctx, minioClient, creds,
+			opts.S3PublicURL, opts.S3Bucket, opts.S3Region, opts.S3BucketLookup)
+		if err != nil {
+			return err
+		}
+	}
+
 	service := &Service{
 		Pool:                  pool,
 		MinioClient:           minioClient,
+		PresignClient:         presignClient,
 		Bucket:                opts.S3Bucket,
 		S3Concurrency:         opts.S3Concurrency,
 		S3RateLimiter:         ratelimit.NewAdaptiveRateLimiter(opts.S3RateLimit, "s3"),

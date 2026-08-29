@@ -350,7 +350,7 @@ func (s *Service) makePresignedURL(ctx context.Context, objectKey string, object
 		return PendingObject{}, err
 	}
 
-	presignedURL, err := s.MinioClient.PresignedPutObject(ctx,
+	presignedURL, err := s.PresignClient.PresignedPutObject(ctx,
 		s.Bucket,
 		objectKey,
 		maxSignedURLDuration)

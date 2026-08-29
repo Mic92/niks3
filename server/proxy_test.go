@@ -574,3 +574,59 @@ func TestReadProxyRangeRequest(t *testing.T) {
 		t.Fatalf("unsatisfiable: status = %d, want 416", resp.StatusCode)
 	}
 }
+
+// With a public S3 URL configured, presigned URLs must point at that host
+// rather than the endpoint the server itself talks to.
+func TestReadRedirectUsesPublicS3URL(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	service.ReadRedirectTTL = time.Minute
+
+	defer service.Close()
+
+	ctx := t.Context()
+
+	presign, err := server.NewPresignClient(ctx, service.MinioClient, testRustfsServer.Creds(),
+		"https://s3.public.example", service.Bucket, "", minio.BucketLookupPath)
+	ok(t, err)
+
+	service.PresignClient = presign
+
+	key := "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.zst"
+	putTestObject(ctx, t, service, key, []byte("x"), minio.PutObjectOptions{})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	noFollow := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/"+key, nil)
+	ok(t, err)
+
+	resp, err := noFollow.Do(req)
+	ok(t, err)
+	_ = resp.Body.Close()
+
+	location, err := url.Parse(resp.Header.Get("Location"))
+	ok(t, err)
+
+	if location.Scheme != "https" || location.Host != "s3.public.example" {
+		t.Errorf("Location = %s, want https://s3.public.example/...", location)
+	}
+
+	if location.Query().Get("X-Amz-Signature") == "" {
+		t.Errorf("Location is not presigned: %s", location)
+	}
+
+	for _, bad := range []string{"s3.public.example", "https://s3.public.example/bucket", "ftp://x"} {
+		if _, err := server.NewPresignClient(ctx, service.MinioClient, testRustfsServer.Creds(),
+			bad, service.Bucket, "us-east-1", minio.BucketLookupPath); err == nil {
+			t.Errorf("NewPresignClient(%q) accepted invalid URL", bad)
+		}
+	}
+}

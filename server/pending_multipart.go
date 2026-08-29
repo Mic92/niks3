@@ -148,7 +148,7 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 		reqParams.Set("uploadId", uploadID)
 		reqParams.Set("partNumber", strconv.Itoa(partNumber))
 
-		presignedURL, err := s.MinioClient.Presign(ctx,
+		presignedURL, err := s.PresignClient.Presign(ctx,
 			"PUT",
 			s.Bucket,
 			objectKey,

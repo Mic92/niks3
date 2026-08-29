@@ -81,12 +81,16 @@ func (s *rustfsServer) ClientWithEndpoint(tb testing.TB, endpoint string) *minio
 
 	// minio-go client works with any S3-compatible storage including RustFS
 	minioClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4("rustfsadmin", s.secret, ""),
+		Creds:  s.Creds(),
 		Secure: false,
 	})
 	ok(tb, err)
 
 	return minioClient
+}
+
+func (s *rustfsServer) Creds() *credentials.Credentials {
+	return credentials.NewStaticV4("rustfsadmin", s.secret, "")
 }
 
 func terminateProcess(cmd *exec.Cmd) {

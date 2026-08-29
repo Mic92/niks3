@@ -12,7 +12,12 @@ database:
   # Or inline. The chart creates the Secret.
   url: ""
 s3:
+  # host[:port] the server talks to. Clients upload via presigned URLs, so this
+  # must also be reachable from wherever `niks3 push` runs unless publicURL is set.
   endpoint: ""
+  # Externally reachable http(s)://host[:port] for presigned URLs when
+  # `endpoint` is cluster-internal (e.g. rustfs.rustfs.svc:9000).
+  publicURL: ""
   bucket: ""
   region: ""
   useSSL: true
@@ -24,6 +29,7 @@ s3:
   secretKey: ""
 auth:
   # Shared API token (>= 36 chars) for uploads and GC; Secret key `token`.
+  # Always required (the GC CronJob uses it), also with workloadIdentity.
   existingSecret: ""
   token: ""
   # Allow pods to push with their service account token, see wiki/Kubernetes.
