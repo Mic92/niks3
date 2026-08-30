@@ -76,4 +76,3 @@ jobs:
           # regctl pushes children before the index; don't race an in-flight push.
           older-than: 1 day
           validate: true
-          dry-run: true
