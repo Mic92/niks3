@@ -33,7 +33,6 @@ jobs:
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
-            type=sha,format=short
       - name: Setup Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -54,8 +53,27 @@ jobs:
           for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
             regctl image copy "ocidir://local:niks3" "$tag"
           done
-  # NOTE: cleanup of untagged versions was removed because multi-arch images
-  # store platform-specific manifests as untagged versions in GHCR. Deleting
-  # untagged versions breaks all existing tagged multi-arch images (v1, v1.4.0,
-  # etc.) since their index manifests reference those now-deleted platform
-  # manifests. See https://github.com/Mic92/niks3/issues/291
+  # GHCR stores the per-arch children of a multi-arch index as untagged
+  # versions. A naive "delete untagged" (actions/delete-package-versions) broke
+  # every release tag once already (#291). ghcr-cleanup-action walks the index
+  # manifests and only deletes children together with their last parent.
+  cleanup:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-cleanup
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: niks3
+          exclude-tags: "v*,main,latest"
+          # Legacy per-commit tags from when metadata-action emitted type=sha.
+          delete-tags: "sha-*"
+          keep-n-untagged: 5
+          # regctl pushes children before the index; don't race an in-flight push.
+          older-than: 1 day
+          validate: true
+          dry-run: true
