@@ -28,7 +28,7 @@ pkgs.buildGoModule {
 
   ldflags = [
     "-X"
-    "main.socketPath=${postBuildHookSocketPath}"
+    "github.com/Mic92/niks3/hook.DefaultSocketPath=${postBuildHookSocketPath}"
   ];
 
   subPackages = [ "cmd/niks3-hook" ];
