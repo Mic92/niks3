@@ -248,7 +248,7 @@ func runServe() error {
 	}()
 
 	// Start the socket server.
-	srv := hook.NewServer(ln, queueFunc)
+	srv := hook.NewServer(ln, queueFunc, c.PushPaths)
 
 	// Idle exit: cancel the context when both the socket is idle and the queue is empty.
 	if idleTimeout > 0 {

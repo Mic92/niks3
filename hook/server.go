@@ -18,23 +18,26 @@ import (
 //	-ldflags "-X github.com/Mic92/niks3/hook.DefaultSocketPath=/custom/path"
 var DefaultSocketPath = "/run/niks3/upload-to-cache.sock" //nolint:gochecknoglobals // ldflags override
 
+const (
+	statusOK    = "ok"
+	statusError = "error"
+)
+
+var errInvalidRequest = errors.New("invalid request")
+
 // QueueFunc is called by the server to persist paths. It must return nil on success.
 type QueueFunc func(paths []string) error
 
 // Server listens on a unix stream socket and accepts path submissions.
 type Server struct {
-	listener  net.Listener
-	queueFunc QueueFunc
-	wg        sync.WaitGroup
+	listener net.Listener
+	queue    QueueFunc
+	push     PushFunc // for Wait requests
+	wg       sync.WaitGroup
 }
 
-// NewServer creates a Server that accepts connections on listener and calls
-// queueFunc for each batch of paths received.
-func NewServer(listener net.Listener, queueFunc QueueFunc) *Server {
-	return &Server{
-		listener:  listener,
-		queueFunc: queueFunc,
-	}
+func NewServer(listener net.Listener, queue QueueFunc, push PushFunc) *Server {
+	return &Server{listener: listener, queue: queue, push: push}
 }
 
 // Serve accepts connections until ctx is cancelled. It blocks until all
@@ -63,7 +66,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 
 		s.wg.Go(func() {
-			s.handleConn(conn)
+			s.handleConn(ctx, conn)
 		})
 	}
 
@@ -72,32 +75,32 @@ func (s *Server) Serve(ctx context.Context) error {
 	return lastErr
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
-	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		slog.Error("Failed to decode request", "error", err)
-		writeResponse(conn, Response{Status: "error", Message: "invalid request"})
+	var (
+		req Request
+		err error
+	)
+
+	switch {
+	case json.NewDecoder(conn).Decode(&req) != nil:
+		err = errInvalidRequest
+	case len(req.Paths) == 0:
+	case req.Wait:
+		_, err = s.push(ctx, req.Paths)
+	default:
+		err = s.queue(req.Paths)
+	}
+
+	if err != nil {
+		slog.Error("Hook request failed", "error", err, "wait", req.Wait, "count", len(req.Paths))
+		writeResponse(conn, Response{Status: statusError, Message: err.Error()})
 
 		return
 	}
 
-	if len(req.Paths) == 0 {
-		writeResponse(conn, Response{Status: "ok"})
-
-		return
-	}
-
-	if err := s.queueFunc(req.Paths); err != nil {
-		slog.Error("Failed to queue paths", "error", err, "count", len(req.Paths))
-		writeResponse(conn, Response{Status: "error", Message: err.Error()})
-
-		return
-	}
-
-	slog.Debug("Queued paths", "count", len(req.Paths))
-	writeResponse(conn, Response{Status: "ok"})
+	writeResponse(conn, Response{Status: statusOK})
 }
 
 func writeResponse(conn net.Conn, resp Response) {

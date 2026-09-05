@@ -15,7 +15,13 @@ const sendTimeout = 5 * time.Second
 // any error. The caller should always exit 0 regardless of the error to avoid
 // affecting Nix builds.
 func SendPaths(socketPath string, paths []string) error {
-	if len(paths) == 0 {
+	return Send(socketPath, Request{Paths: paths})
+}
+
+// Send is SendPaths for arbitrary requests. Wait requests have no deadline:
+// an upload takes as long as it takes.
+func Send(socketPath string, req Request) error {
+	if len(req.Paths) == 0 {
 		return nil
 	}
 
@@ -31,13 +37,12 @@ func SendPaths(socketPath string, paths []string) error {
 
 	defer func() { _ = conn.Close() }()
 
-	// Set a deadline for the entire send+receive operation.
-	if err := conn.SetDeadline(time.Now().Add(sendTimeout)); err != nil {
-		return fmt.Errorf("setting deadline: %w", err)
+	if !req.Wait {
+		if err := conn.SetDeadline(time.Now().Add(sendTimeout)); err != nil {
+			return fmt.Errorf("setting deadline: %w", err)
+		}
 	}
 
-	// Send the request.
-	req := Request{Paths: paths}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
@@ -48,7 +53,7 @@ func SendPaths(socketPath string, paths []string) error {
 		return fmt.Errorf("reading response: %w", err)
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != statusOK {
 		return fmt.Errorf("server error: %s", resp.Message)
 	}
 

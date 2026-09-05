@@ -2,12 +2,15 @@ package hook_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -42,7 +45,7 @@ func TestServerClientIntegration(t *testing.T) {
 		return nil
 	}
 
-	srv := hook.NewServer(ln, queueFunc)
+	srv := hook.NewServer(ln, queueFunc, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -112,7 +115,7 @@ func TestServerQueueError(t *testing.T) {
 
 	srv := hook.NewServer(ln, func(_ []string) error {
 		return os.ErrPermission
-	})
+	}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -208,4 +211,50 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 	}
 
 	t.Log(string(output))
+}
+
+func TestServerWait(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "test.sock")
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	var queued, pushed []string
+
+	pushErr := errors.New("409 stale claim")
+	srv := hook.NewServer(ln, func(paths []string) error {
+		queued = append(queued, paths...)
+
+		return nil
+	}, func(_ context.Context, paths []string) ([]string, error) {
+		pushed = append(pushed, paths...)
+		if paths[0] == "/nix/store/bad" {
+			return nil, pushErr
+		}
+
+		return paths, nil
+	})
+
+	go func() { _ = srv.Serve(t.Context()) }()
+
+	if err := hook.Send(socketPath, hook.Request{Paths: []string{"/nix/store/good"}, Wait: true}); err != nil {
+		t.Fatalf("wait push: %v", err)
+	}
+
+	err = hook.Send(socketPath, hook.Request{Paths: []string{"/nix/store/bad"}, Wait: true})
+	if err == nil || !strings.Contains(err.Error(), pushErr.Error()) {
+		t.Fatalf("want push error propagated, got %v", err)
+	}
+
+	if len(queued) != 0 {
+		t.Fatalf("wait requests must bypass the queue, queued=%v", queued)
+	}
+
+	if !slices.Equal(pushed, []string{"/nix/store/good", "/nix/store/bad"}) {
+		t.Fatalf("pushed = %v", pushed)
+	}
 }

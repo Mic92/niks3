@@ -5,6 +5,8 @@ package hook
 // One JSON object per line over a unix stream connection.
 type Request struct {
 	Paths []string `json:"paths"`
+	// Wait pushes synchronously, bypassing the queue, and reports the result.
+	Wait bool `json:"wait,omitempty"`
 }
 
 // Response is sent from the server back to the hook client.
