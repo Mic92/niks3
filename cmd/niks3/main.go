@@ -36,8 +36,16 @@ func printUsage() {
 
 func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "Usage: niks3 push [flags] <store-paths...>")
+	fmt.Fprintln(os.Stderr, "       niks3 push [flags] --stdin")
 	fmt.Fprintln(os.Stderr, "\nUpload Nix store paths to S3-compatible binary cache.")
 	fmt.Fprintln(os.Stderr, "\nFlags:")
+	fmt.Fprintln(os.Stderr, "  --stdin")
+	fmt.Fprintln(os.Stderr, "        Read store paths line by line from stdin and push them as they")
+	fmt.Fprintln(os.Stderr, "        arrive. Writes one JSON line per path to stdout:")
+	fmt.Fprintln(os.Stderr, `        {"path":"...","status":"ok"|"error","message":"..."}`)
+	fmt.Fprintln(os.Stderr, "        Exits after stdin is closed and everything was reported.")
+	fmt.Fprintf(os.Stderr, "  --batch-size int\n        With --stdin: max paths per push (default: %d)\n", client.DefaultStreamBatchSize)
+	fmt.Fprintf(os.Stderr, "  --parallel-pushes int\n        With --stdin: pushes running at once, each with up to\n        --max-concurrent-uploads NAR uploads (default: %d)\n", client.DefaultStreamParallel)
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
@@ -97,6 +105,9 @@ func run() error {
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 		pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
+		fromStdin := pushCmd.Bool("stdin", false, "Stream store paths from stdin")
+		batchSize := pushCmd.Int("batch-size", client.DefaultStreamBatchSize, "Max paths per push with --stdin")
+		parallelPushes := pushCmd.Int("parallel-pushes", client.DefaultStreamParallel, "Concurrent pushes with --stdin")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
 		ts, err := cmdutil.ParseCommand(pushCmd, cf, tf, os.Args[2:], printPushHelp)
@@ -105,6 +116,15 @@ func run() error {
 		}
 
 		paths := pushCmd.Args()
+
+		if *fromStdin {
+			if len(paths) > 0 || *pinName != "" {
+				return errors.New("--stdin takes no store path arguments and no --pin")
+			}
+
+			return pushStdinCommand(*cf.ServerURL, ts, *maxConcurrent, *parallelPushes, *batchSize, *verifyS3Integrity, *cf.Debug, tf)
+		}
+
 		if len(paths) == 0 {
 			return errors.New("at least one store path is required")
 		}
@@ -212,6 +232,25 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 	}
 
 	return nil
+}
+
+func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, parallel, batchSize int, verifyS3Integrity bool, debug bool, tf cmdutil.TLSFlags) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+
+	c, err := cmdutil.NewClient(ctx, serverURL, ts, tf, debug)
+	if err != nil {
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
+	}
+
+	c.MaxConcurrentNARUploads = maxConcurrent
+	c.VerifyS3Integrity = verifyS3Integrity
+
+	return client.NewStreamPusher(c.PushPaths, parallel, batchSize).Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
 }
 
 func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderThan string, force bool, debug bool, tf cmdutil.TLSFlags) error {

@@ -262,6 +262,8 @@ testers.nixosTest {
   };
 
   testScript = ''
+    import json
+
     start_all()
 
     # Common test variables
@@ -351,6 +353,18 @@ testers.nixosTest {
       nix log --store '{binary_cache_url}' {test_output}
     """)
     assert "test build log output" in log_output, "Build log missing expected output"
+
+    with subtest("push --stdin streams paths and reports each one"):
+        stdin_path = server.succeed("nix-build --no-out-link -E 'derivation { name = \"stdin-test\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"echo stdin > $out\" ]; }'").strip()
+        out = server.succeed(f"printf '%s\\n\\n%s\\n' {stdin_path} {test_output} | {niks3_push_env} {niks3_cmd} push --stdin")
+        results = {r["path"]: r for r in map(json.loads, out.strip().splitlines())}
+        assert results[stdin_path]["status"] == "ok", results
+        assert results[test_output]["status"] == "ok", results
+        assert len(results) == 2, results
+        server.succeed(f"""
+          {s3_env}
+          nix copy --from '{binary_cache_url}' --to /tmp/stdin-store {stdin_path}
+        """)
   ''
   + (lib.optionalString ca-derivations-supported ''
     # Test CA (content-addressed) derivations with signature verification
@@ -513,7 +527,6 @@ testers.nixosTest {
     assert "hello-pin" in pins_names, f"Pin 'hello-pin' not found in names-only list: {pins_names}"
 
     # Test 3b: List pins with --json
-    import json
     pins_json = server.succeed("""
       NIKS3_SERVER_URL=http://server:5751 \
       NIKS3_AUTH_TOKEN_FILE=/tmp/test-config/auth-token \
