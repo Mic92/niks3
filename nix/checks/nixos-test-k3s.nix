@@ -8,11 +8,11 @@
   k3s,
   niks3,
   niks3-docker,
-  system,
+  stdenv,
   ...
 }:
 let
-  image = niks3-docker.perArch.${system};
+  image = niks3-docker.perArch.${stdenv.hostPlatform.system};
 
   chart = runCommand "niks3-chart.tgz" { nativeBuildInputs = [ kubernetes-helm ]; } ''
     cp -r ${../../deploy/helm/niks3} chart
