@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,11 +22,24 @@ const (
 
 	streamStatusOK    = "ok"
 	streamStatusError = "error"
+	streamStatusStale = "stale"
 )
 
-type StreamPushFunc func(ctx context.Context, paths []string) ([]string, error)
+type StreamPushFunc func(ctx context.Context, paths []string, claimToken int64) ([]string, error)
+
+// StreamRequest is the JSON form of an input line. A build-farm worker sends
+// one per finished build so its outputs commit together, fenced by the claim.
+type StreamRequest struct {
+	ID         uint64   `json:"id,omitempty"` // echoed in each result so concurrent requests may share paths
+	Paths      []string `json:"paths"`
+	ClaimToken int64    `json:"claim_token,omitempty"`
+}
+
+// A farm worker's QueryValidPaths request names a whole closure on one line.
+const maxRequestLine = 64 << 20
 
 type StreamResult struct {
+	ID      uint64 `json:"id,omitempty"`
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
@@ -35,6 +49,7 @@ type StreamResult struct {
 // arrive and writes one JSON StreamResult per input path, so a long-running
 // CI driver learns per path when it is cached. While all `parallel` pushes
 // are busy, incoming paths accumulate into one batch of up to `batchSize`.
+// A line starting with `{` is a StreamRequest and forms a batch of its own.
 type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
@@ -62,6 +77,8 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		defer close(lines)
 
 		sc := bufio.NewScanner(in)
+		sc.Buffer(nil, maxRequestLine)
+
 		for sc.Scan() {
 			if p := strings.TrimSpace(sc.Text()); p != "" {
 				lines <- p
@@ -89,37 +106,47 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	}
 
 	slots := make(chan struct{}, s.parallel)
-
-	for {
-		first, ok := <-lines
-		if !ok {
-			break
-		}
-
-		batch := append(make([]string, 0, s.batchSize), first)
-
+	submit := func(job func() []StreamResult) {
 		slots <- struct{}{}
-
-	fill:
-		for len(batch) < s.batchSize {
-			select {
-			case p, ok := <-lines:
-				if !ok {
-					break fill
-				}
-
-				batch = append(batch, p)
-			default:
-				break fill
-			}
-		}
 
 		wg.Go(func() {
 			defer func() { <-slots }()
 
-			report(s.upload(ctx, batch))
+			report(job())
 		})
 	}
+
+	batch := make([]string, 0, s.batchSize)
+	flush := func() {
+		if len(batch) > 0 {
+			b := batch
+			batch = make([]string, 0, s.batchSize)
+
+			submit(func() []StreamResult { return s.upload(ctx, b) })
+		}
+	}
+
+	for {
+		line, ok := <-lines
+		if !ok {
+			break
+		}
+
+		if strings.HasPrefix(line, "{") {
+			flush()
+			submit(func() []StreamResult { return s.uploadRequest(ctx, line) })
+
+			continue
+		}
+
+		batch = append(batch, line)
+		// Flush when full or when stdin has nothing more ready.
+		if len(batch) == s.batchSize || len(lines) == 0 {
+			flush()
+		}
+	}
+
+	flush()
 
 	wg.Wait()
 
@@ -130,14 +157,41 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	return nil
 }
 
+// All or nothing: the outputs of one build must not be published partially,
+// and a stale claim means another worker owns them now.
+func (s *StreamPusher) uploadRequest(ctx context.Context, line string) []StreamResult {
+	var req StreamRequest
+	if err := json.Unmarshal([]byte(line), &req); err != nil || len(req.Paths) == 0 {
+		return []StreamResult{{ID: 0, Path: line, Status: streamStatusError, Message: "bad request line"}}
+	}
+
+	status, msg := streamStatusOK, ""
+
+	if _, err := s.push(ctx, req.Paths, req.ClaimToken); err != nil {
+		slog.Error("Upload failed", "error", err, "count", len(req.Paths))
+
+		status, msg = streamStatusError, err.Error()
+		if errors.Is(err, ErrStaleClaim) {
+			status = streamStatusStale
+		}
+	}
+
+	results := make([]StreamResult, 0, len(req.Paths))
+	for _, p := range req.Paths {
+		results = append(results, StreamResult{ID: req.ID, Path: p, Status: status, Message: msg})
+	}
+
+	return results
+}
+
 // A failed batch is retried path by path so one bad path only costs itself.
 func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResult {
 	results := make([]StreamResult, 0, len(batch))
 
-	_, err := s.push(ctx, batch)
+	_, err := s.push(ctx, batch, 0)
 	if err == nil {
 		for _, p := range batch {
-			results = append(results, StreamResult{Path: p, Status: streamStatusOK})
+			results = append(results, StreamResult{ID: 0, Path: p, Status: streamStatusOK, Message: ""})
 		}
 
 		return results
@@ -147,7 +201,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 
 	fail := func(paths []string, err error) {
 		for _, p := range paths {
-			results = append(results, StreamResult{Path: p, Status: streamStatusError, Message: err.Error()})
+			results = append(results, StreamResult{ID: 0, Path: p, Status: streamStatusError, Message: err.Error()})
 		}
 	}
 
@@ -167,7 +221,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			break
 		}
 
-		if _, perr := s.push(ctx, []string{p}); perr != nil {
+		if _, perr := s.push(ctx, []string{p}, 0); perr != nil {
 			fail([]string{p}, perr)
 
 			failures++
@@ -175,7 +229,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			continue
 		}
 
-		results = append(results, StreamResult{Path: p, Status: streamStatusOK})
+		results = append(results, StreamResult{ID: 0, Path: p, Status: streamStatusOK, Message: ""})
 		succeeded++
 	}
 

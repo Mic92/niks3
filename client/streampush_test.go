@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 )
 
 type result struct {
+	ID      uint64 `json:"id"`
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
@@ -75,7 +78,7 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 		pushed []string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -121,7 +124,7 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 		batches [][]string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		mu.Lock()
 
 		batches = append(batches, slices.Clone(paths))
@@ -164,7 +167,7 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 
 	errBad := errors.New("bad path")
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		if slices.Contains(paths, "/nix/store/bad") {
 			return nil, errBad
 		}
@@ -199,7 +202,7 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 
 	var calls int
 
-	push := func(_ context.Context, _ []string) ([]string, error) {
+	push := func(_ context.Context, _ []string, _ int64) ([]string, error) {
 		calls++
 
 		return nil, errDown
@@ -226,5 +229,85 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 
 	if calls > 1+3 {
 		t.Errorf("push called %d times, want <= 4", calls)
+	}
+}
+
+func TestStreamPushRequestLine(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+
+	push := func(_ context.Context, paths []string, claimToken int64) ([]string, error) {
+		mu.Lock()
+
+		calls = append(calls, fmt.Sprintf("%v@%d", paths, claimToken))
+
+		mu.Unlock()
+
+		if claimToken == 7 {
+			return nil, client.ErrStaleClaim
+		}
+
+		return paths, nil
+	}
+
+	results := runStream(t, push, 1, 10, func(w io.Writer) {
+		_, _ = io.WriteString(w, "/nix/store/a\n"+
+			`{"paths":["/nix/store/b","/nix/store/c"],"claim_token":5}`+"\n"+
+			`{"paths":["/nix/store/d"],"claim_token":7}`+"\n"+
+			"{bad\n")
+	})
+
+	status := map[string]string{}
+	for _, r := range results {
+		status[r.Path] = r.Status
+	}
+
+	want := map[string]string{"/nix/store/a": "ok", "/nix/store/b": "ok", "/nix/store/c": "ok", "/nix/store/d": "stale", "{bad": "error"}
+	if !maps.Equal(status, want) {
+		t.Fatalf("got %v, want %v", status, want)
+	}
+
+	// Request lines may exceed bufio's default token size.
+	long := make([]string, 0, 2000)
+	for i := range 2000 {
+		long = append(long, fmt.Sprintf("/nix/store/%080d", i))
+	}
+
+	longLine, err := json.Marshal(client.StreamRequest{ID: 9, Paths: long, ClaimToken: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runStream(t, push, 1, 10, func(w io.Writer) { _, _ = w.Write(append(longLine, '\n')) }); len(got) != len(long) {
+		t.Fatalf("long request: %d results", len(got))
+	}
+
+	// Concurrent requests may share a path; the id tells their acks apart.
+	shared := runStream(t, push, 2, 10, func(w io.Writer) {
+		_, _ = io.WriteString(w, `{"id":1,"paths":["/nix/store/a"]}`+"\n"+`{"id":2,"paths":["/nix/store/a"]}`+"\n")
+	})
+
+	ids := make([]uint64, 0, len(shared))
+	for _, r := range shared {
+		ids = append(ids, r.ID)
+	}
+
+	slices.Sort(ids)
+
+	if !slices.Equal(ids, []uint64{1, 2}) {
+		t.Fatalf("ids %v", ids)
+	}
+
+	slices.Sort(calls)
+	calls = slices.DeleteFunc(slices.Compact(calls), func(c string) bool { return len(c) > 100 })
+
+	// The plain path is never merged into a request batch.
+	wantCalls := []string{"[/nix/store/a]@0", "[/nix/store/b /nix/store/c]@5", "[/nix/store/d]@7"}
+	if !slices.Equal(calls, wantCalls) {
+		t.Fatalf("calls %v, want %v", calls, wantCalls)
 	}
 }
