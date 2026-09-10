@@ -135,10 +135,22 @@ type Service struct {
 
 	GCTasks *GCTaskStore
 	Metrics *Metrics
+
+	// ClaimHeartbeat is the build-claim liveness interval. 0 means default.
+	ClaimHeartbeat time.Duration
+	// MaxClaimStreams bounds parked claim connections. 0 means default.
+	MaxClaimStreams int
+
+	claims     *claimHub
+	stopClaims context.CancelFunc
 }
 
 // Close closes the database connection pool.
 func (s *Service) Close() {
+	if s.stopClaims != nil {
+		s.stopClaims()
+	}
+
 	s.Pool.Close()
 }
 
@@ -294,6 +306,7 @@ func runServer(opts *options) error {
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	defer stopMetrics()
 	service.StartInventoryRefresh(metricsCtx)
+	service.StartClaims(metricsCtx)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
@@ -312,6 +325,8 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/uploads/skipped", service.RequireScope(oidc.ScopeWrite, service.SkippedUploadsHandler))
 	mux.HandleFunc("POST /api/multipart/request-parts", service.RequireScope(oidc.ScopeWrite, service.RequestMorePartsHandler))
 	mux.HandleFunc("HEAD /api/objects/{key...}", service.RequireScope(oidc.ScopeWrite, service.ObjectExistsHandler))
+	mux.HandleFunc("POST /api/builds/claim", service.RequireScope(oidc.ScopeWrite, service.ClaimHandler))
+	mux.HandleFunc("POST /api/builds/fail", service.RequireScope(oidc.ScopeWrite, service.FailHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.RequireScope(oidc.ScopeWrite, service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupClosuresOlder))
 	mux.HandleFunc("GET /api/gc/status", service.RequireScope(oidc.ScopeAdmin, service.GCStatusHandler))
