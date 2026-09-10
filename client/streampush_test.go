@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -75,7 +77,7 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 		pushed []string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -121,7 +123,7 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 		batches [][]string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		mu.Lock()
 
 		batches = append(batches, slices.Clone(paths))
@@ -164,7 +166,7 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 
 	errBad := errors.New("bad path")
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
 		if slices.Contains(paths, "/nix/store/bad") {
 			return nil, errBad
 		}
@@ -199,7 +201,7 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 
 	var calls int
 
-	push := func(_ context.Context, _ []string) ([]string, error) {
+	push := func(_ context.Context, _ []string, _ int64) ([]string, error) {
 		calls++
 
 		return nil, errDown
@@ -226,5 +228,53 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 
 	if calls > 1+3 {
 		t.Errorf("push called %d times, want <= 4", calls)
+	}
+}
+
+func TestStreamPushRequestLine(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+
+	push := func(_ context.Context, paths []string, claimToken int64) ([]string, error) {
+		mu.Lock()
+
+		calls = append(calls, fmt.Sprintf("%v@%d", paths, claimToken))
+
+		mu.Unlock()
+
+		if claimToken == 7 {
+			return nil, client.ErrStaleClaim
+		}
+
+		return paths, nil
+	}
+
+	results := runStream(t, push, 1, 10, func(w io.Writer) {
+		_, _ = io.WriteString(w, "/nix/store/a\n"+
+			`{"paths":["/nix/store/b","/nix/store/c"],"claim_token":5}`+"\n"+
+			`{"paths":["/nix/store/d"],"claim_token":7}`+"\n"+
+			"{bad\n")
+	})
+
+	status := map[string]string{}
+	for _, r := range results {
+		status[r.Path] = r.Status
+	}
+
+	want := map[string]string{"/nix/store/a": "ok", "/nix/store/b": "ok", "/nix/store/c": "ok", "/nix/store/d": "stale", "{bad": "error"}
+	if !maps.Equal(status, want) {
+		t.Fatalf("got %v, want %v", status, want)
+	}
+
+	slices.Sort(calls)
+
+	// The plain path is never merged into a request batch.
+	wantCalls := []string{"[/nix/store/a]@0", "[/nix/store/b /nix/store/c]@5", "[/nix/store/d]@7"}
+	if !slices.Equal(calls, wantCalls) {
+		t.Fatalf("calls %v, want %v", calls, wantCalls)
 	}
 }
