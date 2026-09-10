@@ -62,10 +62,17 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		onProgress(*stats)
 	}
 
-	// Then, get objects ready for deletion (marked > gracePeriod ago)
+	// Then, get objects ready for deletion (marked > gracePeriod ago).
+	// The consumer removes or re-activates rows only after a full batch, so
+	// pages are keyed on the last key handed out. Re-running a plain LIMIT
+	// query would return the previous page again while its batch is still
+	// in flight and send the same keys to S3 twice.
+	afterKey := ""
+
 	for {
 		objs, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
 			GracePeriodSeconds: gracePeriod,
+			AfterKey:           afterKey,
 			LimitCount:         DeletionBatchSize,
 		})
 		if err != nil {
@@ -78,6 +85,8 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		if len(objs) == 0 {
 			break
 		}
+
+		afterKey = objs[len(objs)-1]
 
 		for _, obj := range objs {
 			select {
@@ -123,6 +132,35 @@ func handleFailedObject(ctx context.Context, objectName string, resultErr error,
 	return failedKeys, s3Errors, nil
 }
 
+// removeObjectSingle deletes one key with DeleteObject after a batch delete
+// reported it as failed. A batch error is reported for every key in the batch
+// and says nothing about the individual key: some S3 implementations fail the
+// whole DeleteObjects request when any key in it is missing while still
+// deleting the others. The single delete answers per key, and a key that is
+// already gone counts as deleted.
+func (s *Service) removeObjectSingle(ctx context.Context, key string) error {
+	if err := s.S3RateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("waiting for rate limiter: %w", err)
+	}
+
+	err := s.MinioClient.RemoveObject(ctx, s.Bucket, key, minio.RemoveObjectOptions{})
+	if err != nil {
+		if isRateLimitError(err) {
+			s.S3RateLimiter.RecordThrottle()
+		}
+
+		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+			return nil
+		}
+
+		return fmt.Errorf("single delete after batch failure: %w", err)
+	}
+
+	s.S3RateLimiter.RecordSuccess()
+
+	return nil
+}
+
 func (s *Service) removeS3Objects(ctx context.Context,
 	objectCh <-chan minio.ObjectInfo,
 	stats *ObjectCleanupStats,
@@ -143,34 +181,34 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	var s3Errors, batchErrors []error
 
 	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
-		if result.Err != nil {
+		removeErr := result.Err
+
+		switch {
+		case removeErr == nil:
+			s.S3RateLimiter.RecordSuccess()
+		case minio.ToErrorResponse(removeErr).Code == minio.NoSuchKey:
+			// If object doesn't exist in S3, treat it as successfully deleted
+			// to maintain consistency between S3 and database
+			removeErr = nil
+		default:
 			// Track rate limit errors to enable adaptive rate limiting
-			if isRateLimitError(result.Err) {
+			if isRateLimitError(removeErr) {
 				s.S3RateLimiter.RecordThrottle()
 			}
 
-			// If object doesn't exist in S3, treat it as successfully deleted
-			// to maintain consistency between S3 and database
-			if minio.ToErrorResponse(result.Err).Code == minio.NoSuchKey {
-				var err error
+			slog.Debug("batch delete failed for object, retrying with a single delete",
+				"object", result.ObjectName, "error", removeErr)
 
-				deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)
-				if err != nil {
-					batchErrors = append(batchErrors, err)
-				}
+			removeErr = s.removeObjectSingle(ctx, result.ObjectName)
+		}
 
-				stats.DeletedCount++
-				notifyProgress()
-
-				continue
-			}
-
+		if removeErr != nil {
 			var (
 				newS3Errors []error
 				err         error
 			)
 
-			failedKeys, newS3Errors, err = handleFailedObject(ctx, result.ObjectName, result.Err, failedKeys, queries)
+			failedKeys, newS3Errors, err = handleFailedObject(ctx, result.ObjectName, removeErr, failedKeys, queries)
 
 			s3Errors = append(s3Errors, newS3Errors...)
 			if err != nil {
@@ -182,8 +220,6 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 			continue
 		}
-
-		s.S3RateLimiter.RecordSuccess()
 
 		var err error
 

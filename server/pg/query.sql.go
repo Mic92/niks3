@@ -268,17 +268,22 @@ FROM objects
 WHERE first_deleted_at IS NOT NULL
   AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
-LIMIT $2
+  AND key > $2::varchar
+ORDER BY key
+LIMIT $3
 `
 
 type GetObjectsReadyForDeletionParams struct {
-	GracePeriodSeconds int32 `json:"grace_period_seconds"`
-	LimitCount         int32 `json:"limit_count"`
+	GracePeriodSeconds int32  `json:"grace_period_seconds"`
+	AfterKey           string `json:"after_key"`
+	LimitCount         int32  `json:"limit_count"`
 }
 
-// Returns objects marked for >= grace_period, safe to delete from S3
+// Returns objects marked for >= grace_period, safe to delete from S3.
+// Keyset paginated on key so a caller that has not yet removed or re-activated
+// the previous page never receives the same key twice.
 func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.LimitCount)
+	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.AfterKey, arg.LimitCount)
 	if err != nil {
 		return nil, err
 	}
