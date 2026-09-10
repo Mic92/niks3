@@ -8,6 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Claim struct {
+	Key         []byte             `json:"key"`
+	Token       int64              `json:"token"`
+	HeartbeatAt pgtype.Timestamptz `json:"heartbeat_at"`
+}
+
 type Closure struct {
 	Key       string           `json:"key"`
 	UpdatedAt pgtype.Timestamp `json:"updated_at"`

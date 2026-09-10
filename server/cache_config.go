@@ -23,6 +23,9 @@ func (s *Service) CacheConfigHandler(w http.ResponseWriter, r *http.Request) {
 		PublicKeys:     make([]string, 0, len(s.SigningKeys)),
 		MaxNarSize:     s.MaxNarSize,
 	}
+	if s.claims != nil {
+		cfg.ClaimHeartbeatSecs = s.claimHeartbeat().Seconds()
+	}
 
 	for _, key := range s.SigningKeys {
 		pub, err := key.PublicKey()
