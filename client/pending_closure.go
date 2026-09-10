@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/Mic92/niks3/api"
 )
 
 // createPendingClosureRequest is the request to create a pending closure.
@@ -60,12 +63,25 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
+// ErrStaleClaim means another worker took over the build. Discard the result.
+var ErrStaleClaim = api.ErrStaleClaim
+
 // CompletePendingClosure marks a closure as complete after all objects have been uploaded.
 // This should be called after narinfos have been signed and uploaded.
-func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
+func (c *Client) CompletePendingClosure(ctx context.Context, closureID string, claimToken int64) error {
 	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
 
-	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
+	var body any
+	if claimToken != 0 {
+		body = map[string]int64{"claim_token": claimToken}
+	}
+
+	err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), body, nil, http.StatusOK, http.StatusNoContent)
+
+	var httpErr *HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+		return ErrStaleClaim
+	} else if err != nil {
 		return err
 	}
 
