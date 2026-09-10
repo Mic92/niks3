@@ -27,6 +27,14 @@ const MultipartPartSize = multipartPartSize
 // ScriptTokenWithClock builds a ScriptToken with an injected clock for tests.
 var ScriptTokenWithClock = scriptToken //nolint:gochecknoglobals // test-only re-export
 
+// SetUseCaseHack forces macOS case-hack handling for tests and returns the old value.
+func SetUseCaseHack(on bool) bool {
+	old := useCaseHack
+	useCaseHack = on
+
+	return old
+}
+
 // HTTPClient exposes the underlying http.Client for testing.
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient

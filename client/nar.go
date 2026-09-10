@@ -52,15 +52,14 @@ var (
 	targetEncoded          = encodeStaticString("target")
 )
 
-// stripCaseHackSuffix removes the case hack suffix from filenames on macOS.
+// stripCaseHackSuffix undoes Nix's macOS case hack: everything from the
+// first marker on is dropped, as in libutil's dumpPath.
 func stripCaseHackSuffix(name string) string {
 	if !useCaseHack {
 		return name
 	}
 
-	if strings.HasSuffix(name, caseHackSuffix) {
-		return name[:len(name)-len(caseHackSuffix)]
-	}
+	name, _, _ = strings.Cut(name, caseHackSuffix)
 
 	return name
 }
@@ -390,11 +389,6 @@ func walkDirectory(path, name string) (*narNode, error) {
 		return nil, fmt.Errorf("reading directory %s: %w", path, err)
 	}
 
-	// Sort entries by name (NAR requirement)
-	slices.SortFunc(entries, func(a, b os.DirEntry) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
-
 	node := &narNode{name: name, path: path, kind: 'd', children: make([]*narNode, 0, len(entries))}
 
 	for _, entry := range entries {
@@ -438,6 +432,19 @@ func walkDirectory(path, name string) (*narNode, error) {
 		}
 
 		node.children = append(node.children, child)
+	}
+
+	// NAR orders entries by the name inside the archive, which differs from
+	// the on-disk name once the case-hack suffix is stripped.
+	slices.SortFunc(node.children, func(a, b *narNode) int {
+		return strings.Compare(a.name, b.name)
+	})
+
+	for i := 1; i < len(node.children); i++ {
+		if node.children[i-1].name == node.children[i].name {
+			return nil, fmt.Errorf("file name collision between %s and %s",
+				node.children[i-1].path, node.children[i].path)
+		}
 	}
 
 	return node, nil
