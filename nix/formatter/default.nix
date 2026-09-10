@@ -16,6 +16,15 @@ let
     programs.sqlfluff.enable = true;
     programs.sqlfluff.dialect = "postgres";
     programs.sqlfluff.excludes = [ "server/pg/query.sql" ];
+    # treefmt-nix passes --processes 0. The multiprocessing pool hangs in
+    # the macOS sandbox after the workers exit, and six files need no pool.
+    settings.formatter.sqlfluff.options = pkgs.lib.mkForce [
+      "format"
+      "--disable-progress-bar"
+      "--processes"
+      "1"
+      "--dialect=postgres"
+    ];
     programs.rustfmt.enable = true;
     programs.rustfmt.edition = "2021";
   };
