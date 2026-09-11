@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,9 +22,17 @@ const (
 
 	streamStatusOK    = "ok"
 	streamStatusError = "error"
+	streamStatusStale = "stale"
 )
 
-type StreamPushFunc func(ctx context.Context, paths []string) ([]string, error)
+type StreamPushFunc func(ctx context.Context, paths []string, claimToken int64) ([]string, error)
+
+// StreamRequest is the JSON form of an input line. A build-farm worker sends
+// one per finished build so its outputs commit together, fenced by the claim.
+type StreamRequest struct {
+	Paths      []string `json:"paths"`
+	ClaimToken int64    `json:"claim_token,omitempty"`
+}
 
 type StreamResult struct {
 	Path    string `json:"path"`
@@ -35,6 +44,7 @@ type StreamResult struct {
 // arrive and writes one JSON StreamResult per input path, so a long-running
 // CI driver learns per path when it is cached. While all `parallel` pushes
 // are busy, incoming paths accumulate into one batch of up to `batchSize`.
+// A line starting with `{` is a StreamRequest and forms a batch of its own.
 type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
@@ -90,21 +100,44 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 
 	slots := make(chan struct{}, s.parallel)
 
+	var pending string // read while filling a batch but not part of it
+
 	for {
-		first, ok := <-lines
-		if !ok {
-			break
+		first := pending
+		pending = ""
+
+		if first == "" {
+			var ok bool
+			if first, ok = <-lines; !ok {
+				break
+			}
+		}
+
+		slots <- struct{}{}
+
+		if strings.HasPrefix(first, "{") {
+			wg.Go(func() {
+				defer func() { <-slots }()
+
+				report(s.uploadRequest(ctx, first))
+			})
+
+			continue
 		}
 
 		batch := append(make([]string, 0, s.batchSize), first)
-
-		slots <- struct{}{}
 
 	fill:
 		for len(batch) < s.batchSize {
 			select {
 			case p, ok := <-lines:
 				if !ok {
+					break fill
+				}
+
+				if strings.HasPrefix(p, "{") {
+					pending = p
+
 					break fill
 				}
 
@@ -130,11 +163,38 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	return nil
 }
 
+// All or nothing: the outputs of one build must not be published partially,
+// and a stale claim means another worker owns them now.
+func (s *StreamPusher) uploadRequest(ctx context.Context, line string) []StreamResult {
+	var req StreamRequest
+	if err := json.Unmarshal([]byte(line), &req); err != nil || len(req.Paths) == 0 {
+		return []StreamResult{{Path: line, Status: streamStatusError, Message: "bad request line"}}
+	}
+
+	status, msg := streamStatusOK, ""
+
+	if _, err := s.push(ctx, req.Paths, req.ClaimToken); err != nil {
+		slog.Error("Upload failed", "error", err, "count", len(req.Paths))
+
+		status, msg = streamStatusError, err.Error()
+		if errors.Is(err, ErrStaleClaim) {
+			status = streamStatusStale
+		}
+	}
+
+	results := make([]StreamResult, 0, len(req.Paths))
+	for _, p := range req.Paths {
+		results = append(results, StreamResult{Path: p, Status: status, Message: msg})
+	}
+
+	return results
+}
+
 // A failed batch is retried path by path so one bad path only costs itself.
 func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResult {
 	results := make([]StreamResult, 0, len(batch))
 
-	_, err := s.push(ctx, batch)
+	_, err := s.push(ctx, batch, 0)
 	if err == nil {
 		for _, p := range batch {
 			results = append(results, StreamResult{Path: p, Status: streamStatusOK})
@@ -167,7 +227,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			break
 		}
 
-		if _, perr := s.push(ctx, []string{p}); perr != nil {
+		if _, perr := s.push(ctx, []string{p}, 0); perr != nil {
 			fail([]string{p}, perr)
 
 			failures++
