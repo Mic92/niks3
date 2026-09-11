@@ -415,6 +415,32 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 	return i, err
 }
 
+const getPresentObjects = `-- name: GetPresentObjects :many
+SELECT key FROM objects
+WHERE key = any($1::varchar []) AND deleted_at IS NULL
+`
+
+// GC-marked objects may vanish from S3 any moment, so they count as absent.
+func (q *Queries) GetPresentObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getPresentObjects, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getRedundantMultipartUploads = `-- name: GetRedundantMultipartUploads :many
 SELECT upload_id
 FROM multipart_uploads
@@ -446,6 +472,18 @@ func (q *Queries) GetRedundantMultipartUploads(ctx context.Context, arg GetRedun
 		return nil, err
 	}
 	return items, nil
+}
+
+const heartbeatClaim = `-- name: HeartbeatClaim :execrows
+UPDATE claims SET heartbeat_at = now() WHERE token = $1
+`
+
+func (q *Queries) HeartbeatClaim(ctx context.Context, token int64) (int64, error) {
+	result, err := q.db.Exec(ctx, heartbeatClaim, token)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
@@ -514,6 +552,17 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockClaim = `-- name: LockClaim :one
+SELECT key FROM claims WHERE token = $1 FOR UPDATE
+`
+
+func (q *Queries) LockClaim(ctx context.Context, token int64) ([]byte, error) {
+	row := q.db.QueryRow(ctx, lockClaim, token)
+	var key []byte
+	err := row.Scan(&key)
+	return key, err
 }
 
 const markObjectsAsActive = `-- name: MarkObjectsAsActive :exec
@@ -604,6 +653,50 @@ type RegisterCompletedObjectParams struct {
 func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
 	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs, arg.Size)
 	return err
+}
+
+const releaseClaim = `-- name: ReleaseClaim :exec
+DELETE FROM claims WHERE token = $1
+`
+
+func (q *Queries) ReleaseClaim(ctx context.Context, token int64) error {
+	_, err := q.db.Exec(ctx, releaseClaim, token)
+	return err
+}
+
+const touchClosures = `-- name: TouchClosures :exec
+UPDATE closures SET updated_at = timezone('UTC', now())
+WHERE key = any($1::varchar [])
+`
+
+func (q *Queries) TouchClosures(ctx context.Context, dollar_1 []string) error {
+	_, err := q.db.Exec(ctx, touchClosures, dollar_1)
+	return err
+}
+
+const tryClaim = `-- name: TryClaim :one
+INSERT INTO claims AS c (key, token)
+VALUES ($1, nextval('claim_token'))
+ON CONFLICT (key) DO UPDATE SET
+    token = CASE WHEN c.token = $2::bigint THEN c.token ELSE excluded.token END,
+    heartbeat_at = now()
+WHERE c.token = $2::bigint
+   OR c.heartbeat_at < now() - make_interval(secs => $3::float8)
+RETURNING token
+`
+
+type TryClaimParams struct {
+	Key       []byte  `json:"key"`
+	Token     int64   `json:"token"`
+	StaleSecs float64 `json:"stale_secs"`
+}
+
+// Insert a new claim, take over a stale one, or re-enter with a matching token.
+func (q *Queries) TryClaim(ctx context.Context, arg TryClaimParams) (int64, error) {
+	row := q.db.QueryRow(ctx, tryClaim, arg.Key, arg.Token, arg.StaleSecs)
+	var token int64
+	err := row.Scan(&token)
+	return token, err
 }
 
 const upsertPin = `-- name: UpsertPin :exec

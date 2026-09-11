@@ -428,8 +428,20 @@ func (s *Service) createPendingClosure(
 
 var errPendingClosureNotFound = errors.New("not found")
 
-func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosureID int64) error {
-	if err := pg.New(pool).CommitPendingClosure(ctx, pendingClosureID); err != nil {
+// commitPendingClosure with a claim token commits, releases the claim and
+// wakes waiters atomically. A stale token yields pgx.ErrNoRows and no commit.
+func (s *Service) commitPendingClosure(ctx context.Context, pendingClosureID int64, claimToken int64) error {
+	if claimToken == 0 {
+		return commitPendingClosure(ctx, pg.New(s.Pool), pendingClosureID)
+	}
+
+	return releaseClaimTx(ctx, s.Pool, claimToken, "", func(ctx context.Context, tx pgx.Tx) error {
+		return commitPendingClosure(ctx, pg.New(tx), pendingClosureID)
+	})
+}
+
+func commitPendingClosure(ctx context.Context, q *pg.Queries, pendingClosureID int64) error {
+	if err := q.CommitPendingClosure(ctx, pendingClosureID); err != nil {
 		msg := "Closure does not exist:"
 
 		var pgError *pgconn.PgError

@@ -671,8 +671,20 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Commit the pending closure (all objects including narinfos should already be uploaded)
-	if err := commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
+	var req struct {
+		ClaimToken int64 `json:"claim_token"`
+	}
+	if r.ContentLength != 0 && !decodeJSONBody(w, r, MaxClosureRequestBody, &req) {
+		return
+	}
+
+	if err := s.commitPendingClosure(r.Context(), parsedUploadID, req.ClaimToken); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "stale claim token", http.StatusConflict)
+
+			return
+		}
+
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)
 

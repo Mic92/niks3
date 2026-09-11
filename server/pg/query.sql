@@ -30,6 +30,15 @@ SELECT
 FROM objects AS o, ct
 WHERE key = any($1::varchar []);
 
+-- name: GetPresentObjects :many
+-- GC-marked objects may vanish from S3 any moment, so they count as absent.
+SELECT key FROM objects
+WHERE key = any($1::varchar []) AND deleted_at IS NULL;
+
+-- name: TouchClosures :exec
+UPDATE closures SET updated_at = timezone('UTC', now())
+WHERE key = any($1::varchar []);
+
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
 
@@ -240,3 +249,23 @@ WHERE name = $1;
 SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name;
+
+-- name: TryClaim :one
+-- Insert a new claim, take over a stale one, or re-enter with a matching token.
+INSERT INTO claims AS c (key, token)
+VALUES (sqlc.arg(key), nextval('claim_token'))
+ON CONFLICT (key) DO UPDATE SET
+    token = CASE WHEN c.token = sqlc.arg(token)::bigint THEN c.token ELSE excluded.token END,
+    heartbeat_at = now()
+WHERE c.token = sqlc.arg(token)::bigint
+   OR c.heartbeat_at < now() - make_interval(secs => sqlc.arg(stale_secs)::float8)
+RETURNING token;
+
+-- name: HeartbeatClaim :execrows
+UPDATE claims SET heartbeat_at = now() WHERE token = $1;
+
+-- name: LockClaim :one
+SELECT key FROM claims WHERE token = $1 FOR UPDATE;
+
+-- name: ReleaseClaim :exec
+DELETE FROM claims WHERE token = $1;
