@@ -42,7 +42,8 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "  --stdin")
 	fmt.Fprintln(os.Stderr, "        Read store paths line by line from stdin and push them as they")
 	fmt.Fprintln(os.Stderr, "        arrive. Writes one JSON line per path to stdout:")
-	fmt.Fprintln(os.Stderr, `        {"path":"...","status":"ok"|"error","message":"..."}`)
+	fmt.Fprintln(os.Stderr, `        {"path":"...","status":"ok"|"error"|"stale","message":"..."}`)
+	fmt.Fprintln(os.Stderr, `        A line {"paths":[...],"claim_token":N} is pushed as one unit.`)
 	fmt.Fprintln(os.Stderr, "        Exits after stdin is closed and everything was reported.")
 	fmt.Fprintf(os.Stderr, "  --batch-size int\n        With --stdin: max paths per push (default: %d)\n", client.DefaultStreamBatchSize)
 	fmt.Fprintf(os.Stderr, "  --parallel-pushes int\n        With --stdin: pushes running at once, each with up to\n        --max-concurrent-uploads NAR uploads (default: %d)\n", client.DefaultStreamParallel)
@@ -250,7 +251,7 @@ func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, pa
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
 
-	return client.NewStreamPusher(c.PushPaths, parallel, batchSize).Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
+	return client.NewStreamPusher(c.PushPathsWithClaim, parallel, batchSize).Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
 }
 
 func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderThan string, force bool, debug bool, tf cmdutil.TLSFlags) error {
