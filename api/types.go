@@ -93,4 +93,8 @@ type CacheConfig struct {
 	// MaxNarSize is the maximum uncompressed NAR size in bytes the server
 	// accepts. Clients skip closures containing larger paths. 0 means unlimited.
 	MaxNarSize uint64 `json:"max_nar_size,omitempty"`
+
+	// ClaimHeartbeatSecs > 0 means /api/builds/claim is available. Holders
+	// should treat 3 missed heartbeats as a lost claim.
+	ClaimHeartbeatSecs float64 `json:"claim_heartbeat_secs,omitempty"`
 }

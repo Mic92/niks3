@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SystemdListenerForTest exposes systemdListener to tests.
@@ -66,4 +67,19 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 // ServerTLSConfig is an export of serverTLSConfig for tests.
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
+}
+
+// CloneServiceForTest returns a second Service on the same database and
+// bucket with its own connection pool, standing in for another niks3 instance.
+func CloneServiceForTest(ctx context.Context, s *Service) *Service {
+	pool, err := pgxpool.NewWithConfig(ctx, s.Pool.Config())
+	if err != nil {
+		panic(err)
+	}
+
+	c := *s
+	c.Pool = pool
+	c.claims = nil
+
+	return &c
 }
