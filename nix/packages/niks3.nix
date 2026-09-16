@@ -27,4 +27,6 @@ pkgs.buildGoModule {
   subPackages = [ "cmd/niks3" ];
 
   doCheck = false;
+
+  meta.mainProgram = "niks3";
 }

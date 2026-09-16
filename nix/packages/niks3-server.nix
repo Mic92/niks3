@@ -26,4 +26,6 @@ pkgs.buildGoModule {
   subPackages = [ "cmd/niks3-server" ];
 
   doCheck = false;
+
+  meta.mainProgram = "niks3-server";
 }

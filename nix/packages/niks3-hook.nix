@@ -34,4 +34,6 @@ pkgs.buildGoModule {
   subPackages = [ "cmd/niks3-hook" ];
 
   doCheck = false;
+
+  meta.mainProgram = "niks3-hook";
 }
