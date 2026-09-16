@@ -62,5 +62,6 @@ func registerTestHandlers(mux *http.ServeMux, testService *server.Service) {
 	mux.HandleFunc("POST /api/pending_closures/{id}/sign", testService.RequireScope(oidc.ScopeWrite, testService.SignNarinfosHandler))
 	mux.HandleFunc("POST /api/pending_closures/{id}/complete", testService.RequireScope(oidc.ScopeWrite, testService.CommitPendingClosureHandler))
 	mux.HandleFunc("POST /api/multipart/complete", testService.RequireScope(oidc.ScopeWrite, testService.CompleteMultipartUploadHandler))
+	mux.HandleFunc("POST /api/objects/present", testService.RequireScope(oidc.ScopeWrite, testService.PresentHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 }

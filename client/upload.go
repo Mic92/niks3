@@ -522,6 +522,27 @@ func (c *Client) PushPathsWithClaim(ctx context.Context, paths []string, claimTo
 
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
 
+	// Skip cached closures before the local closure walk.
+	if present, err := c.Present(ctx, resolvedPaths); err != nil {
+		slog.Debug("Present check unavailable, pushing everything", "error", err)
+	} else if len(present) > 0 {
+		missing := resolvedPaths[:0:0]
+
+		for _, p := range resolvedPaths {
+			if !present[p] {
+				missing = append(missing, p)
+			}
+		}
+
+		if len(missing) == 0 {
+			slog.Info(fmt.Sprintf("All %d paths already cached", len(resolvedPaths)))
+
+			return resolvedPaths, nil
+		}
+
+		resolvedPaths = missing
+	}
+
 	// Get path info for all paths and their closures
 	slog.Debug("Getting path info", "count", len(resolvedPaths))
 

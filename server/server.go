@@ -327,6 +327,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("HEAD /api/objects/{key...}", service.RequireScope(oidc.ScopeWrite, service.ObjectExistsHandler))
 	mux.HandleFunc("POST /api/builds/claim", service.RequireScope(oidc.ScopeWrite, service.ClaimHandler))
 	mux.HandleFunc("POST /api/builds/fail", service.RequireScope(oidc.ScopeWrite, service.FailHandler))
+	mux.HandleFunc("POST /api/objects/present", service.RequireScope(oidc.ScopeWrite, service.PresentHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.RequireScope(oidc.ScopeWrite, service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupClosuresOlder))
 	mux.HandleFunc("GET /api/gc/status", service.RequireScope(oidc.ScopeAdmin, service.GCStatusHandler))

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -260,7 +261,15 @@ func TestClientIntegration(t *testing.T) {
 	mux := http.NewServeMux()
 	registerTestHandlers(mux, testService)
 
-	ts := httptest.NewServer(mux)
+	var pendingCalls atomic.Int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pending_closures" {
+			pendingCalls.Add(1)
+		}
+
+		mux.ServeHTTP(w, r)
+	}))
 	defer ts.Close()
 
 	// Create a test file and add it to the Nix store
@@ -279,6 +288,16 @@ func TestClientIntegration(t *testing.T) {
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)
 	if err != nil {
 		t.Fatalf("Client failed: %v", err)
+	}
+
+	// A second push is answered by /api/objects/present alone.
+	pendingCalls.Store(0)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)
+	ok(t, err)
+
+	if n := pendingCalls.Load(); n != 0 {
+		t.Fatalf("re-push of cached path created %d pending closures", n)
 	}
 
 	// Extract hash from store path

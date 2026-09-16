@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -478,5 +479,34 @@ func TestClaim_StreamsThroughServer(t *testing.T) {
 		if !sc.Scan() {
 			t.Fatalf("stream ended after %d lines: %v", i, sc.Err())
 		}
+	}
+}
+
+func TestPresent(t *testing.T) {
+	t.Parallel()
+
+	s := newClaimService(t)
+	defer s.Close()
+
+	have := commitTestClosure(t, s, "00000000000000000000000000000020")
+	gone := commitTestClosure(t, s, "00000000000000000000000000000021")
+	_, err := s.Pool.Exec(t.Context(), "UPDATE objects SET deleted_at = now(), first_deleted_at = now() WHERE key = $1", gone)
+	ok(t, err)
+
+	body, err := json.Marshal(api.PresentRequest{Keys: []string{have, gone, "00000000000000000000000000000022.narinfo"}})
+	ok(t, err)
+
+	rr := httptest.NewRecorder()
+	s.PresentHandler(rr, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/objects/present", bytes.NewReader(body)))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp api.PresentResponse
+	ok(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+
+	if !slices.Equal(resp.Present, []string{have}) {
+		t.Fatalf("present = %v, want [%s]", resp.Present, have)
 	}
 }
