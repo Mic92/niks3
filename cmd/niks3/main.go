@@ -213,6 +213,8 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
 
+	defer c.WaitRegistrations()
+
 	if _, err := c.PushPaths(ctx, paths); err != nil {
 		return fmt.Errorf("pushing paths: %w", err)
 	}
@@ -250,6 +252,8 @@ func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, pa
 
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
+
+	defer c.WaitRegistrations()
 
 	return client.NewStreamPusher(c.PushPathsWithClaim, parallel, batchSize).Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
 }

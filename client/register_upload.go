@@ -12,13 +12,21 @@ type completeUploadRequest struct {
 
 // RegisterUploadedObject notifies the server that objectKey was uploaded via a
 // presigned PUT, so the object is recorded even if the closure never commits.
-// Best effort: failures are logged, closure commit still records the object.
+// Best effort and off the upload path: the closure commit records the object
+// too, so nothing waits on this except WaitRegistrations.
 func (c *Client) RegisterUploadedObject(ctx context.Context, objectKey string) {
 	reqURL := c.baseURL.JoinPath("api/uploads/complete")
 
-	err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(),
-		completeUploadRequest{ObjectKey: objectKey}, nil, http.StatusOK, http.StatusNoContent)
-	if err != nil {
-		slog.Warn("Failed to register uploaded object", "key", objectKey, "error", err)
-	}
+	c.registrations.Go(func() {
+		err := c.doJSONRequest(context.WithoutCancel(ctx), http.MethodPost, reqURL.String(),
+			completeUploadRequest{ObjectKey: objectKey}, nil, http.StatusOK, http.StatusNoContent)
+		if err != nil {
+			slog.Warn("Failed to register uploaded object", "key", objectKey, "error", err)
+		}
+	})
+}
+
+// WaitRegistrations blocks until all RegisterUploadedObject calls have finished.
+func (c *Client) WaitRegistrations() {
+	c.registrations.Wait()
 }
