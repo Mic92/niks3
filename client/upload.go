@@ -562,7 +562,6 @@ func (c *Client) PushPathsWithClaim(ctx context.Context, paths []string, claimTo
 	}
 
 	// Skip closures containing paths larger than the server's max NAR size.
-	// Fetched per push so the long-running hook picks up config changes.
 	var maxNarSize uint64
 
 	if cfg, err := c.GetCacheConfig(ctx); err != nil {

@@ -5,19 +5,33 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/Mic92/niks3/api"
 )
 
+// Long-running pushers (--stdin, upload hook) still see config changes within a minute.
+const cacheConfigTTL = time.Minute
+
 // GetCacheConfig fetches the public cache configuration from the server
 // (GET /api/cache-config), including the maximum accepted NAR size.
+// Cached for cacheConfigTTL.
 func (c *Client) GetCacheConfig(ctx context.Context) (*api.CacheConfig, error) {
+	c.cacheConfigMu.Lock()
+	defer c.cacheConfigMu.Unlock()
+
+	if c.cacheConfig != nil && time.Since(c.cacheConfigAt) < cacheConfigTTL {
+		return c.cacheConfig, nil
+	}
+
 	cfg := &api.CacheConfig{}
 
 	url := c.baseURL.JoinPath("/api/cache-config")
 	if err := c.doJSONRequest(ctx, http.MethodGet, url.String(), nil, cfg, http.StatusOK); err != nil {
 		return nil, fmt.Errorf("fetching cache config: %w", err)
 	}
+
+	c.cacheConfig, c.cacheConfigAt = cfg, time.Now()
 
 	return cfg, nil
 }
