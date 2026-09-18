@@ -76,6 +76,8 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 - **Transactional uploads**: Atomic closure uploads with rollback on failure
 - **Garbage collection**: Reference-tracking GC with configurable retention
 - **Parallel uploads**: Client parallelizes NAR and metadata uploads
+- **[Streaming push](https://github.com/Mic92/niks3/wiki/Streaming-Push)**: `niks3 push --stdin` for long-running producers
+- **[Build claims](https://github.com/Mic92/niks3/wiki/Build-Claims)**: build deduplication for several builders sharing the cache
 
 ### Operational Features
 
