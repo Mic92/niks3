@@ -617,6 +617,70 @@ func TestClientWithDependencies(t *testing.T) {
 	testRetrieveWithNixCopy(ctx, t, testService, storePath, nixEnv)
 }
 
+func nixEvalStorePath(t *testing.T, nixEnv []string, expr string) string {
+	t.Helper()
+
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(t.Context(), "nix-instantiate", "--eval", "--read-write-mode", "--expr", expr)
+	cmd.Env = nixEnv
+	cmd.Stderr = &stderr
+
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to evaluate %s: %v\n%s", expr, err, stderr.String())
+	}
+
+	return strings.Trim(strings.TrimSpace(string(output)), `"`)
+}
+
+// Regression test: a second client commits a shared dependency between the two
+// CreatePendingClosure calls of one push. The later closure then no longer has
+// the dependency pending and the server rejects signing it there with 403.
+func TestClientSharedPathCommittedMidPush(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+
+	err := testService.InitializeBucket(t.Context())
+	ok(t, err)
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	depExpr := `builtins.toFile "shared-dep" "shared dependency"`
+	depPath := nixEvalStorePath(t, nixEnv, depExpr)
+	topPath := nixEvalStorePath(t, nixEnv, `builtins.toFile "top" "${`+depExpr+`}"`)
+
+	var pendingCalls atomic.Int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pending_closures" && pendingCalls.Add(1) == 2 {
+			if err := pushToServer(r.Context(), "http://"+r.Host, testAuthToken, []string{depPath}, nixEnv); err != nil {
+				t.Errorf("Concurrent push failed: %v", err)
+			}
+		}
+
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{depPath, topPath}, nixEnv)
+	if err != nil {
+		t.Fatalf("Client failed: %v", err)
+	}
+
+	for _, storePath := range []string{depPath, topPath} {
+		hash, err := client.GetStorePathHash(storePath)
+		ok(t, err)
+		verifyNarinfoInS3(ctx, t, testService, hash, storePath)
+	}
+}
+
 func TestPinProtectsFromGC(t *testing.T) {
 	t.Parallel()
 
