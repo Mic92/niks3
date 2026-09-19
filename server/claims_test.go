@@ -157,7 +157,9 @@ func newClaimService(t *testing.T) *server.Service {
 	return s
 }
 
-func completeWithToken(t *testing.T, s *server.Service, hash string, token int64, want int) {
+// prepareClosure uploads and signs everything so that only /complete is left.
+// Run it before opening claim streams: it can outlast the staleness window.
+func prepareClosure(t *testing.T, s *server.Service, hash string) string {
 	t.Helper()
 
 	narinfoKey := hash + ".narinfo"
@@ -181,13 +183,19 @@ func completeWithToken(t *testing.T, s *server.Service, hash string, token int64
 		handler: s.SignNarinfosHandler, pathValues: map[string]string{"id": resp.ID},
 	})
 
+	return resp.ID
+}
+
+func completeWithToken(t *testing.T, s *server.Service, id string, token int64, want int) {
+	t.Helper()
+
 	body, err := json.Marshal(map[string]any{"claim_token": token})
 	ok(t, err)
 
 	check := checkStatusCode(want)
 	testRequest(t, &TestRequest{
-		method: "POST", path: "/api/pending_closures/" + resp.ID + "/complete", body: body,
-		handler: s.CommitPendingClosureHandler, pathValues: map[string]string{"id": resp.ID},
+		method: "POST", path: "/api/pending_closures/" + id + "/complete", body: body,
+		handler: s.CommitPendingClosureHandler, pathValues: map[string]string{"id": id},
 		checkResponse: &check,
 	})
 }
@@ -200,6 +208,7 @@ func TestClaim_BuildWaitComplete(t *testing.T) {
 
 	hash := "00000000000000000000000000000010"
 	out := hash + ".narinfo"
+	id := prepareClosure(t, s, hash)
 
 	a := openClaim(t, s, claimReq(out))
 	defer a.close()
@@ -218,8 +227,8 @@ func TestClaim_BuildWaitComplete(t *testing.T) {
 		t.Fatalf("re-claim token = %d, want %d", got, token)
 	}
 
-	completeWithToken(t, s, hash, token+1, http.StatusConflict)
-	completeWithToken(t, s, hash, token, http.StatusNoContent)
+	completeWithToken(t, s, id, token+1, http.StatusConflict)
+	completeWithToken(t, s, id, token, http.StatusNoContent)
 	b.expect(api.ClaimBuilt)
 
 	c := openClaim(t, s, claimReq(out))
@@ -400,6 +409,7 @@ func TestClaim_TwoInstances(t *testing.T) {
 
 	hash := "00000000000000000000000000000016"
 	out := hash + ".narinfo"
+	id := prepareClosure(t, s2, hash)
 
 	a := openClaim(t, s1, claimReq(out))
 	defer a.close()
@@ -415,7 +425,7 @@ func TestClaim_TwoInstances(t *testing.T) {
 	defer a2.close()
 	a2.expect(api.ClaimBuild)
 
-	completeWithToken(t, s2, hash, token, http.StatusNoContent)
+	completeWithToken(t, s2, id, token, http.StatusNoContent)
 	b.expect(api.ClaimBuilt)
 }
 
