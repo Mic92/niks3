@@ -18,6 +18,7 @@ import (
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/ratelimit"
+	"golang.org/x/sync/errgroup"
 )
 
 // compressionZstd is the algorithm name used in Content-Encoding headers
@@ -37,7 +38,7 @@ type Client struct {
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
-	registrations           sync.WaitGroup
+	registrations           errgroup.Group
 	cacheConfigMu           sync.Mutex
 	cacheConfig             *api.CacheConfig
 	cacheConfigAt           time.Time
@@ -118,18 +119,42 @@ func NewClientWithTokenSource(ctx context.Context, serverURL string, ts TokenSou
 		return nil, fmt.Errorf("getting store directory: %w", err)
 	}
 
-	return &Client{
-		baseURL:     baseURL,
-		tokenSource: ts,
-		httpClient: &http.Client{
-			Timeout: 0, // No timeout for streaming uploads
-		},
+	c := &Client{
+		baseURL:                 baseURL,
+		tokenSource:             ts,
+		httpClient:              newHTTPClient(),
 		MaxConcurrentNARUploads: 16,
 		Retry:                   DefaultRetryConfig(),
 		storeDir:                storeDir,
 		S3RateLimiter:           ratelimit.NewAdaptiveRateLimiter(0, "s3"),
 		ServerRateLimiter:       ratelimit.NewAdaptiveRateLimiter(0, "server"),
-	}, nil
+	}
+	c.registrations.SetLimit(maxConnsPerHost)
+
+	return c, nil
+}
+
+// Go's default of 2 idle conns per host turns a concurrent push into one
+// socket per request.
+const maxConnsPerHost = 64
+
+func newTransport() *http.Transport {
+	t, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		t = t.Clone()
+	} else {
+		t = &http.Transport{}
+	}
+
+	t.MaxIdleConns = 2 * maxConnsPerHost
+	t.MaxIdleConnsPerHost = maxConnsPerHost
+	t.MaxConnsPerHost = maxConnsPerHost
+
+	return t
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{Transport: newTransport()}
 }
 
 // SetDebugHTTP enables or disables HTTP request/response logging.
@@ -189,13 +214,7 @@ func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
 	// Build a fresh transport so we never mutate http.DefaultTransport. If
 	// SetDebugHTTP has already wrapped the transport in a loggingTransport,
 	// preserve that wrapper around the new transport.
-	var newTransport *http.Transport
-	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		newTransport = dt.Clone()
-	} else {
-		newTransport = &http.Transport{}
-	}
-
+	newTransport := newTransport()
 	newTransport.TLSClientConfig = tlsConfig
 
 	if lt, ok := c.httpClient.Transport.(*loggingTransport); ok {
@@ -207,7 +226,9 @@ func (c *Client) SetClientTLS(certFile, keyFile, caFile string) error {
 	return nil
 }
 
+// Drain so the connection goes back to the pool.
 func deferCloseBody(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if err := resp.Body.Close(); err != nil {
 		slog.Error("Failed to close response body", "error", err)
 	}

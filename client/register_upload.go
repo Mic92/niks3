@@ -17,16 +17,18 @@ type completeUploadRequest struct {
 func (c *Client) RegisterUploadedObject(ctx context.Context, objectKey string) {
 	reqURL := c.baseURL.JoinPath("api/uploads/complete")
 
-	c.registrations.Go(func() {
+	c.registrations.Go(func() error {
 		err := c.doJSONRequest(context.WithoutCancel(ctx), http.MethodPost, reqURL.String(),
 			completeUploadRequest{ObjectKey: objectKey}, nil, http.StatusOK, http.StatusNoContent)
 		if err != nil {
 			slog.Warn("Failed to register uploaded object", "key", objectKey, "error", err)
 		}
+
+		return nil
 	})
 }
 
 // WaitRegistrations blocks until all RegisterUploadedObject calls have finished.
 func (c *Client) WaitRegistrations() {
-	c.registrations.Wait()
+	_ = c.registrations.Wait()
 }

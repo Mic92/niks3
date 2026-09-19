@@ -47,13 +47,20 @@ func NewTestClient(httpClient *http.Client, retry RetryConfig) *Client {
 
 // NewTestClientWithToken is like NewTestClient but with an explicit TokenSource.
 func NewTestClientWithToken(httpClient *http.Client, retry RetryConfig, ts TokenSource) *Client {
-	return &Client{
+	if httpClient.Transport == nil {
+		httpClient.Transport = newTransport()
+	}
+
+	c := &Client{
 		httpClient:        httpClient,
 		tokenSource:       ts,
 		Retry:             retry,
 		S3RateLimiter:     ratelimit.NewAdaptiveRateLimiter(0, "s3-test"),
 		ServerRateLimiter: ratelimit.NewAdaptiveRateLimiter(0, "server-test"),
 	}
+	c.registrations.SetLimit(maxConnsPerHost)
+
+	return c
 }
 
 // NewTestClientWithStoreDir creates a Client with only storeDir set, for path resolution tests.

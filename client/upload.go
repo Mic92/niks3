@@ -481,9 +481,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 				return fmt.Errorf("uploading narinfo %s: %w", task.key, err)
 			}
 
-			if err := resp.Body.Close(); err != nil {
-				slog.Warn("Failed to close response body", "error", err)
-			}
+			deferCloseBody(resp)
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
