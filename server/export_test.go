@@ -67,3 +67,5 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
 }
+
+func init() { leadHeartbeat = 50 * time.Millisecond } //nolint:gochecknoinits // fast lead tests

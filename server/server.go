@@ -133,6 +133,9 @@ type Service struct {
 	// instead of trusting proxy headers.
 	NativeMTLS bool
 
+	// Streams ends long-lived handlers on shutdown.
+	Streams context.Context //nolint:containedctx
+
 	GCTasks *GCTaskStore
 	Metrics *Metrics
 }
@@ -295,6 +298,9 @@ func runServer(opts *options) error {
 	defer stopMetrics()
 	service.StartInventoryRefresh(metricsCtx)
 
+	streams, stopStreams := context.WithCancel(context.Background())
+	service.Streams = streams
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", service.HealthCheckHandler)
 	mux.HandleFunc("GET /healthz", service.HealthCheckHandler)
@@ -313,6 +319,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("POST /api/multipart/request-parts", service.RequireScope(oidc.ScopeWrite, service.RequestMorePartsHandler))
 	mux.HandleFunc("HEAD /api/objects/{key...}", service.RequireScope(oidc.ScopeWrite, service.ObjectExistsHandler))
 	mux.HandleFunc("POST /api/objects/present", service.RequireScope(oidc.ScopeWrite, service.PresentHandler))
+	mux.HandleFunc("POST /api/farm/lead", service.RequireScope(oidc.ScopeWrite, service.LeadHandler))
 	mux.HandleFunc("GET /api/closures/{key}", service.RequireScope(oidc.ScopeWrite, service.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupClosuresOlder))
 	mux.HandleFunc("GET /api/gc/status", service.RequireScope(oidc.ScopeAdmin, service.GCStatusHandler))
@@ -346,6 +353,8 @@ func runServer(opts *options) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+
+	server.RegisterOnShutdown(stopStreams)
 
 	useTLS := opts.TLSCert != ""
 	if useTLS {
