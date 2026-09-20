@@ -78,7 +78,7 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 		pushed []string
 	)
 
-	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
+	push := func(_ context.Context, paths []string) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -124,7 +124,7 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 		batches [][]string
 	)
 
-	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
+	push := func(_ context.Context, paths []string) ([]string, error) {
 		mu.Lock()
 
 		batches = append(batches, slices.Clone(paths))
@@ -167,7 +167,7 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 
 	errBad := errors.New("bad path")
 
-	push := func(_ context.Context, paths []string, _ int64) ([]string, error) {
+	push := func(_ context.Context, paths []string) ([]string, error) {
 		if slices.Contains(paths, "/nix/store/bad") {
 			return nil, errBad
 		}
@@ -202,7 +202,7 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 
 	var calls int
 
-	push := func(_ context.Context, _ []string, _ int64) ([]string, error) {
+	push := func(_ context.Context, _ []string) ([]string, error) {
 		calls++
 
 		return nil, errDown
@@ -240,15 +240,15 @@ func TestStreamPushRequestLine(t *testing.T) {
 		calls []string
 	)
 
-	push := func(_ context.Context, paths []string, claimToken int64) ([]string, error) {
+	push := func(_ context.Context, paths []string) ([]string, error) {
 		mu.Lock()
 
-		calls = append(calls, fmt.Sprintf("%v@%d", paths, claimToken))
+		calls = append(calls, fmt.Sprintf("%v", paths))
 
 		mu.Unlock()
 
-		if claimToken == 7 {
-			return nil, client.ErrStaleClaim
+		if slices.Contains(paths, "/nix/store/d") {
+			return nil, errors.New("boom")
 		}
 
 		return paths, nil
@@ -256,8 +256,8 @@ func TestStreamPushRequestLine(t *testing.T) {
 
 	results := runStream(t, push, 1, 10, func(w io.Writer) {
 		_, _ = io.WriteString(w, "/nix/store/a\n"+
-			`{"paths":["/nix/store/b","/nix/store/c"],"claim_token":5}`+"\n"+
-			`{"paths":["/nix/store/d"],"claim_token":7}`+"\n"+
+			`{"paths":["/nix/store/b","/nix/store/c"]}`+"\n"+
+			`{"paths":["/nix/store/d"]}`+"\n"+
 			"{bad\n")
 	})
 
@@ -266,7 +266,7 @@ func TestStreamPushRequestLine(t *testing.T) {
 		status[r.Path] = r.Status
 	}
 
-	want := map[string]string{"/nix/store/a": "ok", "/nix/store/b": "ok", "/nix/store/c": "ok", "/nix/store/d": "stale", "{bad": "error"}
+	want := map[string]string{"/nix/store/a": "ok", "/nix/store/b": "ok", "/nix/store/c": "ok", "/nix/store/d": "error", "{bad": "error"}
 	if !maps.Equal(status, want) {
 		t.Fatalf("got %v, want %v", status, want)
 	}
@@ -277,7 +277,7 @@ func TestStreamPushRequestLine(t *testing.T) {
 		long = append(long, fmt.Sprintf("/nix/store/%080d", i))
 	}
 
-	longLine, err := json.Marshal(client.StreamRequest{ID: 9, Paths: long, ClaimToken: 0})
+	longLine, err := json.Marshal(client.StreamRequest{ID: 9, Paths: long})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestStreamPushRequestLine(t *testing.T) {
 	calls = slices.DeleteFunc(slices.Compact(calls), func(c string) bool { return len(c) > 100 })
 
 	// The plain path is never merged into a request batch.
-	wantCalls := []string{"[/nix/store/a]@0", "[/nix/store/b /nix/store/c]@5", "[/nix/store/d]@7"}
+	wantCalls := []string{"[/nix/store/a]", "[/nix/store/b /nix/store/c]", "[/nix/store/d]"}
 	if !slices.Equal(calls, wantCalls) {
 		t.Fatalf("calls %v, want %v", calls, wantCalls)
 	}

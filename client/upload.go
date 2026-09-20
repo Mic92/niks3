@@ -502,13 +502,6 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 // closures (including transitive dependencies), which callers can use to
 // prune queues of dependency paths that no longer need separate uploads.
 func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error) {
-	return c.PushPathsWithClaim(ctx, paths, 0)
-}
-
-// PushPathsWithClaim is PushPaths for a build-farm worker holding a claim:
-// every closure commit carries the token, so a stale claim (ErrStaleClaim)
-// publishes nothing.
-func (c *Client) PushPathsWithClaim(ctx context.Context, paths []string, claimToken int64) ([]string, error) {
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths
@@ -653,7 +646,7 @@ func (c *Client) PushPathsWithClaim(ctx context.Context, paths []string, claimTo
 
 	// Complete all pending closures (all objects including narinfos are now uploaded)
 	for id := range pendingByClosureID {
-		if err := c.CompletePendingClosure(ctx, id, claimToken); err != nil {
+		if err := c.CompletePendingClosure(ctx, id); err != nil {
 			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
 	}
