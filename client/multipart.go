@@ -7,8 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -211,84 +214,103 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 	return c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, nil, http.StatusOK, http.StatusNoContent)
 }
 
-// uploadMultipart uploads a stream in parts using presigned URLs (sequential).
+// partsInFlight bounds concurrent part PUTs (and part-sized buffers) per NAR.
+const partsInFlight = 4
+
+// uploadMultipart uploads a stream in parts using presigned URLs, up to
+// partsInFlight parts at once.
 func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
 	slog.Debug("Uploading", "object_key", objectKey, "part_size", partSize)
 
-	var completedParts []CompletedPart
+	var (
+		mu             sync.Mutex
+		completedParts []CompletedPart
+	)
 
-	buffer, release := getPartBuffer(partSize)
-	defer release()
-
-	partNumber := 1
+	g, gctx := errgroup.WithContext(ctx)
+	// Taken before reading a part so buffers are bounded too, not just PUTs.
+	slots := make(chan struct{}, partsInFlight)
 	partURLs := multipartInfo.PartURLs
 
-	var reachedEOF bool
+	readErr := func() error {
+		for partNumber := 1; ; partNumber++ {
+			if partNumber > len(partURLs) {
+				const additionalParts = 100
 
-	for {
-		// Check if we need more part URLs
-		if partNumber > len(partURLs) {
-			// Request more parts (batch of 100)
-			const additionalParts = 100
-			slog.Info("Requesting additional part URLs",
-				"object_key", objectKey,
-				"current_part", partNumber,
-				"requesting", additionalParts)
+				newPartURLs, err := c.RequestMoreParts(gctx, objectKey, multipartInfo.UploadID, partNumber, additionalParts)
+				if err != nil {
+					return fmt.Errorf("requesting more parts at part %d: %w", partNumber, err)
+				}
 
-			newPartURLs, err := c.RequestMoreParts(ctx, objectKey, multipartInfo.UploadID, partNumber, additionalParts)
-			if err != nil {
-				return fmt.Errorf("requesting more parts at part %d: %w", partNumber, err)
+				partURLs = append(partURLs, newPartURLs...)
+				slog.Info("Received additional part URLs", "count", len(newPartURLs), "total_parts", len(partURLs))
 			}
 
-			partURLs = append(partURLs, newPartURLs...)
-			slog.Info("Received additional part URLs", "count", len(newPartURLs), "total_parts", len(partURLs))
-		}
-
-		// Read up to partSize for this part
-		n, readErr := io.ReadFull(r, buffer)
-		if errors.Is(readErr, io.EOF) {
-			// Done reading
-			reachedEOF = true
-
-			break
-		}
-
-		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-			return fmt.Errorf("reading part %d: %w", partNumber, readErr)
-		}
-
-		partData := buffer[:n]
-
-		// Upload this part
-		partURL := partURLs[partNumber-1]
-
-		etag, err := c.uploadPart(ctx, partURL, partData)
-		if err != nil {
-			if c.supersededByPeer(ctx, objectKey, err) {
-				return ErrUploadSuperseded
+			select {
+			case slots <- struct{}{}:
+			case <-gctx.Done():
+				return nil
 			}
 
-			return fmt.Errorf("uploading part %d: %w", partNumber, err)
+			buffer, release := getPartBuffer(partSize)
+
+			n, err := io.ReadFull(r, buffer)
+			if n == 0 {
+				release()
+				<-slots
+
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+
+				return fmt.Errorf("reading part %d: %w", partNumber, err)
+			}
+
+			last := errors.Is(err, io.ErrUnexpectedEOF)
+			if err != nil && !last {
+				release()
+				<-slots
+
+				return fmt.Errorf("reading part %d: %w", partNumber, err)
+			}
+
+			partURL, partData := partURLs[partNumber-1], buffer[:n]
+
+			g.Go(func() error {
+				defer func() { release(); <-slots }()
+
+				etag, err := c.uploadPart(gctx, partURL, partData)
+				if err != nil {
+					return fmt.Errorf("uploading part %d: %w", partNumber, err)
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				completedParts = append(completedParts, CompletedPart{PartNumber: partNumber, ETag: etag})
+
+				return nil
+			})
+
+			if last {
+				return nil
+			}
+		}
+	}()
+
+	if err := g.Wait(); err != nil {
+		if c.supersededByPeer(ctx, objectKey, err) {
+			return ErrUploadSuperseded
 		}
 
-		completedParts = append(completedParts, CompletedPart{
-			PartNumber: partNumber,
-			ETag:       etag,
-		})
-
-		partNumber++
-
-		if errors.Is(readErr, io.ErrUnexpectedEOF) {
-			// Short read indicates end of stream
-			reachedEOF = true
-
-			break
-		}
+		return err //nolint:wrapcheck // wrapped with its part number above
 	}
 
-	if !reachedEOF {
-		return errors.New("unexpected end of upload loop without reaching EOF")
+	if readErr != nil {
+		return readErr
 	}
+
+	slices.SortFunc(completedParts, func(a, b CompletedPart) int { return a.PartNumber - b.PartNumber })
 
 	// Complete the multipart upload
 	err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, completedParts)
