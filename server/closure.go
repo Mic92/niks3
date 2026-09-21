@@ -277,7 +277,7 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 }
 
 // GCStatusHandler handles GET /api/gc/status.
-func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Service) GCStatusHandler(w http.ResponseWriter, _ *http.Request) {
 	status, ok := s.GCTasks.Get()
 	if !ok {
 		http.Error(w, "no garbage collection has run yet", http.StatusNotFound)

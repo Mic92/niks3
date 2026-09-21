@@ -12,7 +12,10 @@ import (
 	"github.com/Mic92/niks3/server/oidc"
 )
 
-var allScopes = []oidc.Scope{oidc.ScopeRead, oidc.ScopeWrite, oidc.ScopeAdmin}
+// allScopes is the full grant given to mTLS clients and the static API token.
+func allScopes() []oidc.Scope {
+	return []oidc.Scope{oidc.ScopeRead, oidc.ScopeWrite, oidc.ScopeAdmin}
+}
 
 // readGated reports whether the read proxy requires authentication. Reads are
 // public unless the operator configured a read rule somewhere, since Nix
@@ -30,13 +33,16 @@ type principal struct {
 
 type principalKey struct{}
 
-var adminPrincipal = principal{scopes: allScopes}
+// adminPrincipal is the principal for mTLS clients and the static API token.
+func adminPrincipal() principal {
+	return principal{scopes: allScopes()}
+}
 
-// authenticate returns the principal for r. ok is false when no valid
+// authenticate returns the principal for r. The bool is false when no valid
 // credentials were presented at all.
 func (s *Service) authenticate(r *http.Request) (principal, bool) {
 	if s.mtlsCheck(r, s.MTLSBoundSubjects) {
-		return adminPrincipal, true
+		return adminPrincipal(), true
 	}
 
 	if len(s.MTLSBoundSubjectsRead) > 0 && s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
@@ -49,7 +55,7 @@ func (s *Service) authenticate(r *http.Request) (principal, bool) {
 	}
 
 	if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
-		return adminPrincipal, true
+		return adminPrincipal(), true
 	}
 
 	if s.OIDCValidator == nil {

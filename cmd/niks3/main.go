@@ -359,7 +359,7 @@ func pinsListCommandNew(serverURL string, ts client.TokenSource, namesOnly, json
 
 	if *namesOnly {
 		for _, pin := range pins {
-			fmt.Println(pin.Name)
+			_, _ = fmt.Fprintln(os.Stdout, pin.Name)
 		}
 
 		return nil
