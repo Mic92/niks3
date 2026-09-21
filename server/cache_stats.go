@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -21,10 +20,9 @@ func (s *Service) CacheStatsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	_ = json.NewEncoder(w).Encode(api.CacheStats{
+	writeJSONResponse(w, api.CacheStats{
 		Objects:      stats.ObjectCount,
 		LogicalBytes: stats.TotalBytes,
 	})

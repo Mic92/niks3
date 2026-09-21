@@ -26,6 +26,18 @@ func writeJSONResponse(w http.ResponseWriter, v any) {
 	}
 }
 
+// writeJSONStatus writes v as a JSON response with a non-200 status. The
+// status line is already sent when encoding runs, so failures can only be
+// logged.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("Failed to encode response", "status", status, "error", err)
+	}
+}
+
 // parsePendingClosureID extracts and parses the {id} path value. On error it
 // writes a 400 response and returns false.
 func parsePendingClosureID(w http.ResponseWriter, r *http.Request) (int64, bool) {

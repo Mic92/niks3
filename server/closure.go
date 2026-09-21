@@ -153,10 +153,7 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	result := s.GCTasks.Start(params)
 
 	if result.Conflict {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-
-		_ = json.NewEncoder(w).Encode(api.GCConflictResponse{
+		writeJSONStatus(w, http.StatusConflict, api.GCConflictResponse{
 			Error:      "a different garbage collection is already running",
 			ActiveTask: result.Status,
 		})
@@ -168,9 +165,7 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 		go s.runGarbageCollection(result.Task, age, pendingAge, force)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(result.Status)
+	writeJSONStatus(w, http.StatusAccepted, result.Status)
 }
 
 // runGarbageCollection executes the full GC sequence in a background goroutine,
@@ -290,8 +285,7 @@ func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
+	writeJSONResponse(w, status)
 }
 
 // vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.
