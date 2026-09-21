@@ -34,7 +34,7 @@ func TestCacheStatsHandler(t *testing.T) {
 	ok(t, queries.CommitPendingClosure(ctx, pendingClosure.ID))
 
 	rec := httptest.NewRecorder()
-	service.CacheStatsHandler(rec, httptest.NewRequest(http.MethodGet, "/api/cache-stats", nil))
+	service.CacheStatsHandler(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/cache-stats", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)

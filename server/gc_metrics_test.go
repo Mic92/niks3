@@ -24,7 +24,7 @@ func TestGCMetrics(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 
 	body, err := io.ReadAll(rec.Body)
 	ok(t, err)

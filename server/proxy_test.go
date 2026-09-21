@@ -118,7 +118,10 @@ func setupProxyServer(tb testing.TB, service *server.Service) *httptest.Server {
 func proxyGet(t *testing.T, ts *httptest.Server, path string, wantStatus int) (http.Header, []byte) {
 	t.Helper()
 
-	resp, err := http.Get(ts.URL + path)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+	ok(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
 	ok(t, err)
 
 	body, err := io.ReadAll(resp.Body)
@@ -271,7 +274,10 @@ func TestReadProxyHead(t *testing.T) {
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	resp, err := http.Head(ts.URL + "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, ts.URL+"/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", nil)
+	ok(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
 	ok(t, err)
 
 	defer func() {
@@ -368,7 +374,10 @@ func TestReadProxyRootRedirectsToIndexHTML(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Get(ts.URL + "/")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/", nil)
+	ok(t, err)
+
+	resp, err := client.Do(req)
 	ok(t, err)
 
 	defer func() {

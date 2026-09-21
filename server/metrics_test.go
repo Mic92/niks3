@@ -43,11 +43,11 @@ func TestMetricsInventory(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	service.Metrics.Instrument(mux).ServeHTTP(
-		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil),
+		httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil),
 	)
 
 	rec := httptest.NewRecorder()
-	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
