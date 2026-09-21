@@ -4,7 +4,7 @@ pkgs.buildGoModule {
   version = "0.1.0";
   src = ./mock-oidc-server;
 
-  vendorHash = "sha256-o3/brRHdf929SRwvFyR3DMBLBhbVjlr8w6h5onCb6yI=";
+  vendorHash = "sha256-nP/1rHixcx8xCN2VkRISU21oYuVMvoK727dxx/vVQA8=";
 
   doCheck = false;
 
