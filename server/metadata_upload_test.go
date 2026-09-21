@@ -50,7 +50,7 @@ func TestNARDeduplicationMetadataUploadBug(t *testing.T) {
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath1}, nixEnv)
 	ok(t, err)
 
-	hash1 := strings.Split(filepath.Base(storePath1), "-")[0]
+	hash1, _, _ := strings.Cut(filepath.Base(storePath1), "-")
 	verifyNarinfoInS3(ctx, t, testService, hash1, storePath1)
 	verifyLsFileInS3(ctx, t, testService, hash1)
 
@@ -64,7 +64,7 @@ func TestNARDeduplicationMetadataUploadBug(t *testing.T) {
 	t.Logf("Second store path (same content): %s", storePath2)
 
 	// Verify they have different hashes (different store paths)
-	hash2 := strings.Split(filepath.Base(storePath2), "-")[0]
+	hash2, _, _ := strings.Cut(filepath.Base(storePath2), "-")
 	if hash1 == hash2 {
 		t.Fatal("Store paths should have different hashes despite same content")
 	}

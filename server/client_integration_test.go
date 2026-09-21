@@ -550,7 +550,7 @@ func testRetrieveWithNixCopy(ctx context.Context, t *testing.T, testService *ser
 	ok(t, err)
 
 	// Debug: Download and check a narinfo to see its format
-	hash := strings.Split(filepath.Base(storePath), "-")[0]
+	hash, _, _ := strings.Cut(filepath.Base(storePath), "-")
 	narinfoKey := hash + ".narinfo"
 
 	narinfoObj, err := testService.MinioClient.GetObject(ctx,
@@ -758,8 +758,8 @@ func TestPinProtectsFromGC(t *testing.T) {
 		t.Errorf("Pin content mismatch: got %q, want %q", string(pinContent), pinnedStorePath)
 	}
 
-	pinnedHash := strings.Split(filepath.Base(pinnedStorePath), "-")[0]
-	unpinnedHash := strings.Split(filepath.Base(unpinnedStorePath), "-")[0]
+	pinnedHash, _, _ := strings.Cut(filepath.Base(pinnedStorePath), "-")
+	unpinnedHash, _, _ := strings.Cut(filepath.Base(unpinnedStorePath), "-")
 
 	// Run garbage collection with force mode (immediate deletion)
 	_, err = c.RunGarbageCollection(ctx, "0s", "0s", true)

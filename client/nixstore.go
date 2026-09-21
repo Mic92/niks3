@@ -235,8 +235,7 @@ func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []str
 	if err != nil {
 		cmdStr := "nix " + strings.Join(args, " ")
 
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, fmt.Errorf("command failed: %s\nstderr: %s\nerror: %w", cmdStr, exitErr.Stderr, err)
 		}
 

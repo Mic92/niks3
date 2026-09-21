@@ -50,8 +50,7 @@ func benchmarkUploadClosure(ctx context.Context, b *testing.B, projectRoot, flak
 
 	output, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			b.Fatalf("Failed to build %s: %v\nStderr: %s", flakeAttr, err, exitErr.Stderr)
 		}
 
