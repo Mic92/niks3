@@ -20,7 +20,7 @@ func TestValidateToken_ValidToken(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 			},
 		},
 	}
@@ -63,7 +63,7 @@ func TestValidateToken_WrongAudience(t *testing.T) {
 	// Token is signed for the mock's ClientID, but validator expects different audience
 	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "test-subject",
-		"aud": m.Config().ClientID, // Different from what validator expects
+		"aud": m.ClientID, // Different from what validator expects
 	})
 
 	_, err := validator.ValidateToken(ctx, token)
@@ -82,7 +82,7 @@ func TestValidateToken_Expired(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 			},
 		},
 	}
@@ -91,7 +91,7 @@ func TestValidateToken_Expired(t *testing.T) {
 	// Create an already-expired token
 	token := oidctest.SignToken(t, m, jwt.MapClaims{
 		"sub": "test-subject",
-		"exp": m.Now().Add(-time.Hour).Unix(), // Expired 1 hour ago
+		"exp": time.Now().Add(-time.Hour).Unix(), // Expired 1 hour ago
 	})
 
 	_, err := validator.ValidateToken(ctx, token)
@@ -110,7 +110,7 @@ func TestValidateToken_BoundClaimsMismatch(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				BoundClaims: map[string][]string{
 					"repository_owner": {"myorg"},
 				},
@@ -150,7 +150,7 @@ func TestValidateToken_BoundSubjectMismatch(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:       m.Issuer(),
-				Audience:     m.Config().ClientID,
+				Audience:     m.ClientID,
 				BoundSubject: []string{"repo:myorg/*:*"},
 			},
 		},
@@ -179,11 +179,11 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
 				Issuer:   m1.Issuer(),
-				Audience: m1.Config().ClientID,
+				Audience: m1.ClientID,
 			},
 			"provider2": {
 				Issuer:   m2.Issuer(),
-				Audience: m2.Config().ClientID,
+				Audience: m2.ClientID,
 			},
 		},
 	}
@@ -193,7 +193,7 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	token := oidctest.SignToken(t, m2, jwt.MapClaims{
 		"sub": "test-subject-from-provider2",
 		"iss": m2.Issuer(),
-		"aud": m2.Config().ClientID,
+		"aud": m2.ClientID,
 	})
 
 	claims, err := validator.ValidateToken(ctx, token)
@@ -222,7 +222,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"provider1": {
 				Issuer:   m1.Issuer(),
-				Audience: m1.Config().ClientID,
+				Audience: m1.ClientID,
 			},
 		},
 	}
@@ -232,7 +232,7 @@ func TestValidateToken_NoMatchingProvider(t *testing.T) {
 	token := oidctest.SignToken(t, m2, jwt.MapClaims{
 		"sub": "test-subject",
 		"iss": m2.Issuer(),
-		"aud": m2.Config().ClientID,
+		"aud": m2.ClientID,
 	})
 
 	_, err := validator.ValidateToken(ctx, token)

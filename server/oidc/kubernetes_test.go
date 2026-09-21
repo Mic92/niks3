@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server/oidc"
+	"github.com/Mic92/niks3/server/oidc/oidcmock"
 	"github.com/Mic92/niks3/server/oidc/oidctest"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oauth2-proxy/mockoidc"
 )
 
 // kubeAPIServer mimics the Kubernetes issuer: private CA, discovery and JWKS
 // require authentication.
-func kubeAPIServer(t *testing.T, kp *mockoidc.Keypair, wantBearer string) *httptest.Server {
+func kubeAPIServer(t *testing.T, kp *oidcmock.Keypair, wantBearer string) *httptest.Server {
 	t.Helper()
 
 	jwks, err := kp.JWKS()
@@ -63,7 +63,7 @@ func kubeAPIServer(t *testing.T, kp *mockoidc.Keypair, wantBearer string) *httpt
 func TestValidateToken_KubernetesServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	kp, err := mockoidc.NewKeypair(nil)
+	kp, err := oidcmock.NewKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestValidateToken_KubernetesServiceAccount(t *testing.T) {
 func TestNewValidator_KubernetesRequiresCA(t *testing.T) {
 	t.Parallel()
 
-	kp, err := mockoidc.NewKeypair(nil)
+	kp, err := oidcmock.NewKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestNewValidator_KubernetesRequiresCA(t *testing.T) {
 func TestValidateToken_KubernetesIssuerFromOwnToken(t *testing.T) {
 	t.Parallel()
 
-	kp, err := mockoidc.NewKeypair(nil)
+	kp, err := oidcmock.NewKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}

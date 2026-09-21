@@ -256,7 +256,7 @@ func TestService_AuthMiddleware_OIDC(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				BoundClaims: map[string][]string{
 					"repository_owner": {"myorg"},
 				},
@@ -355,7 +355,7 @@ func TestService_RequireScope_OIDC(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				Rules: []oidc.Rule{
 					{BoundSubject: []string{"builder"}, Scopes: []oidc.Scope{oidc.ScopeWrite}},
 					{BoundSubject: []string{"ops"}, Scopes: []oidc.Scope{oidc.ScopeAdmin}},

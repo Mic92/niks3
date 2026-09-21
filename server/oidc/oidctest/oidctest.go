@@ -11,21 +11,26 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server/oidc"
+	"github.com/Mic92/niks3/server/oidc/oidcmock"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oauth2-proxy/mockoidc"
 )
 
+const shutdownTimeout = 5 * time.Second
+
 // StartMockOIDC starts a mock OIDC server that is shut down when the test ends.
-func StartMockOIDC(t *testing.T) *mockoidc.MockOIDC {
+func StartMockOIDC(t *testing.T) *oidcmock.Server {
 	t.Helper()
 
-	m, err := mockoidc.Run()
+	m, err := oidcmock.Run(t.Context())
 	if err != nil {
 		t.Fatalf("failed to start mock OIDC server: %v", err)
 	}
 
 	t.Cleanup(func() {
-		if err := m.Shutdown(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		if err := m.Shutdown(ctx); err != nil {
 			t.Errorf("failed to shutdown mock OIDC server: %v", err)
 		}
 	})
@@ -35,7 +40,7 @@ func StartMockOIDC(t *testing.T) *mockoidc.MockOIDC {
 
 // SignToken creates a JWT signed by the mock server's keypair, filling in
 // required OIDC claims that are not set explicitly.
-func SignToken(t *testing.T, m *mockoidc.MockOIDC, claims jwt.MapClaims) string {
+func SignToken(t *testing.T, m *oidcmock.Server, claims jwt.MapClaims) string {
 	t.Helper()
 
 	if _, ok := claims["iss"]; !ok {
@@ -43,19 +48,21 @@ func SignToken(t *testing.T, m *mockoidc.MockOIDC, claims jwt.MapClaims) string 
 	}
 
 	if _, ok := claims["aud"]; !ok {
-		claims["aud"] = m.Config().ClientID
+		claims["aud"] = m.ClientID
 	}
 
 	if _, ok := claims["sub"]; !ok {
 		claims["sub"] = "test-subject"
 	}
 
+	now := time.Now()
+
 	if _, ok := claims["iat"]; !ok {
-		claims["iat"] = m.Now().Unix()
+		claims["iat"] = now.Unix()
 	}
 
 	if _, ok := claims["exp"]; !ok {
-		claims["exp"] = m.Now().Add(time.Hour).Unix()
+		claims["exp"] = now.Add(time.Hour).Unix()
 	}
 
 	token, err := m.Keypair.SignJWT(claims)

@@ -16,7 +16,7 @@ func TestScopes_LegacyProviderDefaultsToWrite(t *testing.T) {
 	ctx, v := oidctest.NewValidator(t, oidc.Config{
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
-			"test": {Issuer: m.Issuer(), Audience: m.Config().ClientID, BoundSubject: []string{"ci:*"}},
+			"test": {Issuer: m.Issuer(), Audience: m.ClientID, BoundSubject: []string{"ci:*"}},
 		},
 	})
 
@@ -39,7 +39,7 @@ func TestScopes_Rules(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				Rules: []oidc.Rule{
 					{BoundSubject: []string{"sa:ci:*"}, Scopes: []oidc.Scope{oidc.ScopeWrite}},
 					{BoundSubject: []string{"sa:ops:gc"}, Scopes: []oidc.Scope{oidc.ScopeAdmin}},

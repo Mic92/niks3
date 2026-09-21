@@ -19,7 +19,7 @@ func TestCreatePin_ReservedPins(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				Rules: []oidc.Rule{
 					{BoundSubject: []string{"ci:*"}, Scopes: []oidc.Scope{oidc.ScopeWrite}},
 					{BoundSubject: []string{"ci:main"}, Scopes: []oidc.Scope{oidc.ScopeWrite}, Pins: []string{"worker-*"}},

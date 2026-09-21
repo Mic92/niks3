@@ -19,6 +19,8 @@ let
     cmd-niks3 = ../../cmd/niks3;
     cmd-niks3-server = ../../cmd/niks3-server;
     cmd-niks3-hook = ../../cmd/niks3-hook;
+    oidcmock = ../../server/oidc/oidcmock;
+    cmd-mock-oidc-server = ../../cmd/mock-oidc-server;
   };
 in
 {
@@ -26,6 +28,7 @@ in
   vendorHashServer = lib.fileContents ./goVendorHash-server.txt;
   vendorHashHook = lib.fileContents ./goVendorHash-hook.txt;
   vendorHashTests = lib.fileContents ./goVendorHash-tests.txt;
+  vendorHashMockOIDC = lib.fileContents ./goVendorHash-mock-oidc-server.txt;
 
   inherit root srcs;
 

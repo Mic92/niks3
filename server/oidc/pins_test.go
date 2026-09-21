@@ -19,7 +19,7 @@ func TestPins_ReservedForMatchingRule(t *testing.T) {
 		Providers: map[string]*oidc.ProviderConfig{
 			"test": {
 				Issuer:   m.Issuer(),
-				Audience: m.Config().ClientID,
+				Audience: m.ClientID,
 				Rules: []oidc.Rule{
 					{BoundSubject: []string{"repo:org/*"}, Scopes: []oidc.Scope{oidc.ScopeWrite}},
 					{BoundSubject: []string{"repo:org/infra:main"}, Scopes: []oidc.Scope{oidc.ScopeWrite}, Pins: []string{"worker-*"}},
@@ -58,7 +58,7 @@ func TestPins_TopLevelShorthand(t *testing.T) {
 	ctx, v := oidctest.NewValidator(t, oidc.Config{
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
-			"test": {Issuer: m.Issuer(), Audience: m.Config().ClientID, BoundSubject: []string{"ci:main"}, Pins: []string{"release"}},
+			"test": {Issuer: m.Issuer(), Audience: m.ClientID, BoundSubject: []string{"ci:main"}, Pins: []string{"release"}},
 		},
 	})
 

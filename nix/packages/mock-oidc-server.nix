@@ -1,10 +1,27 @@
-{ pkgs }:
+# Mock OIDC provider used by the NixOS integration tests.
+{
+  pkgs,
+  lib,
+}:
+
+let
+  common = import ./niks3-src.nix { inherit lib; };
+in
 pkgs.buildGoModule {
   pname = "mock-oidc-server";
   version = "0.1.0";
-  src = ./mock-oidc-server;
+  vendorHash = common.vendorHashMockOIDC;
 
-  vendorHash = "sha256-nP/1rHixcx8xCN2VkRISU21oYuVMvoK727dxx/vVQA8=";
+  src = lib.fileset.toSource {
+    inherit (common) root;
+    fileset = lib.fileset.unions [
+      common.commonFiles
+      common.srcsNoTests.oidcmock
+      common.srcsNoTests.cmd-mock-oidc-server
+    ];
+  };
+
+  subPackages = [ "cmd/mock-oidc-server" ];
 
   doCheck = false;
 
