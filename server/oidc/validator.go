@@ -66,6 +66,8 @@ type ValidatedClaims struct {
 	Provider string
 	// Scopes is the union of scopes of all matching rules.
 	Scopes []Scope
+	// Pins are the pin patterns that the matching rules reserve for this token.
+	Pins []string
 	// RawClaims contains all claims for logging/debugging
 	RawClaims map[string]any
 }
@@ -191,6 +193,19 @@ func (v *Validator) GrantsScope(s Scope) bool {
 	return false
 }
 
+// ReservesPin reports whether any configured rule reserves pin name.
+func (v *Validator) ReservesPin(name string) bool {
+	for _, p := range v.config.Providers {
+		for _, r := range p.effectiveRules() {
+			if GlobMatchAny(r.Pins, name) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // AudienceForIssuer returns the configured audience for the given issuer URL,
 // and whether a provider is configured for that issuer.
 func (v *Validator) AudienceForIssuer(issuer string) (string, bool) {
@@ -233,7 +248,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			}
 		}
 
-		scopes, err := matchRules(claims, pv.config.effectiveRules())
+		scopes, pins, err := matchRules(claims, pv.config.effectiveRules())
 		if err != nil {
 			slog.Debug("No rule matched", "provider", pv.config.Name(), "error", err)
 
@@ -250,6 +265,7 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 			Issuer:    issuer,
 			Provider:  pv.config.Name(),
 			Scopes:    scopes,
+			Pins:      pins,
 			RawClaims: claims,
 		}, nil
 	}

@@ -12,11 +12,12 @@ func (c *ValidatedClaims) Has(s Scope) bool {
 	return slices.Contains(c.Scopes, s)
 }
 
-// matchRules returns the union of scopes of all matching rules, or the first
-// rule's mismatch reason if none match.
-func matchRules(claims map[string]any, rules []Rule) ([]Scope, error) {
+// matchRules returns the union of scopes and pin patterns of all matching
+// rules, or the first rule's mismatch reason if none match.
+func matchRules(claims map[string]any, rules []Rule) ([]Scope, []string, error) {
 	var (
 		scopes   []Scope
+		pins     []string
 		firstErr error
 	)
 
@@ -39,13 +40,15 @@ func matchRules(claims map[string]any, rules []Rule) ([]Scope, error) {
 				scopes = append(scopes, s)
 			}
 		}
+
+		pins = append(pins, r.Pins...)
 	}
 
 	if len(scopes) == 0 {
-		return nil, fmt.Errorf("no rule matched: %w", firstErr)
+		return nil, nil, fmt.Errorf("no rule matched: %w", firstErr)
 	}
 
-	return scopes, nil
+	return scopes, pins, nil
 }
 
 // validateBoundClaims checks that all bound claims match.
@@ -159,6 +162,11 @@ func normalizeToStringSlice(value any) []string {
 		// Try to convert to string representation
 		return []string{fmt.Sprintf("%v", v)}
 	}
+}
+
+// GlobMatchAny reports whether any of patterns matches str.
+func GlobMatchAny(patterns []string, str string) bool {
+	return slices.ContainsFunc(patterns, func(p string) bool { return GlobMatch(p, str) })
 }
 
 // GlobMatch implements glob matching with * and ? wildcards.

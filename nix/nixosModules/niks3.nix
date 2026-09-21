@@ -69,6 +69,18 @@ let
         description = "Scopes granted when boundClaims/boundSubject match. Ignored when rules is set.";
       };
 
+      pins = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Pin names (glob patterns) reserved for boundClaims/boundSubject: a pin
+          that matches can then only be created or moved by a token this
+          provider matches, or by an admin. Other pins still need write only.
+          Ignored when rules is set.
+        '';
+        example = [ "release-*" ];
+      };
+
       rules = lib.mkOption {
         type = lib.types.listOf (
           lib.types.submodule {
@@ -83,6 +95,11 @@ let
               };
               scopes = lib.mkOption {
                 type = lib.types.nonEmptyListOf scopeType;
+              };
+              pins = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [ ];
+                description = "Pin names (glob patterns) reserved for this rule, see the top-level pins.";
               };
             };
           }
@@ -136,17 +153,26 @@ let
           // (
             if provider.rules != [ ] then
               {
-                rules = map (r: {
-                  bound_claims = r.boundClaims;
-                  bound_subject = r.boundSubject;
-                  scopes = r.scopes;
-                }) provider.rules;
+                rules = map (
+                  r:
+                  {
+                    bound_claims = r.boundClaims;
+                    bound_subject = r.boundSubject;
+                    scopes = r.scopes;
+                  }
+                  // lib.optionalAttrs (r.pins != [ ]) {
+                    inherit (r) pins;
+                  }
+                ) provider.rules;
               }
             else
               {
                 bound_claims = provider.boundClaims;
                 bound_subject = provider.boundSubject;
                 scopes = provider.scopes;
+              }
+              // lib.optionalAttrs (provider.pins != [ ]) {
+                inherit (provider) pins;
               }
           )
           // lib.optionalAttrs (provider.caFile != null) {

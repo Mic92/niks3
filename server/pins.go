@@ -47,6 +47,13 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.mayWritePin(r, name) {
+		slog.Warn("Refused reserved pin", "name", name)
+		http.Error(w, "Forbidden: pin "+name+" is reserved for another rule", http.StatusForbidden)
+
+		return
+	}
+
 	req := &createPinRequest{}
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)

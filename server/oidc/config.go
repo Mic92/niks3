@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -41,6 +43,12 @@ type Rule struct {
 	BoundClaims  map[string][]string `json:"bound_claims,omitempty"`
 	BoundSubject []string            `json:"bound_subject,omitempty"`
 	Scopes       []Scope             `json:"scopes"`
+
+	// Pins reserves pin names (glob patterns) for this rule: a pin whose
+	// name matches a pattern of any rule can then only be created or moved
+	// by a token this rule matches, or by an admin. Other pins still need
+	// write only.
+	Pins []string `json:"pins,omitempty"`
 }
 
 // ProviderConfig configures a single OIDC provider.
@@ -72,6 +80,10 @@ type ProviderConfig struct {
 	// Defaults to [write]. Mutually exclusive with Rules.
 	Scopes []Scope `json:"scopes,omitempty"`
 
+	// Pins reserved for the top-level BoundClaims/BoundSubject, see
+	// Rule.Pins. Mutually exclusive with Rules.
+	Pins []string `json:"pins,omitempty"`
+
 	// Rules grant scopes per matching rule (union). When set, the
 	// top-level BoundClaims/BoundSubject/Scopes must be empty.
 	Rules []Rule `json:"rules,omitempty"`
@@ -101,34 +113,48 @@ func (p *ProviderConfig) effectiveRules() []Rule {
 		scopes = []Scope{ScopeWrite}
 	}
 
-	return []Rule{{BoundClaims: p.BoundClaims, BoundSubject: p.BoundSubject, Scopes: scopes}}
+	return []Rule{{BoundClaims: p.BoundClaims, BoundSubject: p.BoundSubject, Scopes: scopes, Pins: p.Pins}}
 }
 
-func validateScopes(scopes []Scope) error {
-	for _, s := range scopes {
+// pinPatternRegex is pinNameRegex of the server plus the glob characters.
+var pinPatternRegex = regexp.MustCompile(`^[a-zA-Z0-9._*?-]+$`)
+
+func (r Rule) validate() error {
+	if len(r.Scopes) == 0 {
+		return errors.New("scopes must not be empty")
+	}
+
+	for _, s := range r.Scopes {
 		if !s.valid() {
 			return fmt.Errorf("unknown scope %q (want read, write or admin)", s)
 		}
+	}
+
+	for _, p := range r.Pins {
+		if !pinPatternRegex.MatchString(p) {
+			return fmt.Errorf("invalid pin pattern %q", p)
+		}
+	}
+
+	// A reservation without write would lock out everyone but admins.
+	if len(r.Pins) > 0 && !slices.Contains(r.Scopes, ScopeWrite) && !slices.Contains(r.Scopes, ScopeAdmin) {
+		return errors.New("pins need the write or admin scope")
 	}
 
 	return nil
 }
 
 func (p *ProviderConfig) validateRules() error {
-	if len(p.Rules) == 0 {
-		return validateScopes(p.Scopes)
+	if len(p.Rules) > 0 && (len(p.BoundClaims) > 0 || len(p.BoundSubject) > 0 || len(p.Scopes) > 0 || len(p.Pins) > 0) {
+		return errors.New("rules cannot be combined with top-level bound_claims/bound_subject/scopes/pins")
 	}
 
-	if len(p.BoundClaims) > 0 || len(p.BoundSubject) > 0 || len(p.Scopes) > 0 {
-		return errors.New("rules cannot be combined with top-level bound_claims/bound_subject/scopes")
-	}
+	for i, r := range p.effectiveRules() {
+		if err := r.validate(); err != nil {
+			if len(p.Rules) == 0 {
+				return err
+			}
 
-	for i, r := range p.Rules {
-		if len(r.Scopes) == 0 {
-			return fmt.Errorf("rules[%d]: scopes must not be empty", i)
-		}
-
-		if err := validateScopes(r.Scopes); err != nil {
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
 	}
