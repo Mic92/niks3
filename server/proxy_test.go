@@ -325,7 +325,7 @@ func TestReadProxyConditionalGet(t *testing.T) {
 	ctx2, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx2, "GET", ts.URL+"/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", nil)
+	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, ts.URL+"/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", nil)
 	ok(t, err)
 
 	req.Header.Set("If-None-Match", etag)

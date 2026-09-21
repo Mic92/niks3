@@ -75,6 +75,7 @@ func createTestServiceWithAuth(tb testing.TB, token string) *server.Service {
 	tb.Helper()
 	service := createTestService(tb)
 	service.APIToken = token
+
 	return service
 }
 

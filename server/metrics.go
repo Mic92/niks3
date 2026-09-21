@@ -113,21 +113,11 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// recordGC records the outcome of a garbage collection run.
-func (m *Metrics) recordGC(result string, duration time.Duration, stats api.GCStats) {
-	m.gcRuns.WithLabelValues(result).Inc()
-	m.gcDuration.Observe(duration.Seconds())
-	m.gcObjectsDeleted.Add(float64(stats.ObjectsDeletedAfterGracePeriod))
-
-	if result == "succeeded" {
-		m.gcLastRun.SetToCurrentTime()
-	}
-}
-
 // statusRecorder captures the response status for instrumentation. Unwrap lets
 // http.ResponseController reach the underlying writer (e.g. for flushing).
 type statusRecorder struct {
 	http.ResponseWriter
+
 	status int
 }
 
@@ -163,6 +153,17 @@ func (m *Metrics) Instrument(next http.Handler) http.Handler {
 // Handler serves the metrics in the Prometheus text format.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+}
+
+// recordGC records the outcome of a garbage collection run.
+func (m *Metrics) recordGC(result string, duration time.Duration, stats api.GCStats) {
+	m.gcRuns.WithLabelValues(result).Inc()
+	m.gcDuration.Observe(duration.Seconds())
+	m.gcObjectsDeleted.Add(float64(stats.ObjectsDeletedAfterGracePeriod))
+
+	if result == "succeeded" {
+		m.gcLastRun.SetToCurrentTime()
+	}
 }
 
 // recordSkippedUploads records store paths a client skipped due to the max NAR size limit.

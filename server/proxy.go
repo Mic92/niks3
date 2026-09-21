@@ -158,7 +158,7 @@ var (
 	lsRe = regexp.MustCompile(`^[` + nixBase32Alphabet + `]{32}\.ls$`)
 
 	// log: log/{name}.drv — name alphabet matches nix's nameRegexStr
-	// in src/libstore/path.cc: [A-Za-z0-9+\-._?=]
+	// in src/libstore/path.cc: [A-Za-z0-9+\-._?=].
 	logRe = regexp.MustCompile(`^log/[a-zA-Z0-9+._?=-]+\.drv$`)
 
 	// realisations: realisations/{hash-algo}:{hex}!{output}.doi
@@ -298,7 +298,7 @@ func (s *Service) handleProxyHead(w http.ResponseWriter, r *http.Request, key st
 	// from S3 would be wrong. Omit it — HTTP allows HEAD without Content-Length.
 	if !strings.HasSuffix(key, ".narinfo") {
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", objInfo.Size))
+		w.Header().Set("Content-Length", strconv.FormatInt(objInfo.Size, 10))
 	} else {
 		w.Header().Set("Content-Type", "text/x-nix-narinfo")
 	}
@@ -473,7 +473,7 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Obj
 		w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	}
 
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(plain)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(plain)
 }
