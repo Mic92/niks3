@@ -437,6 +437,14 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 	row, err := queries.GetPendingObjectByKey(r.Context(), req.ObjectKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// The registration is sent off the upload path and can arrive
+			// after the closure commit already recorded the object.
+			if present, perr := queries.GetPresentObjects(r.Context(), []string{req.ObjectKey}); perr == nil && len(present) == 1 {
+				w.WriteHeader(http.StatusNoContent)
+
+				return
+			}
+
 			http.Error(w, "object is not pending upload", http.StatusNotFound)
 
 			return

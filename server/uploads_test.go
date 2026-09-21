@@ -307,6 +307,16 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	narinfoMetadata := uploadPendingObjects(ctx, t, service, pendingClosureResponse, closureKey, narKeyFor(closureKey))
 	commitPendingClosure(t, service, pendingClosureResponse.ID, narinfoMetadata)
 
+	// The client's upload registration races the commit and may land after it.
+	lateBody, err := json.Marshal(map[string]any{"object_key": secondObject})
+	ok(t, err)
+	testRequest(t, &TestRequest{
+		method:  "POST",
+		path:    "/api/uploads/complete",
+		body:    lateBody,
+		handler: service.CompleteUploadHandler,
+	})
+
 	rr := testRequest(t, &TestRequest{
 		method:  "GET",
 		path:    "/api/closures/" + closureKey,
