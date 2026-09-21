@@ -6,6 +6,7 @@ linters:
     - depguard
     - err113
     - exhaustruct
+    - exhaustruct_v5
     - funlen
     - gocognit
     - godox
@@ -14,6 +15,7 @@ linters:
     - noinlineerr
     - lll
     - wsl
+    - wsl_v5
     - misspell
   settings:
     tagliatelle:

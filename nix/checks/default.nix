@@ -15,6 +15,16 @@ packages
 // {
   treefmt = treefmtCheck;
   golangci-lint = selfPackages.niks3-tests.overrideAttrs (old: {
+    # niks3-tests' fileset only carries go.mod, go.sum and the Go source
+    # dirs, so without this golangci-lint silently runs with its default
+    # config instead of .golangci.yml.
+    src = lib.fileset.toSource {
+      root = ../..;
+      fileset = lib.fileset.unions [
+        (lib.fileset.fromSource old.src)
+        ../../.golangci.yml
+      ];
+    };
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
     buildPhase = ''
       HOME=$TMPDIR
