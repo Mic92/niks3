@@ -293,7 +293,7 @@ func (s *Service) createPendingObjects(
 	for _, pendingObject := range pendingObjectsParams {
 		obj := objectsMap[pendingObject.Key]
 
-		if obj.Type == "nar" {
+		if obj.Type == objectTypeNar {
 			var narSize uint64
 			if obj.NarSize != nil {
 				narSize = *obj.NarSize
@@ -332,7 +332,7 @@ func (s *Service) createPendingObjects(
 				return fmt.Errorf("failed to create multipart upload %q: %w", task.key, err)
 			}
 
-			po.Type = "nar"
+			po.Type = objectTypeNar
 
 			mu.Lock()
 			result[task.key] = po

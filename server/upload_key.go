@@ -2,6 +2,17 @@ package server
 
 import "strings"
 
+// Object types a client may declare for an upload. They select the key
+// pattern in IsValidUploadKey and the upload strategy in the pending
+// closure handler.
+const (
+	objectTypeNarinfo     = "narinfo"
+	objectTypeNar         = "nar"
+	objectTypeListing     = "listing"
+	objectTypeBuildLog    = "build_log"
+	objectTypeRealisation = "realisation"
+)
+
 // IsValidUploadKey reports whether a client may request a presigned upload
 // for the given object key and declared type.
 //
@@ -22,15 +33,15 @@ func IsValidUploadKey(key, objType string) bool {
 	}
 
 	switch objType {
-	case "narinfo":
+	case objectTypeNarinfo:
 		return narinfoRe.MatchString(key)
-	case "nar":
+	case objectTypeNar:
 		return narRe.MatchString(key)
-	case "listing":
+	case objectTypeListing:
 		return lsRe.MatchString(key)
-	case "build_log":
+	case objectTypeBuildLog:
 		return logRe.MatchString(key)
-	case "realisation":
+	case objectTypeRealisation:
 		return realisationsRe.MatchString(key)
 	default:
 		return false

@@ -182,7 +182,7 @@ func (s *Service) getValidMultipartUpload(w http.ResponseWriter, r *http.Request
 	}
 
 	// Multipart uploads are only ever created for NAR objects.
-	if !IsValidUploadKey(objectKey, "nar") {
+	if !IsValidUploadKey(objectKey, objectTypeNar) {
 		http.Error(w, fmt.Sprintf("invalid object key %q", objectKey), http.StatusBadRequest)
 
 		return pg.MultipartUpload{}, false

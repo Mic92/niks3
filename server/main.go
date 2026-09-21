@@ -38,6 +38,15 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// getEnvOrDefaultBool treats any value other than "true" as false.
+func getEnvOrDefaultBool(key string, defaultValue bool) bool {
+	if value, ok := os.LookupEnv(key); ok {
+		return value == "true"
+	}
+
+	return defaultValue
+}
+
 func getEnvOrDefaultInt(key string, defaultValue int) int {
 	if value, ok := os.LookupEnv(key); ok {
 		if intVal, err := strconv.Atoi(value); err == nil {
@@ -170,8 +179,8 @@ func parseArgs() (*options, error) {
 			"Defaults to --s3-endpoint. Set this when the server reaches S3 via an internal address")
 	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
 	flag.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
-	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefault("NIKS3_S3_USE_SSL", "true") == "true", "Use SSL for S3")
-	flag.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefault("NIKS3_S3_USE_IAM", "false") == "true",
+	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefaultBool("NIKS3_S3_USE_SSL", true), "Use SSL for S3")
+	flag.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefaultBool("NIKS3_S3_USE_IAM", false),
 		"Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.) instead of static keys")
 	flag.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
 	flag.StringVar(&opts.S3Region, "s3-region", getEnvOrDefault("NIKS3_S3_REGION", ""), "S3 region override (e.g., us-east-1, auto)")
@@ -213,13 +222,13 @@ func parseArgs() (*options, error) {
 	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
 		"Priority advertised in nix-cache-info. Lower is preferred (cache.nixos.org uses 40)")
 	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
-		getEnvOrDefault("NIKS3_ENABLE_READ_PROXY", "false") == "true",
+		getEnvOrDefaultBool("NIKS3_ENABLE_READ_PROXY", false),
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
 	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
 		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
 		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
 			"streaming them. Requires --enable-read-proxy. 0 disables")
-	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefault("NIKS3_DEBUG", "false") == "true",
+	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefaultBool("NIKS3_DEBUG", false),
 		"Enable debug logging (may leak sensitive information)")
 
 	if opts.Debug {
