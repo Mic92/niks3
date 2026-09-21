@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -31,34 +32,22 @@ type leadStream struct {
 	done   chan struct{}
 }
 
+func scanLead(r io.Reader, lines chan<- api.LeadStatus) {
+	defer close(lines)
+
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		var st api.LeadStatus
+		if json.Unmarshal(sc.Bytes(), &st) == nil {
+			lines <- st
+		}
+	}
+}
+
 func openLead(t *testing.T, s *server.Service) *leadStream {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(t.Context())
-	pr, pw := io.Pipe()
-	ls := &leadStream{t: t, cancel: cancel, lines: make(chan api.LeadStatus, 64), done: make(chan struct{})}
-
-	go func() {
-		defer close(ls.done)
-		defer func() { _ = pw.Close() }()
-
-		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/farm/lead", nil)
-		s.LeadHandler(&pipeWriter{PipeWriter: pw, header: http.Header{}}, r)
-	}()
-
-	go func() {
-		defer close(ls.lines)
-
-		sc := bufio.NewScanner(pr)
-		for sc.Scan() {
-			var st api.LeadStatus
-			if json.Unmarshal(sc.Bytes(), &st) == nil {
-				ls.lines <- st
-			}
-		}
-	}()
-
-	return ls
+	return openLeadAs(t, s, false)
 }
 
 func (l *leadStream) next() api.LeadStatus {
@@ -126,6 +115,56 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 	c.until(api.LeadStatus{Lead: false})
 	c.close()
 	b.close()
+}
+
+func openLeadAs(t *testing.T, s *server.Service, incumbent bool) *leadStream {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	pr, pw := io.Pipe()
+	ls := &leadStream{t: t, cancel: cancel, lines: make(chan api.LeadStatus, 64), done: make(chan struct{})}
+
+	go func() {
+		defer close(ls.done)
+		defer func() { _ = pw.Close() }()
+
+		body, err := json.Marshal(api.LeadRequest{Incumbent: incumbent})
+		if err != nil {
+			panic(err)
+		}
+
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/farm/lead", bytes.NewReader(body))
+		s.LeadHandler(&pipeWriter{PipeWriter: pw, header: http.Header{}}, r)
+	}()
+
+	go scanLead(pr, ls.lines)
+
+	return ls
+}
+
+// After a restart the previous leader gets the lock back even if a standby
+// reconnects first.
+func TestLeadIncumbentWinsAfterRestart(t *testing.T) { //nolint:paralleltest // mutates startedAt
+	s := createTestService(t)
+	defer s.Close()
+
+	server.RestartedNow(10 * server.LeadHeartbeat())
+
+	standby := openLeadAs(t, s, false)
+	standby.until(api.LeadStatus{Lead: false})
+
+	incumbent := openLeadAs(t, s, true)
+	incumbent.until(api.LeadStatus{Lead: true})
+
+	for range 12 {
+		if st := standby.next(); st.Lead {
+			t.Fatalf("standby took the lock from the incumbent")
+		}
+	}
+
+	incumbent.close()
+	standby.until(api.LeadStatus{Lead: true})
+	standby.close()
 }
 
 func TestLeadEndsOnShutdown(t *testing.T) {

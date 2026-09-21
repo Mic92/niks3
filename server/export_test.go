@@ -68,4 +68,15 @@ func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
 }
 
-func init() { leadHeartbeat = 50 * time.Millisecond } //nolint:gochecknoinits // fast lead tests
+func init() { //nolint:gochecknoinits // fast lead tests
+	leadHeartbeat = 50 * time.Millisecond
+	incumbentGrace = 0
+}
+
+func LeadHeartbeat() time.Duration { return leadHeartbeat }
+
+// RestartedNow makes the lead handler behave as if the server just started.
+func RestartedNow(grace time.Duration) {
+	startedAt = time.Now()
+	incumbentGrace = grace
+}

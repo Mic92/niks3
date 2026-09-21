@@ -13,8 +13,13 @@ import (
 
 const farmLeadLockKey int64 = 0x6e696b73336c64 // "niks3ld"
 
-//nolint:gochecknoglobals // tests shorten it
-var leadHeartbeat = 5 * time.Second
+//nolint:gochecknoglobals // tests shorten them
+var (
+	leadHeartbeat = 5 * time.Second
+	// How long after start a non-incumbent holds back from taking the lock.
+	incumbentGrace = 10 * time.Second
+	startedAt      = time.Now()
+)
 
 // tryLead takes the session advisory lock on a dedicated connection, so the
 // lock lives exactly as long as that connection. A nil conn means someone
@@ -40,6 +45,16 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
 // Leadership ends when the stream, this process or Postgres goes away.
 func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
+
+	var req api.LeadRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	holdBack := time.Time{}
+	if !req.Incumbent {
+		holdBack = startedAt.Add(incumbentGrace)
+	}
 
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -69,7 +84,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		if conn == nil {
+		if conn == nil && !time.Now().Before(holdBack) {
 			var err error
 			if conn, err = tryLead(ctx, s.Pool); err != nil {
 				slog.Error("lead", "error", err)
@@ -80,7 +95,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 			if conn != nil {
 				slog.Info("lead: acquired", "remote", r.RemoteAddr)
 			}
-		} else if conn.Ping(ctx) != nil {
+		} else if conn != nil && conn.Ping(ctx) != nil {
 			return
 		}
 
