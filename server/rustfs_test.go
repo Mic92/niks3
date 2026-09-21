@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,29 +193,28 @@ func startRustfsServer(ctx context.Context) (*rustfsServer, error) {
 		return nil, fmt.Errorf("failed to start rustfs: %w", err)
 	}
 
-	// wait for server to start
-	dialer := net.Dialer{}
+	// The port opens before storage is usable ("waiting for storage_quorum").
+	readyURL := fmt.Sprintf("http://localhost:%d/health/ready", port)
 
-	for range 200 {
-		// Check if context has been cancelled/timed out
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("timeout waiting for rustfs server to start: %w", ctx.Err())
+	for {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, nil)
+		if reqErr != nil {
+			return nil, fmt.Errorf("rustfs readiness request: %w", reqErr)
 		}
 
-		var conn net.Conn
-
-		conn, err = dialer.DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
-		if err == nil {
-			_ = conn.Close()
-
-			break
+		resp, respErr := http.DefaultClient.Do(req)
+		if respErr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
 		}
 
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to rustfs server: %w", err)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting for rustfs to become ready: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	server := &rustfsServer{
