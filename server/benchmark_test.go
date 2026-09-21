@@ -72,7 +72,8 @@ func benchmarkUploadClosure(ctx context.Context, b *testing.B, projectRoot, flak
 	for b.Loop() {
 		// Start fresh services for each iteration (don't count setup time)
 		b.StopTimer()
-		testService := createTestServiceWithAuth(b, testAuthToken)
+		// The service lifetime follows b, not the nix build context.
+		testService := createTestServiceWithAuth(b, testAuthToken) //nolint:contextcheck
 
 		// Initialize the bucket with nix-cache-info
 		err := testService.InitializeBucket(ctx)

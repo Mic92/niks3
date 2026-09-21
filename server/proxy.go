@@ -475,7 +475,7 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Obj
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(plain)
+	_, _ = w.Write(plain) //nolint:gosec // served as text/x-nix-narinfo, never rendered as HTML
 }
 
 // setProxyHeaders sets response headers from S3 object metadata.

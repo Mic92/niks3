@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,7 +27,9 @@ const (
 // optionalSize maps a reported size to a nullable column; nil stays NULL and is
 // excluded from byte totals.
 func optionalSize(size *uint64) pgtype.Int8 {
-	if size == nil {
+	// A size beyond int64 cannot be stored in the BIGINT column; treat it as
+	// unknown rather than wrapping around.
+	if size == nil || *size > math.MaxInt64 {
 		return pgtype.Int8{}
 	}
 

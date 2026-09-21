@@ -162,7 +162,8 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.IsNew {
-		go s.runGarbageCollection(result.Task, age, pendingAge, force)
+		// Deliberately not derived from r.Context(): see runGarbageCollection.
+		go s.runGarbageCollection(result.Task, age, pendingAge, force) //nolint:contextcheck
 	}
 
 	writeJSONStatus(w, http.StatusAccepted, result.Status)

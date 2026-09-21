@@ -143,28 +143,15 @@ func (s *Service) removeS3Objects(ctx context.Context,
 	var s3Errors, batchErrors []error
 
 	for result := range s.MinioClient.RemoveObjectsWithResult(ctx, s.Bucket, objectCh, opts) {
-		if result.Err != nil {
+		switch {
+		case result.Err == nil:
+			s.S3RateLimiter.RecordSuccess()
+		case isRateLimitError(result.Err):
 			// Track rate limit errors to enable adaptive rate limiting
-			if isRateLimitError(result.Err) {
-				s.S3RateLimiter.RecordThrottle()
-			}
+			s.S3RateLimiter.RecordThrottle()
+		}
 
-			// If object doesn't exist in S3, treat it as successfully deleted
-			// to maintain consistency between S3 and database
-			if minio.ToErrorResponse(result.Err).Code == minio.NoSuchKey {
-				var err error
-
-				deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)
-				if err != nil {
-					batchErrors = append(batchErrors, err)
-				}
-
-				stats.DeletedCount++
-				notifyProgress()
-
-				continue
-			}
-
+		if result.Err != nil && minio.ToErrorResponse(result.Err).Code != minio.NoSuchKey {
 			var (
 				newS3Errors []error
 				err         error
@@ -183,8 +170,8 @@ func (s *Service) removeS3Objects(ctx context.Context,
 			continue
 		}
 
-		s.S3RateLimiter.RecordSuccess()
-
+		// Deleted, or already absent from S3: either way the object is gone,
+		// so drop the database row to keep S3 and the database consistent.
 		var err error
 
 		deletedKeys, err = handleDeletedObject(ctx, result.ObjectName, deletedKeys, queries)

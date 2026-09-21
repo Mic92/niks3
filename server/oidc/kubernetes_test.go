@@ -68,7 +68,7 @@ func TestValidateToken_KubernetesServiceAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const discoveryToken = "niks3-own-serviceaccount-token"
+	const discoveryToken = "niks3-own-serviceaccount-token" //nolint:gosec // test fixture, not a credential
 
 	srv := kubeAPIServer(t, kp, discoveryToken)
 	dir := t.TempDir()
