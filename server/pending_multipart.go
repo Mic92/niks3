@@ -86,7 +86,7 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 
 	// Wait for rate limiter
 	if err := s.S3RateLimiter.Wait(ctx); err != nil {
-		return PendingObject{}, err
+		return PendingObject{}, fmt.Errorf("rate limiter: %w", err)
 	}
 
 	// Initiate multipart upload
@@ -140,7 +140,7 @@ func (s *Service) generatePartURLs(ctx context.Context, objectKey, uploadID stri
 
 		// Wait for rate limiter
 		if err := s.S3RateLimiter.Wait(ctx); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("rate limiter: %w", err)
 		}
 
 		// Use Client.Presign with query parameters for multipart

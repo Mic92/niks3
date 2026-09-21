@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -181,7 +182,7 @@ func (s *Service) refreshInventory(ctx context.Context) error {
 
 	stats, err := queries.GetObjectStats(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("get object stats: %w", err)
 	}
 
 	s.Metrics.cacheObjects.Set(float64(stats.ObjectCount))
@@ -189,7 +190,7 @@ func (s *Service) refreshInventory(ctx context.Context) error {
 
 	pending, err := queries.CountPendingClosures(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("count pending closures: %w", err)
 	}
 
 	s.Metrics.pendingClosures.Set(float64(pending))

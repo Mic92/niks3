@@ -30,7 +30,7 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	for _, upload := range uploads {
 		eg.Go(func() error {
 			if err := s.S3RateLimiter.Wait(egCtx); err != nil {
-				return err
+				return fmt.Errorf("rate limiter: %w", err)
 			}
 
 			if err := coreClient.AbortMultipartUpload(egCtx, s.Bucket, upload.ObjectKey, upload.UploadID); err != nil {
@@ -41,7 +41,7 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 				if errResp := minio.ToErrorResponse(err); errResp.Code != minio.NoSuchUpload {
 					slog.Warn("Failed to abort upload", "key", upload.ObjectKey, "error", err, "code", errResp.Code)
 				} else if errors.Is(err, context.Canceled) {
-					return err
+					return fmt.Errorf("abort upload %q: %w", upload.ObjectKey, err)
 				}
 			} else {
 				s.S3RateLimiter.RecordSuccess()
