@@ -137,6 +137,52 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
+	keys := make([]string, 0, len(objectsMap))
+	for k := range objectsMap {
+		keys = append(keys, k)
+	}
+
+	// The existence check and the optional S3 verification run before the
+	// transaction: they gained nothing from being inside it (READ COMMITTED
+	// snapshots per statement anyway), and the S3 round trips must not hold
+	// a pool connection, or a few verifying pushes starve every other handler.
+	existingObjects, err := pg.New(pool).GetExistingObjects(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing objects: %w", err)
+	}
+
+	// Objects the database considers live. Tombstoned objects are excluded:
+	// GC may already have removed them from S3, so they are uploaded again.
+	present := make(map[string]bool, len(existingObjects))
+
+	for _, existingObject := range existingObjects {
+		if !existingObject.DeletedAt.Valid {
+			present[existingObject.Key] = true
+		}
+	}
+
+	// Verify that objects the DB says exist actually exist in S3 (if requested)
+	if verifyS3 && len(present) > 0 {
+		keysToVerifyInS3 := make([]string, 0, len(present))
+		for key := range present {
+			keysToVerifyInS3 = append(keysToVerifyInS3, key)
+		}
+
+		missingFromS3, err := s.checkS3ObjectsExist(ctx, keysToVerifyInS3)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify objects in S3: %w", err)
+		}
+
+		if len(missingFromS3) > 0 {
+			slog.Warn("Found objects in DB but missing from S3, will re-upload",
+				"count", len(missingFromS3))
+
+			for missingKey := range missingFromS3 {
+				delete(present, missingKey)
+			}
+		}
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -160,50 +206,6 @@ func createPendingClosureInner(
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
-	}
-
-	keys := make([]string, 0, len(objectsMap))
-	for k := range objectsMap {
-		keys = append(keys, k)
-	}
-
-	var existingObjects []pg.GetExistingObjectsRow
-
-	if existingObjects, err = queries.GetExistingObjects(ctx, keys); err != nil {
-		return nil, fmt.Errorf("failed to get existing objects: %w", err)
-	}
-
-	// Objects the database considers live. Tombstoned objects are excluded:
-	// GC may already have removed them from S3, so they are uploaded again.
-	present := make(map[string]bool, len(existingObjects))
-
-	for _, existingObject := range existingObjects {
-		if !existingObject.DeletedAt.Valid {
-			present[existingObject.Key] = true
-		}
-	}
-
-	// Verify that objects the DB says exist actually exist in S3 (if requested)
-	if verifyS3 && len(present) > 0 {
-		keysToVerifyInS3 := make([]string, 0, len(present))
-		for key := range present {
-			keysToVerifyInS3 = append(keysToVerifyInS3, key)
-		}
-
-		var missingFromS3 map[string]bool
-
-		if missingFromS3, err = s.checkS3ObjectsExist(ctx, keysToVerifyInS3); err != nil {
-			return nil, fmt.Errorf("failed to verify objects in S3: %w", err)
-		}
-
-		if len(missingFromS3) > 0 {
-			slog.Warn("Found objects in DB but missing from S3, will re-upload",
-				"count", len(missingFromS3))
-
-			for missingKey := range missingFromS3 {
-				delete(present, missingKey)
-			}
-		}
 	}
 
 	// Every object of the closure gets a pending_objects row, whether or not
