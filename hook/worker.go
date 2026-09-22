@@ -172,7 +172,10 @@ func (w *Worker) step(ctx context.Context) ([]string, bool) {
 	var existing, gced, unreadable []string
 
 	for _, p := range paths {
-		_, err := os.Stat(p)
+		// Lstat: a store path may itself be a symlink, and its target need
+		// not exist for the path to be valid (or even for it to be a symlink
+		// into the store). Following it would drop such a path as collected.
+		_, err := os.Lstat(p)
 
 		switch {
 		case err == nil:
