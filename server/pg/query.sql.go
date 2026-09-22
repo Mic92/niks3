@@ -31,6 +31,7 @@ inserted_objects AS (
         cutoff_time.time
     FROM pending_objects AS po
     JOIN old_closures oc ON po.pending_closure_id = oc.id, cutoff_time
+    ORDER BY po.key
     ON CONFLICT (key) DO NOTHING
     RETURNING key
 ),
@@ -48,7 +49,8 @@ WHERE pending_closures.id = old_closures.id
 `
 
 // Insert pending objects into objects table if they don't already exist
-// We mark them as deleted so they can be cleaned up later
+// We mark them as deleted so they can be cleaned up later. Key order keeps
+// row locking consistent with commit_pending_closure.
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
@@ -633,6 +635,7 @@ stale_objects AS (
             WHERE po.key = o.key
         )
         AND o.deleted_at IS NULL  -- Only mark fresh objects
+    ORDER BY o.key  -- lock in key order, like commit_pending_closure
     FOR UPDATE
 )
 UPDATE objects

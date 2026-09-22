@@ -20,10 +20,13 @@ BEGIN
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
-    -- Commit the pending objects with their references
+    -- Commit the pending objects with their references. Rows are upserted in
+    -- key order so concurrent commits of closures that share objects take
+    -- their row locks in the same order and cannot deadlock.
     INSERT INTO objects (key, refs, size)
     SELECT key, refs, size FROM pending_objects
     WHERE pending_closure_id = closure_id
+    ORDER BY key
     ON CONFLICT (key)
     DO UPDATE SET
         -- If object exists, merge references (union of arrays, removing duplicates)
