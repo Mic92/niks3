@@ -311,14 +311,13 @@ func GetStorePathHash(storePath string) (string, error) {
 }
 
 // QueryRealisations queries realisations from Nix's local database using `nix realisation info`.
-// It only queries paths that have the CA field set, as non-CA paths don't have realisations.
+// It only queries CA paths with a deriver: .drv files and added sources are
+// CA too, but no derivation output.
 // Returns a map from realisation key ("realisations/<id>.doi") to RealisationInfo.
 func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string]*RealisationInfo, error) {
-	// OPTIMIZATION: Only query paths that have CA field set
-	// Non-CA paths don't have realisations, so skip them
 	caPaths := make([]string, 0, len(pathInfos))
 	for _, info := range pathInfos {
-		if info.CA != nil && info.CA.String() != "" {
+		if info.CA != nil && info.CA.String() != "" && info.Deriver != nil && *info.Deriver != "" {
 			caPaths = append(caPaths, info.Path)
 		}
 	}
@@ -358,6 +357,11 @@ func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixE
 
 		// Build map: realisations/<id>.doi -> RealisationInfo
 		for _, r := range realisations {
+			// {"opaquePath": ...}: no realisation
+			if r.ID == "" {
+				continue
+			}
+
 			key := "realisations/" + r.ID + ".doi"
 			rCopy := r
 			result[key] = &rCopy
