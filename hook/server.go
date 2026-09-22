@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +22,12 @@ import (
 //	-ldflags "-X github.com/Mic92/niks3/hook.DefaultSocketPath=/custom/path"
 var DefaultSocketPath = "/run/niks3/upload-to-cache.sock" //nolint:gochecknoglobals // ldflags override
 
+// Response status values.
+const (
+	statusOK    = "ok"
+	statusError = "error"
+)
+
 // QueueFunc is called by the server to persist paths. It must return nil on success.
 type QueueFunc func(paths []string) error
 
@@ -28,6 +37,12 @@ type QueueFunc func(paths []string) error
 // the connection exists, and Serve waits for it on shutdown.
 const DefaultConnTimeout = 30 * time.Second
 
+// DefaultMaxRequestBytes bounds one request. Nix hands the hook a build's
+// output paths, a few hundred bytes each; a request larger than this is not
+// one Nix sent. Without a bound the JSON decoder buffers whatever a client
+// streams, and the socket is writable by the build users.
+const DefaultMaxRequestBytes = 16 << 20
+
 // Server listens on a unix stream socket and accepts path submissions.
 type Server struct {
 	listener  net.Listener
@@ -36,15 +51,23 @@ type Server struct {
 
 	// ConnTimeout is the deadline for handling one connection.
 	ConnTimeout time.Duration
+	// MaxRequestBytes is the most a client may send in one request.
+	MaxRequestBytes int64
+	// StoreDir, if set, is the Nix store directory every queued path must
+	// be a direct child of. Anything else is refused: the worker would stat
+	// and try to push it every round, and the hook is not a way to make the
+	// daemon read arbitrary files.
+	StoreDir string
 }
 
 // NewServer creates a Server that accepts connections on listener and calls
 // queueFunc for each batch of paths received.
 func NewServer(listener net.Listener, queueFunc QueueFunc) *Server {
 	return &Server{
-		listener:    listener,
-		queueFunc:   queueFunc,
-		ConnTimeout: DefaultConnTimeout,
+		listener:        listener,
+		queueFunc:       queueFunc,
+		ConnTimeout:     DefaultConnTimeout,
+		MaxRequestBytes: DefaultMaxRequestBytes,
 	}
 }
 
@@ -104,29 +127,62 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = conn.SetDeadline(time.Now().Add(s.ConnTimeout))
 	}
 
+	var body io.Reader = conn
+	if s.MaxRequestBytes > 0 {
+		body = io.LimitReader(conn, s.MaxRequestBytes)
+	}
+
 	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		slog.Error("Failed to decode request", "error", err)
-		writeResponse(conn, Response{Status: "error", Message: "invalid request"})
+		writeResponse(conn, Response{Status: statusError, Message: "invalid request"})
 
 		return
 	}
 
 	if len(req.Paths) == 0 {
-		writeResponse(conn, Response{Status: "ok"})
+		writeResponse(conn, Response{Status: statusOK})
 
 		return
 	}
 
+	for _, p := range req.Paths {
+		if !s.validPath(p) {
+			slog.Error("Refusing path outside the store", "path", p, "store", s.StoreDir)
+			writeResponse(conn, Response{Status: statusError, Message: "not a store path: " + p})
+
+			return
+		}
+	}
+
 	if err := s.queueFunc(req.Paths); err != nil {
 		slog.Error("Failed to queue paths", "error", err, "count", len(req.Paths))
-		writeResponse(conn, Response{Status: "error", Message: err.Error()})
+		writeResponse(conn, Response{Status: statusError, Message: err.Error()})
 
 		return
 	}
 
 	slog.Debug("Queued paths", "count", len(req.Paths))
-	writeResponse(conn, Response{Status: "ok"})
+	writeResponse(conn, Response{Status: statusOK})
+}
+
+// validPath reports whether p is a store path under s.StoreDir: absolute,
+// clean, and exactly one component below the store directory.
+func (s *Server) validPath(p string) bool {
+	if s.StoreDir == "" {
+		return true
+	}
+
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+		return false
+	}
+
+	rel, err := filepath.Rel(s.StoreDir, p)
+	if err != nil {
+		return false
+	}
+
+	return rel != "." && rel != ".." && !strings.ContainsRune(rel, filepath.Separator) && !strings.HasPrefix(rel, "..")
 }
 
 func writeResponse(conn net.Conn, resp Response) {

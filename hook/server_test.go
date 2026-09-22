@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,6 +135,79 @@ func TestServerQueueError(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// The socket is writable by the build users. A request must be bounded in
+// size, and a path that is not a store path must be refused before it
+// reaches the queue, where the worker would stat and push it every round.
+func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	var queued atomic.Int32
+
+	srv := hook.NewServer(ln, func(_ []string) error {
+		queued.Add(1)
+
+		return nil
+	})
+	srv.StoreDir = "/nix/store"
+	srv.MaxRequestBytes = 4096
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	for _, p := range []string{
+		"/etc/shadow",
+		"/nix/store",
+		"/nix/store/",
+		"/nix/store/../../etc/shadow",
+		"/nix/store/aaa/bin/sh",
+		"nix/store/aaa",
+		"/nix/storeX/aaa",
+	} {
+		if err := hook.SendPaths(socketPath, []string{p}); err == nil {
+			t.Errorf("%q was accepted as a store path", p)
+		}
+	}
+
+	if err := hook.SendPaths(socketPath, []string{"/nix/store/aaa-hello", "/nix/store/bbb-world"}); err != nil {
+		t.Errorf("store paths refused: %v", err)
+	}
+
+	// A request that streams past the limit is cut off and answered with an
+	// error rather than buffered whole.
+	huge := make([]string, 0, 200)
+	for i := range 200 {
+		huge = append(huge, "/nix/store/"+strconv.Itoa(i)+"-"+strings.Repeat("x", 100))
+	}
+
+	if err := hook.SendPaths(socketPath, huge); err == nil {
+		t.Error("oversized request was accepted")
+	}
+
+	cancel()
+	<-done
+
+	if n := queued.Load(); n != 1 {
+		t.Errorf("queue called %d times, want 1 (the valid request only)", n)
+	}
 }
 
 // TestGetListenerSocketActivation tests the systemd socket activation path.

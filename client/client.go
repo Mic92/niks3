@@ -159,6 +159,11 @@ func newHTTPClient() *http.Client {
 	return &http.Client{Transport: newTransport()}
 }
 
+// StoreDir returns the Nix store directory the client resolved at creation.
+func (c *Client) StoreDir() string {
+	return c.storeDir
+}
+
 // SetDebugHTTP enables or disables HTTP request/response logging.
 // When enabled, wraps the HTTP client transport with a logging transport.
 func (c *Client) SetDebugHTTP(enabled bool) {
