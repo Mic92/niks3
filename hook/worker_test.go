@@ -321,12 +321,19 @@ func TestWorkerSkipsGCdPaths(t *testing.T) {
 
 	q := newTestQueue(t)
 
-	// Create one real file and one nonexistent path.
+	// One real file, one nonexistent path, and one store path that is a
+	// symlink to a target that does not exist. A build output may be such a
+	// symlink; the path exists and must be pushed.
 	dir := t.TempDir()
 	existing := writeTestFile(t, dir, "existing")
 	gcedPath := filepath.Join(dir, "nonexistent")
+	dangling := filepath.Join(dir, "dangling")
 
-	if err := q.Enqueue([]string{existing, gcedPath}); err != nil {
+	if err := os.Symlink(filepath.Join(dir, "no-such-target"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Enqueue([]string{existing, gcedPath, dangling}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,9 +345,11 @@ func TestWorkerSkipsGCdPaths(t *testing.T) {
 		t.Fatalf("expected 1 push call, got %d", len(pushed))
 	}
 
-	// Only the existing path should have been pushed.
-	if len(pushed[0]) != 1 || pushed[0][0] != existing {
-		t.Errorf("expected [%s], got %v", existing, pushed[0])
+	// The existing path and the dangling symlink are pushed; only the
+	// nonexistent path is dropped as collected.
+	want := []string{existing, dangling}
+	if !slices.Equal(pushed[0], want) {
+		t.Errorf("expected %v, got %v", want, pushed[0])
 	}
 }
 
