@@ -464,6 +464,96 @@ func TestDrainTimeout(t *testing.T) {
 	}
 }
 
+// The timeout can also strike between isolation probes. The probes not yet
+// made must not be counted as failures nor have their paths moved to the back
+// of the queue: the server, not the paths, ran out of time.
+func TestDrainTimeoutDuringIsolation(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	paths := enqueueFiles(t, q, "a", "b", "c", "d")
+
+	var calls atomic.Int32
+
+	push := func(ctx context.Context, batch []string) ([]string, error) {
+		calls.Add(1)
+
+		if len(batch) > 1 {
+			return nil, errUpload // the batch itself fails at once
+		}
+
+		<-ctx.Done() // the first probe hangs until the timeout
+
+		return nil, ctx.Err()
+	}
+
+	drainWorkerTimeout(t, q, push, 4, 200*time.Millisecond)
+
+	if n := calls.Load(); n != 2 {
+		t.Errorf("expected the batch and one probe, got %d pushes", n)
+	}
+
+	if left := remaining(t, q); !slices.Equal(left, paths) {
+		t.Errorf("expected queue order untouched %v, got %v", paths, left)
+	}
+}
+
+// Shutdown must not abort a push that is in flight: the drain would only
+// start the same batch over from scratch, and under a stop timeout a large
+// closure then never completes.
+func TestShutdownFinishesInFlightPush(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+	enqueueFiles(t, q, "aaa", "bbb")
+
+	var (
+		calls   atomic.Int32
+		started = make(chan struct{})
+		release = make(chan struct{})
+		aborted atomic.Bool
+	)
+
+	push := func(ctx context.Context, paths []string) ([]string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+
+		<-release
+
+		if ctx.Err() != nil {
+			aborted.Store(true)
+
+			return nil, ctx.Err()
+		}
+
+		return paths, nil
+	}
+
+	stop := startWorker(t, q, push, 10)
+
+	<-started
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+	}()
+
+	stop() // cancels while the push is blocked, then waits for the drain
+
+	if aborted.Load() {
+		t.Error("shutdown cancelled the push in flight")
+	}
+
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected the in-flight push to complete once, got %d pushes", n)
+	}
+
+	if left := remaining(t, q); len(left) != 0 {
+		t.Errorf("expected empty queue after the push completed, got %v", left)
+	}
+}
+
 // A batch whose removal from the queue fails is not progress: treating it as
 // such spun on the same batch with no backoff and kept the drain from giving
 // up. The drain must terminate on its own here rather than run until killed.
