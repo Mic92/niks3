@@ -65,7 +65,24 @@ func (w *Worker) QueueEmpty() bool {
 
 // Run processes the queue until ctx is cancelled, then makes one final pass
 // over everything still queued (see drain).
+//
+// Pushes do not run on ctx itself: cancelling a push in flight only to have
+// the drain start the same batch over from scratch wastes the work done so
+// far, and under systemd's stop timeout can mean the batch never completes.
+// Instead cancellation stops the loop after the current step, and
+// DrainTimeout, counted from the cancellation, bounds the in-flight push and
+// the drain together.
 func (w *Worker) Run(ctx context.Context) {
+	pushCtx, cancelPush := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelPush()
+
+	stopTimer := context.AfterFunc(ctx, func() {
+		if w.DrainTimeout > 0 {
+			time.AfterFunc(w.DrainTimeout, cancelPush)
+		}
+	})
+	defer stopTimer()
+
 	backoff := time.Duration(0)
 
 	var lastQueueLog time.Time
@@ -78,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			w.drain()
+			w.drain(pushCtx)
 
 			return
 		case <-time.After(wait):
@@ -87,7 +104,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		for {
 			if ctx.Err() != nil {
-				w.drain()
+				w.drain(pushCtx)
 
 				return
 			}
@@ -100,7 +117,7 @@ func (w *Worker) Run(ctx context.Context) {
 				lastQueueLog = time.Now()
 			}
 
-			batch, progress := w.step(ctx)
+			batch, progress := w.step(pushCtx)
 			if !progress {
 				backoff = nextBackoff(backoff)
 
@@ -123,17 +140,9 @@ func (w *Worker) Run(ctx context.Context) {
 // individual paths; retried paths sort behind untried ones, so little is lost.
 //
 // Unbounded by default since systemd enforces TimeoutStopSec; DrainTimeout is
-// for unsupervised runs. Either way an external SIGKILL remains the backstop.
-func (w *Worker) drain() {
-	ctx := context.Background()
-
-	if w.DrainTimeout > 0 {
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithTimeout(ctx, w.DrainTimeout)
-		defer cancel()
-	}
-
+// for unsupervised runs and ends ctx (see Run). Either way an external SIGKILL
+// remains the backstop.
+func (w *Worker) drain(ctx context.Context) {
 	stalled := 0
 
 	for stalled < isolationProbes && ctx.Err() == nil {
@@ -239,6 +248,13 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 	failures := 0
 
 	for i, p := range batch {
+		// Cancelled mid-isolation: the remaining probes would all fail at
+		// once and, retried, move their paths behind everything else for no
+		// fault of their own.
+		if ctx.Err() != nil {
+			return len(done) > 0
+		}
+
 		if _, ok := done[p]; ok {
 			continue
 		}
@@ -251,6 +267,12 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 
 		uploaded, err := w.push(ctx, []string{p})
 		if err != nil {
+			// Same rule as for the batch: a probe cut short by cancellation
+			// says nothing about its path.
+			if ctx.Err() != nil {
+				return len(done) > 0
+			}
+
 			slog.Error("Upload failed, will retry later", "error", err, "path", p)
 			w.retry([]string{p})
 
