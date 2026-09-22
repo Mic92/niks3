@@ -90,3 +90,8 @@ func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *Multipa
 func (c *Client) RecordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
 	c.recordSignatures(narinfos, signatures)
 }
+
+// UploadNARWithListing re-exports uploadNARWithListing for the external test package.
+func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj PendingObject, lsKey string, lsObj PendingObject, pathInfo *PathInfo) error {
+	return c.uploadNARWithListing(ctx, uploadTask{key: narKey, obj: narObj}, &uploadTask{key: lsKey, obj: lsObj}, pathInfo)
+}
