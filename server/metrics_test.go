@@ -42,9 +42,17 @@ func TestMetricsInventory(t *testing.T) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	service.Metrics.Instrument(mux).ServeHTTP(
+	instrumented := service.Metrics.Instrument(mux)
+	instrumented.ServeHTTP(
 		httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil),
 	)
+
+	// Unknown methods must share one label, or clients can mint series.
+	for _, method := range []string{"BOGUS", "M1", "M2"} {
+		instrumented.ServeHTTP(
+			httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), method, "/health", nil),
+		)
+	}
 
 	rec := httptest.NewRecorder()
 	service.Metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
@@ -62,9 +70,16 @@ func TestMetricsInventory(t *testing.T) {
 		"niks3_pending_closures 0",
 		"niks3_db_connections_max",
 		`niks3_http_requests_total{method="GET",route="GET /health",status="200"} 1`,
+		`niks3_http_requests_total{method="other",route="unmatched",status="405"} 3`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("metrics output missing %q", want)
+		}
+	}
+
+	for _, unwanted := range []string{`method="BOGUS"`, `method="M1"`, `method="M2"`} {
+		if strings.Contains(string(body), unwanted) {
+			t.Errorf("metrics output labels a series with a client-chosen method: %s", unwanted)
 		}
 	}
 }
