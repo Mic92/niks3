@@ -103,11 +103,19 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 
 const deleteClosures = `-- name: DeleteClosures :execrows
 DELETE FROM closures
-WHERE closures.updated_at < $1
-  AND closures.key NOT IN (SELECT narinfo_key FROM pins)
+WHERE closures.key IN (
+    SELECT c.key FROM closures AS c
+    WHERE c.updated_at < $1
+      AND c.key NOT IN (SELECT narinfo_key FROM pins)
+    FOR UPDATE SKIP LOCKED
+)
 `
 
-// Delete old closures, but exclude any that are pinned
+// Delete old closures, but exclude any that are pinned. A row a pin request
+// holds FOR SHARE is skipped rather than waited for: the pin check above
+// would not be re-evaluated once the lock is released (the row itself is
+// unchanged), and deleting a closure whose pin has just committed fails the
+// whole statement on the foreign key. The next run sees the pin.
 func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteClosures, updatedAt)
 	if err != nil {

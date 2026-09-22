@@ -796,10 +796,59 @@ func TestPinProtectsFromGC(t *testing.T) {
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{unpinnedStorePath}, nixEnv)
 	ok(t, err)
 
-	// Create a pin for the first path
+	pinnedHash, _, _ := strings.Cut(filepath.Base(pinnedStorePath), "-")
+	unpinnedHash, _, _ := strings.Cut(filepath.Base(unpinnedStorePath), "-")
+
 	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
 
+	// A pin request in flight: the closure row is held FOR SHARE and the pin
+	// row written but not yet committed, as CreatePinHandler does around its
+	// S3 write. GC running now must neither wait on it nor fail on the pin's
+	// foreign key; it skips the closure and collects the rest.
+	pinTx, err := testService.Pool.Begin(ctx)
+	ok(t, err)
+
+	_, err = pinTx.Exec(ctx, "SELECT updated_at FROM closures WHERE key = $1 FOR SHARE", pinnedHash+".narinfo")
+	ok(t, err)
+
+	_, err = pinTx.Exec(ctx,
+		"INSERT INTO pins (name, narinfo_key, store_path) VALUES ('myapp', $1, $2)", pinnedHash+".narinfo", pinnedStorePath)
+	ok(t, err)
+
+	gcDone := make(chan error, 1)
+
+	go func() {
+		_, err := c.RunGarbageCollection(ctx, "0s", "0s", true)
+		gcDone <- err
+	}()
+
+	select {
+	case err := <-gcDone:
+		ok(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("GC blocked behind the pin request's row lock")
+	}
+
+	ok(t, pinTx.Commit(ctx))
+
+	closureCount := func(hash string) int {
+		var n int
+
+		ok(t, testService.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM closures WHERE key = $1", hash+".narinfo").Scan(&n))
+
+		return n
+	}
+
+	if n := closureCount(pinnedHash); n != 1 {
+		t.Fatalf("closure being pinned was collected (count=%d)", n)
+	}
+
+	if n := closureCount(unpinnedHash); n != 0 {
+		t.Fatalf("unpinned closure survived GC that ran during the pin request (count=%d)", n)
+	}
+
+	// Create (update) the pin for the first path through the API.
 	err = c.CreatePin(ctx, "myapp", pinnedStorePath)
 	ok(t, err)
 
@@ -817,9 +866,6 @@ func TestPinProtectsFromGC(t *testing.T) {
 	if string(pinContent) != pinnedStorePath {
 		t.Errorf("Pin content mismatch: got %q, want %q", string(pinContent), pinnedStorePath)
 	}
-
-	pinnedHash, _, _ := strings.Cut(filepath.Base(pinnedStorePath), "-")
-	unpinnedHash, _, _ := strings.Cut(filepath.Base(unpinnedStorePath), "-")
 
 	// Run garbage collection with force mode (immediate deletion)
 	_, err = c.RunGarbageCollection(ctx, "0s", "0s", true)
