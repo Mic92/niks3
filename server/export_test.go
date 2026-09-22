@@ -107,3 +107,6 @@ func (s *Service) SetTestHookBeforeProxyGet(f func()) {
 func (s *Service) SetTestHookBeforeRedundantAbort(f func()) {
 	s.testHookBeforeRedundantAbort = f
 }
+
+// ValidateS3Concurrency is an export of validateS3Concurrency for tests.
+func ValidateS3Concurrency(n int) error { return validateS3Concurrency(n) }
