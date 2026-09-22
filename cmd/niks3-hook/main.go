@@ -238,7 +238,12 @@ func runServe() error {
 	worker.DrainTimeout = *drainTimeout
 	workerDone := make(chan struct{})
 
-	workerCtx, workerCancel := context.WithCancel(ctx)
+	// Not derived from ctx: the worker's final drain must start only after
+	// Serve has returned, i.e. after every accepted connection has enqueued
+	// its paths. Cancelling both at once let the drain find an empty queue
+	// and finish while a send accepted just before the listener closed was
+	// still committing, leaving an acknowledged path behind on exit.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 
 	go func() {
