@@ -442,37 +442,6 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 	return i, err
 }
 
-const getPresentClosures = `-- name: GetPresentClosures :many
-SELECT c.key
-FROM closures AS c
-JOIN objects AS o ON o.key = c.key
-WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL
-`
-
-// Narinfo keys that are roots of a committed closure with a live object.
-// Only roots count: a narinfo that is present merely as a dependency of
-// another closure disappears with that closure, so a client that skipped
-// pushing it would lose it to GC.
-func (q *Queries) GetPresentClosures(ctx context.Context, dollar_1 []string) ([]string, error) {
-	rows, err := q.db.Query(ctx, getPresentClosures, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getPresentObjects = `-- name: GetPresentObjects :many
 SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL
@@ -719,14 +688,39 @@ func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompl
 	return err
 }
 
-const touchClosures = `-- name: TouchClosures :exec
-UPDATE closures SET updated_at = timezone('UTC', now())
-WHERE key = any($1::varchar [])
+const touchPresentClosures = `-- name: TouchPresentClosures :many
+UPDATE closures AS c
+SET updated_at = timezone('UTC', now())
+FROM objects AS o
+WHERE o.key = c.key AND c.key = any($1::varchar []) AND o.deleted_at IS NULL
+RETURNING c.key
 `
 
-func (q *Queries) TouchClosures(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, touchClosures, dollar_1)
-	return err
+// Narinfo keys that are roots of a committed closure with a live object,
+// with their age refreshed in the same statement. Only roots count: a
+// narinfo that is present merely as a dependency of another closure
+// disappears with that closure, so a client that skipped pushing it would
+// lose it to GC. Check and refresh are one UPDATE so a closure that
+// concurrent GC is deleting is not reported: the UPDATE waits for the
+// delete's row lock and then finds no row to return.
+func (q *Queries) TouchPresentClosures(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, touchPresentClosures, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertPin = `-- name: UpsertPin :exec
