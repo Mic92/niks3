@@ -277,12 +277,20 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			partURL, partData := partURLs[partNumber-1], buffer[:n]
 
 			g.Go(func() error {
-				defer func() { release(); <-slots }()
+				defer func() { <-slots }()
 
 				etag, err := c.uploadPart(gctx, partURL, partData)
 				if err != nil {
+					// Not released: on an early error response the transport
+					// may still be copying the request body from this buffer
+					// after Do has returned, and the next part read into a
+					// pooled buffer would race it. Let the GC have this one.
 					return fmt.Errorf("uploading part %d: %w", partNumber, err)
 				}
+
+				// A 2xx means S3 read the whole part, so the transport is
+				// done with the buffer.
+				release()
 
 				mu.Lock()
 				defer mu.Unlock()
