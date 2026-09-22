@@ -22,10 +22,11 @@ BEGIN
     ON CONFLICT (key)
     DO UPDATE SET updated_at = now;
 
-    -- Commit the pending objects with their references
+    -- Commit the pending objects. Byte order avoids deadlocks and is faster.
     INSERT INTO objects (key, refs, size)
     SELECT key, refs, size FROM pending_objects
     WHERE pending_closure_id = closure_id
+    ORDER BY key COLLATE "C"
     ON CONFLICT (key)
     DO UPDATE SET
         -- If object exists, merge references (union of arrays, removing duplicates)
