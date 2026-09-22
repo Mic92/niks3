@@ -95,11 +95,16 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 
 const deleteClosures = `-- name: DeleteClosures :execrows
 DELETE FROM closures
-WHERE closures.updated_at < $1
-  AND closures.key NOT IN (SELECT narinfo_key FROM pins)
+WHERE closures.key IN (
+    SELECT c.key FROM closures AS c
+    WHERE c.updated_at < $1
+      AND c.key NOT IN (SELECT narinfo_key FROM pins)
+    FOR UPDATE SKIP LOCKED
+)
 `
 
-// Delete old closures, but exclude any that are pinned
+// Delete old closures, except pinned ones. Skip a closure a pin request holds.
+// Waiting would delete it despite the new pin and fail on the foreign key.
 func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteClosures, updatedAt)
 	if err != nil {
