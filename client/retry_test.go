@@ -82,3 +82,43 @@ func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 		t.Fatalf("expected 3 attempts, got %d", got)
 	}
 }
+
+// The last retryable response is returned to the caller with its body intact,
+// so error messages carry the server's explanation.
+func TestDoWithRetry_FinalResponseBodyReadable(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "slow down", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := client.NewTestClient(srv.Client(), client.RetryConfig{
+		MaxRetries:     1,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     10 * time.Millisecond,
+		Multiplier:     1.0,
+		Jitter:         0,
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.DoWithRetry(context.Background(), req)
+	if err != nil {
+		t.Fatalf("DoWithRetry failed: %v", err)
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading final response body: %v", err)
+	}
+
+	if got := string(bytes.TrimSpace(body)); got != "slow down" {
+		t.Fatalf("final response body = %q, want the server's message", got)
+	}
+}

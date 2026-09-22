@@ -257,16 +257,10 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		lastResp = resp
 
 		// Determine if we should retry
-		var shouldRetry bool
-		if err != nil {
-			shouldRetry = isRetryableError(err)
-		} else {
-			shouldRetry = true
-			// Close the response body before retrying
-			closeResponseBody(resp.Body)
-		}
+		shouldRetry := err == nil || isRetryableError(err)
 
-		// Check if we've exhausted retries
+		// Check if we've exhausted retries. The last response is handed back
+		// with its body open so the caller can read the server's explanation.
 		if !shouldRetry || attempt == c.Retry.MaxRetries {
 			if err != nil {
 				return nil, fmt.Errorf("request failed after retries: %w", err)
@@ -275,33 +269,12 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 			return resp, nil
 		}
 
-		// For throttle responses (429/503), the rate limiter already
-		// recorded the backoff. Skip the exponential delay and let
-		// Wait() at the top of the next iteration pace the retry.
-		// Still honour Retry-After, since the server may request a
-		// longer delay than the rate limiter would impose.
-		isThrottle := err == nil &&
-			(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable)
-		limiterActive := limiter != nil && limiter.IsEnabled()
-
-		var backoff time.Duration
-
-		switch {
-		case isThrottle && limiterActive:
-			// Rate limiter handles pacing; only honour explicit Retry-After
-			if resp != nil {
-				backoff = retryAfterDuration(resp)
-			}
-		default:
-			// Network errors, 500s, etc: exponential backoff
-			backoff = c.Retry.calculateBackoff(attempt)
-
-			if resp != nil {
-				if ra := retryAfterDuration(resp); ra > backoff {
-					backoff = ra
-				}
-			}
+		if err == nil {
+			// Close the response body before retrying
+			closeResponseBody(resp.Body)
 		}
+
+		backoff := c.retryBackoff(attempt, resp, limiter)
 
 		// Log retry attempt
 		if err != nil {
@@ -340,6 +313,29 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 	}
 
 	return lastResp, nil
+}
+
+// retryBackoff picks the delay before the next attempt. Throttle responses
+// (429/503) are paced by the rate limiter when it is active, so only an
+// explicit Retry-After longer than that adds a delay; everything else
+// (network errors, 500s) backs off exponentially, still honouring Retry-After.
+func (c *Client) retryBackoff(attempt int, resp *http.Response, limiter *ratelimit.AdaptiveRateLimiter) time.Duration {
+	isThrottle := resp != nil &&
+		(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable)
+
+	if isThrottle && limiter != nil && limiter.IsEnabled() {
+		return retryAfterDuration(resp)
+	}
+
+	backoff := c.Retry.calculateBackoff(attempt)
+
+	if resp != nil {
+		if ra := retryAfterDuration(resp); ra > backoff {
+			backoff = ra
+		}
+	}
+
+	return backoff
 }
 
 // doOnce executes a single HTTP request without retries, with rate limiting feedback.
