@@ -35,6 +35,10 @@ const (
 	GCTaskPhaseCleanupOldClosures    GCTaskPhase = "cleanup_old_closures"
 	GCTaskPhaseCleanupOrphanObjects  GCTaskPhase = "cleanup_orphan_objects"
 	GCTaskPhaseVacuumTables          GCTaskPhase = "vacuum_tables"
+	// GCTaskPhaseOtherReplica is reported by a server that holds no task of
+	// its own but sees the GC advisory lock held: another replica sharing
+	// the database is running the collection. No progress is available.
+	GCTaskPhaseOtherReplica GCTaskPhase = "running_on_another_replica"
 )
 
 // GCTaskParams captures the normalized request parameters for a GC run.
