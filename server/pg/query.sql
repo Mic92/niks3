@@ -51,6 +51,14 @@ FOR KEY SHARE OF o;
 SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL;
 
+-- name: GetPresentClosures :many
+-- Narinfo keys that are roots of a committed closure with a live object.
+-- A mere dependency dies with its closure, so skipping its push would lose it.
+SELECT c.key
+FROM closures AS c
+JOIN objects AS o ON o.key = c.key
+WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL;
+
 -- name: TouchClosures :exec
 UPDATE closures SET updated_at = timezone('UTC', now())
 WHERE key = any($1::varchar []);
