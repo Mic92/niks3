@@ -62,10 +62,14 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		onProgress(*stats)
 	}
 
-	// Then, get objects ready for deletion (marked > gracePeriod ago)
+	// Then, get objects ready for deletion (marked > gracePeriod ago).
+	// Paginate by key: re-running the query would return rows not yet deleted.
+	afterKey := ""
+
 	for {
 		objs, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
 			GracePeriodSeconds: gracePeriod,
+			AfterKey:           afterKey,
 			LimitCount:         DeletionBatchSize,
 		})
 		if err != nil {
@@ -78,6 +82,8 @@ func (s *Service) getObjectsForDeletion(ctx context.Context,
 		if len(objs) == 0 {
 			break
 		}
+
+		afterKey = objs[len(objs)-1]
 
 		for _, obj := range objs {
 			select {
