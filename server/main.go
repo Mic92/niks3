@@ -335,6 +335,11 @@ func parseArgs() (*options, error) {
 		return nil, errors.New("missing required flag: --api-token or --api-token-path")
 	}
 
+	// errgroup.SetLimit(0) blocks forever, and 0 reads like "unlimited".
+	if opts.S3Concurrency < 1 {
+		return nil, errors.New("--s3-concurrency must be at least 1")
+	}
+
 	if err := validateReadRedirect(&opts); err != nil {
 		return nil, err
 	}
