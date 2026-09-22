@@ -403,6 +403,21 @@ func TestClientSignaturesByStorePath(t *testing.T) {
 	if got := c.Signatures("/nix/store/h2-b"); got != nil {
 		t.Errorf("unsigned path: %v", got)
 	}
+
+	// The stream pusher reads each path's signatures exactly once, so it
+	// takes them: a driver pushing paths for days must not accumulate an
+	// entry per path.
+	if got := c.TakeSignatures("/nix/store/h1-a"); !slices.Equal(got, []string{"k:1"}) {
+		t.Errorf("take: %v", got)
+	}
+
+	if got := c.Signatures("/nix/store/h1-a"); got != nil {
+		t.Errorf("signatures kept after being taken: %v", got)
+	}
+
+	if got := c.TakeSignatures("/nix/store/never-signed"); got != nil {
+		t.Errorf("take of unknown path: %v", got)
+	}
 }
 
 // Cancelling the context must end Run even while the input stays open: a CI
