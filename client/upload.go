@@ -462,6 +462,19 @@ func (c *Client) Signatures(path string) []string {
 	return c.signed[path]
 }
 
+// TakeSignatures is Signatures for a consumer that reads each path's
+// signatures once, such as the stream pusher: the entry is dropped, so a
+// long-running driver pushing millions of paths does not accumulate them.
+func (c *Client) TakeSignatures(path string) []string {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	sigs := c.signed[path]
+	delete(c.signed, path)
+
+	return sigs
+}
+
 func (c *Client) recordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
 	c.signedMu.Lock()
 	defer c.signedMu.Unlock()
