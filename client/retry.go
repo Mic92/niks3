@@ -204,6 +204,16 @@ func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter)
 	return nil
 }
 
+// closeUnsentBody closes the body of a request that will not reach the
+// transport. Do closes the body even when it fails, and callers rely on
+// that, so a path that returns without calling Do has to do it instead: a
+// file-backed body would stay open.
+func closeUnsentBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+}
+
 // doWithRetry executes an HTTP request with adaptive rate limiting and exponential backoff retry.
 // The request body will be read and stored for retries if necessary.
 // Auth headers must be set by the caller (e.g. DoServerRequest).
@@ -213,11 +223,12 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		return c.doOnce(ctx, req, limiter)
 	}
 
-	// Require GetBody for retries so we can replay the body without
-	// copying it to the heap. http.NewRequest sets GetBody automatically
-	// for *bytes.Reader and *strings.Reader, which all callers use.
-	// This avoids copying mmap'd data to the heap on retries.
+	// Require GetBody for retries so the body can be replayed without
+	// buffering it. http.NewRequest sets it for *bytes.Reader and
+	// *strings.Reader; a file-backed body sets its own, reopening the file.
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		closeUnsentBody(req)
+
 		return nil, errors.New("request with body must have GetBody set for retry support")
 	}
 
@@ -225,11 +236,18 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 
 	for attempt := 0; ; attempt++ {
 		if err := waitForLimiter(ctx, limiter); err != nil {
+			// The transport closed the bodies of earlier attempts.
+			if attempt == 0 {
+				closeUnsentBody(req)
+			}
+
 			return nil, err
 		}
 
-		// Reset body for retry attempts using GetBody
-		if req.GetBody != nil {
+		// The first attempt sends the body the caller supplied; retries get a
+		// fresh one from GetBody. Replacing it on the first attempt too would
+		// leave a file-backed body open with nobody to close it.
+		if attempt > 0 && req.GetBody != nil {
 			body, err := req.GetBody()
 			if err != nil {
 				return nil, fmt.Errorf("getting request body for retry: %w", err)
@@ -323,6 +341,8 @@ func (c *Client) retryBackoff(attempt int, resp *http.Response, limiter *ratelim
 // doOnce executes a single HTTP request without retries, with rate limiting feedback.
 func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
 	if err := waitForLimiter(ctx, limiter); err != nil {
+		closeUnsentBody(req)
+
 		return nil, err
 	}
 
