@@ -148,6 +148,8 @@ type Service struct {
 	// testHookAfterSweepSelect runs after the sweep locked a batch, before it
 	// rechecks pending rows.
 	testHookAfterSweepSelect func()
+	// testHookBeforeProxyGet runs between the proxy's Stat and GET.
+	testHookBeforeProxyGet func()
 	// testHookBeforeRedundantAbort runs before peers' uploads are aborted.
 	testHookBeforeRedundantAbort func()
 }
