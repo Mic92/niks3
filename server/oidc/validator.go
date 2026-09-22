@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
@@ -95,12 +97,22 @@ func (t *bearerFileTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return resp, nil
 }
 
-func httpClientFor(p *ProviderConfig) (*http.Client, error) {
-	if p.CAFile == "" && p.BearerTokenFile == "" {
-		return http.DefaultClient, nil
-	}
+// discoveryTimeout bounds each discovery and JWKS request. go-oidc refreshes
+// the key set in a goroutine detached from the request contexts and makes
+// every verification of an unknown key id wait for that one refresh, so a
+// request that never completes would wedge them all until restart.
+const discoveryTimeout = 15 * time.Second
 
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+// httpClientFor returns the client for a provider's discovery and JWKS
+// requests, with timeouts on the whole request as well as on the dial, the
+// TLS handshake and the response header.
+func httpClientFor(p *ProviderConfig) (*http.Client, error) {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: discoveryTimeout}).DialContext,
+		TLSHandshakeTimeout:   discoveryTimeout,
+		ResponseHeaderTimeout: discoveryTimeout,
+	}
 
 	if p.CAFile != "" {
 		pem, err := os.ReadFile(p.CAFile)
@@ -121,7 +133,7 @@ func httpClientFor(p *ProviderConfig) (*http.Client, error) {
 		rt = &bearerFileTransport{path: p.BearerTokenFile, base: transport}
 	}
 
-	return &http.Client{Transport: rt}, nil
+	return &http.Client{Transport: rt, Timeout: discoveryTimeout}, nil
 }
 
 // asymmetricAlgs is accepted when discovery is skipped. The JWKS key type
