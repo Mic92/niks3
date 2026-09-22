@@ -552,8 +552,13 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
 
-	// Skip cached closures before the local closure walk.
-	if present, err := c.Present(ctx, resolvedPaths); err != nil {
+	// Skip cached closures before the local closure walk. With S3 verification
+	// requested the shortcut is skipped: its purpose is to find objects the
+	// database believes present, and the server can only check the ones a
+	// pending closure names.
+	if c.VerifyS3Integrity {
+		slog.Debug("Verifying S3 integrity, not skipping cached closures")
+	} else if present, err := c.Present(ctx, resolvedPaths); err != nil {
 		slog.Debug("Present check unavailable, pushing everything", "error", err)
 	} else if len(present) > 0 {
 		missing := resolvedPaths[:0:0]
