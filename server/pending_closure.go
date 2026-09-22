@@ -137,9 +137,46 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
+	if s.testHookBeforePendingInsert != nil {
+		s.testHookBeforePendingInsert()
+	}
+
+	// The pending rows shield every object from GC, so write them before
+	// deciding what is present.
+	pendingClosure, allObjects, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap)
+	if err != nil {
+		return nil, err
+	}
+
+	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, verifyS3)
+	if err != nil {
+		// The client gets no response and never commits, so drop the rows.
+		if delErr := pg.New(pool).DeletePendingClosure(context.WithoutCancel(ctx), pendingClosure.ID); delErr != nil {
+			slog.Warn("failed to drop pending closure after error", "id", pendingClosure.ID, "error", delErr)
+		}
+
+		return nil, err
+	}
+
+	return &PendingClosure{
+		id:             pendingClosure.ID,
+		startedAt:      pendingClosure.StartedAt.Time,
+		pendingObjects: uploadObjects,
+	}, nil
+}
+
+// insertPendingClosure records the closure and a pending row for each of its
+// objects in one transaction.
+func insertPendingClosure(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	closureKey string,
+	roots []string,
+	objectsMap map[string]objectWithRefs,
+) (pg.PendingClosure, []pg.InsertPendingObjectsParams, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	committed := false
@@ -158,17 +195,49 @@ func createPendingClosureInner(
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
-	keys := make([]string, 0, len(objectsMap))
-	for k := range objectsMap {
-		keys = append(keys, k)
+	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
+
+	for objectKey, obj := range objectsMap {
+		allObjects = append(allObjects, pg.InsertPendingObjectsParams{
+			PendingClosureID: pendingClosure.ID,
+			Key:              objectKey,
+			Refs:             obj.Refs,
+			Size:             optionalSize(obj.NarSize),
+		})
 	}
 
-	var existingObjects []pg.GetExistingObjectsRow
+	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	}
 
-	if existingObjects, err = queries.GetExistingObjects(ctx, keys); err != nil {
+	if err = tx.Commit(ctx); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	committed = true
+
+	return pendingClosure, allObjects, nil
+}
+
+// objectsToUpload returns the pending rows the client must upload: objects
+// the database does not consider live, and with verifyS3 those S3 lacks.
+func (s *Service) objectsToUpload(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	allObjects []pg.InsertPendingObjectsParams,
+	verifyS3 bool,
+) ([]pg.InsertPendingObjectsParams, error) {
+	keys := make([]string, 0, len(allObjects))
+	for _, row := range allObjects {
+		keys = append(keys, row.Key)
+	}
+
+	// No transaction: S3 round trips must not hold a pool connection.
+	existingObjects, err := pg.New(pool).GetExistingObjects(ctx, keys)
+	if err != nil {
 		return nil, fmt.Errorf("failed to get existing objects: %w", err)
 	}
 
@@ -181,64 +250,48 @@ func createPendingClosureInner(
 		}
 	}
 
-	// Verify that objects the DB says exist actually exist in S3 (if requested)
-	if verifyS3 && len(present) > 0 {
-		keysToVerifyInS3 := make([]string, 0, len(present))
-		for key := range present {
-			keysToVerifyInS3 = append(keysToVerifyInS3, key)
-		}
-
-		var missingFromS3 map[string]bool
-
-		if missingFromS3, err = s.checkS3ObjectsExist(ctx, keysToVerifyInS3); err != nil {
-			return nil, fmt.Errorf("failed to verify objects in S3: %w", err)
-		}
-
-		if len(missingFromS3) > 0 {
-			slog.Warn("Found objects in DB but missing from S3, will re-upload",
-				"count", len(missingFromS3))
-
-			for missingKey := range missingFromS3 {
-				delete(present, missingKey)
-			}
+	if verifyS3 {
+		if err := s.dropMissingFromS3(ctx, present); err != nil {
+			return nil, err
 		}
 	}
 
-	// Every object gets a pending row, which shields it from GC until the
-	// commit. Only absent objects are offered for upload.
-	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
-	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap)-len(present))
+	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
 
-	for objectKey, obj := range objectsMap {
-		row := pg.InsertPendingObjectsParams{
-			PendingClosureID: pendingClosure.ID,
-			Key:              objectKey,
-			Refs:             obj.Refs,
-			Size:             optionalSize(obj.NarSize),
-		}
-
-		allObjects = append(allObjects, row)
-
-		if !present[objectKey] {
+	for _, row := range allObjects {
+		if !present[row.Key] {
 			uploadObjects = append(uploadObjects, row)
 		}
 	}
 
-	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
-		return nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	return uploadObjects, nil
+}
+
+// dropMissingFromS3 removes from present the keys S3 does not have.
+func (s *Service) dropMissingFromS3(ctx context.Context, present map[string]bool) error {
+	if len(present) == 0 {
+		return nil
 	}
 
-	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	keys := make([]string, 0, len(present))
+	for key := range present {
+		keys = append(keys, key)
 	}
 
-	committed = true
+	missing, err := s.checkS3ObjectsExist(ctx, keys)
+	if err != nil {
+		return fmt.Errorf("failed to verify objects in S3: %w", err)
+	}
 
-	return &PendingClosure{
-		id:             pendingClosure.ID,
-		startedAt:      pendingClosure.StartedAt.Time,
-		pendingObjects: uploadObjects,
-	}, nil
+	if len(missing) > 0 {
+		slog.Warn("Found objects in DB but missing from S3, will re-upload", "count", len(missing))
+	}
+
+	for key := range missing {
+		delete(present, key)
+	}
+
+	return nil
 }
 
 // createPendingObjects generates presigned URLs or multipart upload info for pending objects.

@@ -124,6 +124,17 @@ func (q *Queries) DeleteObjects(ctx context.Context, dollar_1 []string) error {
 	return err
 }
 
+const deletePendingClosure = `-- name: DeletePendingClosure :exec
+DELETE FROM pending_closures WHERE id = $1
+`
+
+// Drop a pending closure this server could not hand to the client. Its
+// pending objects and multipart uploads cascade.
+func (q *Queries) DeletePendingClosure(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deletePendingClosure, id)
+	return err
+}
+
 const deletePin = `-- name: DeletePin :exec
 DELETE FROM pins
 WHERE name = $1
