@@ -48,7 +48,7 @@ func SendPaths(socketPath string, paths []string) error {
 		return fmt.Errorf("reading response: %w", err)
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != statusOK {
 		return fmt.Errorf("server error: %s", resp.Message)
 	}
 
