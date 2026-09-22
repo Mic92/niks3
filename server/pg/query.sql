@@ -220,12 +220,22 @@ FROM stale_objects, ct
 WHERE objects.key = stale_objects.key;
 
 -- name: GetObjectsReadyForDeletion :many
--- Returns objects marked for >= grace_period, safe to delete from S3
+-- Returns objects marked for >= grace_period, safe to delete from S3.
+-- Keys pending in an in-flight closure are skipped: the closure protects them
+-- until it commits (clearing the tombstone) or is cleaned up. Keyset-paginated
+-- on key so a caller can walk the set while rows are being deleted underneath.
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
   AND deleted_at IS NOT NULL
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
+  AND key > sqlc.arg(after_key)::varchar
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pending_objects AS po
+      WHERE po.key = objects.key
+  )
+ORDER BY key
 LIMIT sqlc.arg(limit_count);
 
 -- name: GetClosureForShare :one
