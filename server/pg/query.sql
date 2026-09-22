@@ -51,17 +51,15 @@ FOR KEY SHARE OF o;
 SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL;
 
--- name: GetPresentClosures :many
--- Narinfo keys that are roots of a committed closure with a live object.
--- A mere dependency dies with its closure, so skipping its push would lose it.
-SELECT c.key
-FROM closures AS c
-JOIN objects AS o ON o.key = c.key
-WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL;
-
--- name: TouchClosures :exec
-UPDATE closures SET updated_at = timezone('UTC', now())
-WHERE key = any($1::varchar []);
+-- name: TouchPresentClosures :many
+-- Narinfo keys that are live closure roots, with their age refreshed.
+-- Check and refresh are one UPDATE. If GC is deleting a closure, the UPDATE
+-- waits for that delete and then matches nothing, so the key is not reported.
+UPDATE closures AS c
+SET updated_at = timezone('UTC', now())
+FROM objects AS o
+WHERE o.key = c.key AND c.key = any($1::varchar []) AND o.deleted_at IS NULL
+RETURNING c.key;
 
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);

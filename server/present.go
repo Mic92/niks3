@@ -18,9 +18,9 @@ func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := pg.New(s.Pool)
-
-	present, err := q.GetPresentClosures(r.Context(), req.Keys)
+	// Check and refresh in one statement, so a closure that GC is deleting
+	// is not reported as present.
+	present, err := pg.New(s.Pool).TouchPresentClosures(r.Context(), req.Keys)
 	if err != nil {
 		slog.Error("present", "error", err)
 		http.Error(w, "present: "+err.Error(), http.StatusInternalServerError)
@@ -28,8 +28,8 @@ func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(present) > 0 {
-		_ = q.TouchClosures(r.Context(), present)
+	if present == nil {
+		present = []string{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
