@@ -229,8 +229,10 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 			return nil, err
 		}
 
-		// Reset body for retry attempts using GetBody
-		if req.GetBody != nil {
+		// The first attempt sends the body the caller supplied; retries get a
+		// fresh one from GetBody. Replacing it on the first attempt too would
+		// leave a file-backed body open with nobody to close it.
+		if attempt > 0 && req.GetBody != nil {
 			body, err := req.GetBody()
 			if err != nil {
 				return nil, fmt.Errorf("getting request body for retry: %w", err)
