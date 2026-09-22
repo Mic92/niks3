@@ -204,15 +204,24 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 	}
 }
 
+// With the server down, each failed batch costs the batch call plus at most
+// streamIsolationProbes single-path probes. The number of batches depends on
+// scheduling, so the test rebuilds them from the recorded calls.
 func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 	t.Parallel()
 
 	errDown := errors.New("connection refused")
 
-	var calls int
+	var (
+		mu    sync.Mutex
+		calls [][]string
+	)
 
-	push := func(_ context.Context, _ []string) ([]string, error) {
-		calls++
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		calls = append(calls, slices.Clone(paths))
 
 		return nil, errDown
 	}
@@ -236,8 +245,24 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 		}
 	}
 
-	if calls > 1+3 {
-		t.Errorf("push called %d times, want <= 4", calls)
+	// A multi-path call is a batch. The single-path calls after it that name
+	// one of its paths are its probes.
+	for i := 0; i < len(calls); i++ {
+		batch := calls[i]
+		if len(batch) == 1 {
+			continue
+		}
+
+		probes := 0
+
+		for i+1 < len(calls) && len(calls[i+1]) == 1 && slices.Contains(batch, calls[i+1][0]) {
+			probes++
+			i++
+		}
+
+		if want := min(len(batch), 3); probes != want {
+			t.Errorf("batch of %d paths was probed %d times, want %d", len(batch), probes, want)
+		}
 	}
 }
 
