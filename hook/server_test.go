@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/hook"
 )
@@ -208,4 +209,52 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 	}
 
 	t.Log(string(output))
+}
+
+// A client that connects and never sends a request must not keep Serve from
+// returning on shutdown.
+func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+	srv.ConnTimeout = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	dialer := net.Dialer{}
+
+	stalled, err := dialer.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	defer func() { _ = stalled.Close() }()
+
+	// Give the server time to accept before shutting down.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return while a client held an idle connection")
+	}
 }
