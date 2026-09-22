@@ -11,9 +11,9 @@ import (
 
 // TestGCAdvisoryLockBlocksConcurrentRun checks GC fails fast when another
 // instance already holds the advisory lock.
-//
-//nolint:paralleltest // goose globals in pg.Connect race when createTestService runs in parallel
 func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
+	t.Parallel()
+
 	service := createTestService(t)
 	defer service.Close()
 
