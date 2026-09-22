@@ -20,6 +20,7 @@ old_closures AS (
     SELECT id
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
+      AND NOT (id = any($2::bigint []))
     FOR UPDATE OF pending_closures SKIP LOCKED
 ),
 
@@ -49,7 +50,13 @@ USING old_closures
 WHERE pending_closures.id = old_closures.id
 `
 
-// Pass the cutoff that GetOldMultipartUploads used.
+type CleanupPendingClosuresParams struct {
+	Cutoff pgtype.Timestamp `json:"cutoff"`
+	Keep   []int64          `json:"keep"`
+}
+
+// Pass the cutoff that GetOldMultipartUploads used. Closures in keep are left
+// alone because one of their uploads could not be aborted.
 // Skips closures being committed, which hold their row.
 // Insert pending objects into objects table if they don't already exist
 // We mark them as deleted so they can be cleaned up later.
@@ -57,8 +64,8 @@ WHERE pending_closures.id = old_closures.id
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
-func (q *Queries) CleanupPendingClosures(ctx context.Context, cutoff pgtype.Timestamp) (int64, error) {
-	result, err := q.db.Exec(ctx, cleanupPendingClosures, cutoff)
+func (q *Queries) CleanupPendingClosures(ctx context.Context, arg CleanupPendingClosuresParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupPendingClosures, arg.Cutoff, arg.Keep)
 	if err != nil {
 		return 0, err
 	}
@@ -324,15 +331,16 @@ func (q *Queries) GetObjectStats(ctx context.Context) (GetObjectStatsRow, error)
 }
 
 const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
-SELECT upload_id, object_key
+SELECT upload_id, object_key, pending_closure_id
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
 WHERE pc.started_at < $1::timestamp
 `
 
 type GetOldMultipartUploadsRow struct {
-	UploadID  string `json:"upload_id"`
-	ObjectKey string `json:"object_key"`
+	UploadID         string `json:"upload_id"`
+	ObjectKey        string `json:"object_key"`
+	PendingClosureID int64  `json:"pending_closure_id"`
 }
 
 func (q *Queries) GetOldMultipartUploads(ctx context.Context, cutoff pgtype.Timestamp) ([]GetOldMultipartUploadsRow, error) {
@@ -344,7 +352,7 @@ func (q *Queries) GetOldMultipartUploads(ctx context.Context, cutoff pgtype.Time
 	var items []GetOldMultipartUploadsRow
 	for rows.Next() {
 		var i GetOldMultipartUploadsRow
-		if err := rows.Scan(&i.UploadID, &i.ObjectKey); err != nil {
+		if err := rows.Scan(&i.UploadID, &i.ObjectKey, &i.PendingClosureID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

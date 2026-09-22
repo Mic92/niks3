@@ -148,6 +148,8 @@ type Service struct {
 	// testHookAfterSweepSelect runs after the sweep locked a batch, before it
 	// rechecks pending rows.
 	testHookAfterSweepSelect func()
+	// testHookBeforeRedundantAbort runs before peers' uploads are aborted.
+	testHookBeforeRedundantAbort func()
 }
 
 // Close closes the database connection pool.

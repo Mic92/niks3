@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func TestMultipartCleanup(t *testing.T) {
@@ -61,6 +62,28 @@ func TestMultipartCleanup(t *testing.T) {
 	// Wait a bit to ensure the cleanup will catch it
 	time.Sleep(100 * time.Millisecond)
 
+	// With S3 unreachable the abort fails, so the closure and row must survive.
+	good := service.MinioClient
+	service.MinioClient = brokenS3Client(t)
+
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/api/pending_closures?older-than=0s",
+		handler: service.CleanupPendingClosuresHandler,
+	})
+
+	service.MinioClient = good
+
+	var rows int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&rows))
+
+	if rows != 1 {
+		t.Fatalf("multipart upload row dropped although the abort failed (rows=%d)", rows)
+	}
+
+	_, err = coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10)
+	ok(t, err) // still live: nothing aborted it
+
 	// Call cleanup with 0 duration (cleans everything)
 	testRequest(t, &TestRequest{
 		method:  "DELETE",
@@ -73,4 +96,20 @@ func TestMultipartCleanup(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when listing parts of aborted upload, but got none")
 	}
+
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM pending_closures").Scan(&rows))
+
+	if rows != 0 {
+		t.Errorf("%d pending closure(s) left after a successful cleanup", rows)
+	}
+}
+
+// brokenS3Client returns a client whose requests all fail.
+func brokenS3Client(t *testing.T) *minio.Client {
+	t.Helper()
+
+	bad, err := minio.New("127.0.0.1:1", &minio.Options{Creds: credentials.NewStaticV4("a", "b", ""), MaxRetries: 1})
+	ok(t, err)
+
+	return bad
 }

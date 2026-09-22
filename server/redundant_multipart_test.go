@@ -64,6 +64,58 @@ func TestRedundantMultipartUpload(t *testing.T) {
 	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, sharedNarKey, loserUploadID, 0, 10); err == nil {
 		t.Error("expected loser's multipart upload to be aborted, but it is still live")
 	}
+
+	// If the abort fails, the loser's row must stay for the cleanup to retry.
+	otherNarKey := narKeyFor("gggggggggggggggggggggggggggggg02")
+	thirdNarinfo := "gggggggggggggggggggggggggggggg40.narinfo"
+	fourthNarinfo := "gggggggggggggggggggggggggggggg50.narinfo"
+
+	postClosure := func(narinfoKey string) server.PendingObject {
+		t.Helper()
+
+		resp := createPendingClosure(t, service, map[string]any{
+			"closure": narinfoKey,
+			"objects": []map[string]any{
+				{"key": narinfoKey, "type": "narinfo", "refs": []string{otherNarKey}},
+				{"key": otherNarKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
+			},
+		})
+
+		return resp.PendingObjects[otherNarKey]
+	}
+
+	winner2 := postClosure(thirdNarinfo)
+	straggler := postClosure(fourthNarinfo)
+	stragglerUploadID := straggler.MultipartInfo.UploadID
+
+	good := service.MinioClient
+	service.SetTestHookBeforeRedundantAbort(func() { service.MinioClient = brokenS3Client(t) })
+
+	handleMultipartUpload(ctx, t, otherNarKey, winner2, service)
+
+	service.MinioClient = good
+	service.SetTestHookBeforeRedundantAbort(nil)
+
+	var rows int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", stragglerUploadID).Scan(&rows))
+
+	if rows != 1 {
+		t.Fatalf("straggler's row dropped although its abort failed (rows=%d)", rows)
+	}
+
+	_, err = coreClient.ListObjectParts(ctx, service.Bucket, otherNarKey, stragglerUploadID, 0, 10)
+	ok(t, err) // still live
+
+	// The kept row lets the cleanup finish the job.
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/api/pending_closures?older-than=0s",
+		handler: service.CleanupPendingClosuresHandler,
+	})
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, otherNarKey, stragglerUploadID, 0, 10); err == nil {
+		t.Error("expected the cleanup to abort the straggler's upload, but it is still live")
+	}
 }
 
 // TestCompleteMultipartUpload_ErrorButObjectExists verifies that a failing
@@ -115,4 +167,17 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 		handler:       service.CompleteMultipartUploadHandler,
 		checkResponse: &success,
 	})
+
+	// The row is gone, so the upload must have been aborted.
+	var rows int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&rows))
+
+	if rows != 0 {
+		t.Errorf("multipart upload row still present after completion (rows=%d)", rows)
+	}
+
+	coreClient := minio.Core{Client: service.MinioClient}
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10); err == nil {
+		t.Error("errored multipart upload left open after its row was dropped")
+	}
 }
