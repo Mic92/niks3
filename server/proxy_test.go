@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +240,28 @@ func TestReadProxy404(t *testing.T) {
 
 	// Valid path but object doesn't exist in S3
 	proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusNotFound)
+
+	// An object that GC removes between the proxy's Stat and its GET is a
+	// cache miss too, for narinfos (buffered) and NARs (streamed) alike. It
+	// must not turn into a 502 or a truncated 200.
+	ctx := t.Context()
+	narinfoKey := "4hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	narKey := "nar/" + strings.Repeat("h", 52) + ".nar.zst"
+
+	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/x\n")),
+		minio.PutObjectOptions{ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, narKey, bytes.Repeat([]byte("nar"), 1024), minio.PutObjectOptions{})
+
+	var deleteBeforeGet string
+
+	service.SetTestHookBeforeProxyGet(func() {
+		ok(t, service.MinioClient.RemoveObject(ctx, service.Bucket, deleteBeforeGet, minio.RemoveObjectOptions{}))
+	})
+
+	for _, key := range []string{narinfoKey, narKey} {
+		deleteBeforeGet = key
+		proxyGet(t, ts, "/"+key, http.StatusNotFound)
+	}
 }
 
 func TestReadProxyInvalidPath(t *testing.T) {

@@ -371,7 +371,16 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		}
 	}
 
-	obj, err := s.MinioClient.GetObject(r.Context(), s.Bucket, key, getOpts)
+	if s.testHookBeforeProxyGet != nil {
+		s.testHookBeforeProxyGet()
+	}
+
+	// Core.GetObject issues the request now. minio.Client.GetObject is lazy
+	// and only sends it on the first Read, by which time the status and
+	// headers are written: an object GC removed after the Stat above would
+	// be answered 502 or with a truncated 200 instead of 404, and a throttle
+	// would never reach the rate limiter.
+	obj, _, _, err := minio.Core{Client: s.MinioClient}.GetObject(r.Context(), s.Bucket, key, getOpts)
 	if err != nil {
 		s.handleProxyS3Error(w, err, key)
 
@@ -426,7 +435,7 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 // A transparent proxy (e.g. Cloudflare Tunnel) may decompress the data and
 // strip the Content-Encoding header before it reaches us. We only decompress
 // when the Content-Encoding header is still present.
-func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Object, info *minio.ObjectInfo) {
+func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader, info *minio.ObjectInfo) {
 	data, err := io.ReadAll(obj)
 	if err != nil {
 		slog.Error("Failed to read narinfo from S3", "error", err)
@@ -475,7 +484,7 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Obj
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(plain) //nolint:gosec // served as text/x-nix-narinfo, never rendered as HTML
+	_, _ = w.Write(plain)
 }
 
 // setProxyHeaders sets response headers from S3 object metadata.

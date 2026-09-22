@@ -143,6 +143,8 @@ type Service struct {
 	// testHookBeforePendingInsert runs right before a pending closure is
 	// written; tests use it to interleave a GC run with a push.
 	testHookBeforePendingInsert func()
+	// testHookBeforeProxyGet runs between the read proxy's Stat and its GET.
+	testHookBeforeProxyGet func()
 }
 
 // Close closes the database connection pool.

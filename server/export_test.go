@@ -96,3 +96,8 @@ func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, 
 func (s *Service) SetTestHookBeforePendingInsert(f func()) {
 	s.testHookBeforePendingInsert = f
 }
+
+// SetTestHookBeforeProxyGet runs f between the read proxy's Stat and GET.
+func (s *Service) SetTestHookBeforeProxyGet(f func()) {
+	s.testHookBeforeProxyGet = f
+}
