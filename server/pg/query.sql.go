@@ -13,7 +13,7 @@ import (
 
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
-    SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
+    SELECT $1::timestamp AS time
 ),
 
 old_closures AS (
@@ -48,14 +48,16 @@ USING old_closures
 WHERE pending_closures.id = old_closures.id
 `
 
+// Removes pending closures started before cutoff; pass the same cutoff that
+// selected the multipart uploads to abort (GetOldMultipartUploads).
 // Insert pending objects into objects table if they don't already exist
 // We mark them as deleted so they can be cleaned up later. Key order keeps
 // row locking consistent with commit_pending_closure.
 // Delete pending objects that were inserted into the objects table
 // Delete pending closures older than the specified interval
 // This will cascade to pending_objects
-func (q *Queries) CleanupPendingClosures(ctx context.Context, dollar_1 int32) (int64, error) {
-	result, err := q.db.Exec(ctx, cleanupPendingClosures, dollar_1)
+func (q *Queries) CleanupPendingClosures(ctx context.Context, cutoff pgtype.Timestamp) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupPendingClosures, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -326,7 +328,7 @@ const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
 SELECT upload_id, object_key
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
-WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int
+WHERE pc.started_at < $1::timestamp
 `
 
 type GetOldMultipartUploadsRow struct {
@@ -334,8 +336,8 @@ type GetOldMultipartUploadsRow struct {
 	ObjectKey string `json:"object_key"`
 }
 
-func (q *Queries) GetOldMultipartUploads(ctx context.Context, dollar_1 int32) ([]GetOldMultipartUploadsRow, error) {
-	rows, err := q.db.Query(ctx, getOldMultipartUploads, dollar_1)
+func (q *Queries) GetOldMultipartUploads(ctx context.Context, cutoff pgtype.Timestamp) ([]GetOldMultipartUploadsRow, error) {
+	rows, err := q.db.Query(ctx, getOldMultipartUploads, cutoff)
 	if err != nil {
 		return nil, err
 	}

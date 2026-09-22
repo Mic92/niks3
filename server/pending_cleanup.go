@@ -8,17 +8,22 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/sync/errgroup"
 )
 
 func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Duration) (int, error) {
 	queries := pg.New(s.Pool)
-	seconds := int32(duration.Seconds())
 	coreClient := minio.Core{Client: s.MinioClient}
 
+	// One cutoff for both queries: closures that aged past the cutoff between
+	// listing the uploads and deleting the rows would otherwise be cascaded
+	// out of the database with their multipart uploads still open in S3.
+	cutoff := pgtype.Timestamp{Time: time.Now().UTC().Add(-duration), Valid: true}
+
 	// 1. Get old multipart uploads to abort
-	uploads, err := queries.GetOldMultipartUploads(ctx, seconds)
+	uploads, err := queries.GetOldMultipartUploads(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("get old uploads: %w", err)
 	}
@@ -58,7 +63,7 @@ func (s *Service) cleanupPendingClosures(ctx context.Context, duration time.Dura
 	slog.Info("Aborted multipart uploads", "count", len(uploads))
 
 	// 3. Clean database (cascade deletes multipart_uploads rows)
-	count, err := queries.CleanupPendingClosures(ctx, seconds)
+	count, err := queries.CleanupPendingClosures(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("cleanup pending closures: %w", err)
 	}
