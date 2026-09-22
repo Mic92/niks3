@@ -148,9 +148,12 @@ WHERE closures.updated_at < $1
 UPDATE objects SET deleted_at = NULL
 WHERE key = any($1::varchar []);
 
--- name: DeleteObjects :exec
+-- name: DeleteTombstonedObjects :exec
+-- Drop rows of objects the sweep removed from S3. Conditional on the
+-- tombstone so a row a concurrent push resurrected after re-uploading the
+-- object survives.
 DELETE FROM objects
-WHERE key = any($1::varchar []);
+WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL;
 
 -- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)

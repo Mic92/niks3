@@ -344,3 +344,42 @@ func TestCreatePendingClosureVerifyS3FailureReleasesConnection(t *testing.T) {
 		t.Errorf("%d pool connection(s) still acquired after the failed request", after-before)
 	}
 }
+
+// A row a push resurrected while the sweep was deleting the object from S3
+// must survive the sweep's row delete: the push re-uploaded the object after
+// the delete, so the row is right and the object is present again.
+func TestSweepRowDeleteSparesResurrectedObject(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	q := pg.New(service.Pool)
+
+	swept := "nar/" + strings.Repeat("a", 52) + ".nar.zst"
+	resurrected := "nar/" + strings.Repeat("b", 52) + ".nar.zst"
+
+	_, err := service.Pool.Exec(ctx,
+		`INSERT INTO objects (key, deleted_at, first_deleted_at)
+		 SELECT unnest($1::varchar[]), now() - interval '2 days', now() - interval '2 days'`,
+		[]string{swept, resurrected})
+	ok(t, err)
+
+	// The sweep selected both keys and deleted them from S3; meanwhile a
+	// push re-uploaded and registered the second one.
+	ok(t, q.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{Key: resurrected, Refs: []string{}}))
+
+	ok(t, q.DeleteTombstonedObjects(ctx, []string{swept, resurrected}))
+
+	var n int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM objects WHERE key = $1", swept).Scan(&n))
+
+	if n != 0 {
+		t.Errorf("tombstoned row %s survived the sweep", swept)
+	}
+
+	if !objectIsLive(t, service, resurrected) {
+		t.Errorf("resurrected row %s was deleted by the sweep", resurrected)
+	}
+}

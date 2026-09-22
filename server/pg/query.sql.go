@@ -116,16 +116,6 @@ func (q *Queries) DeleteMultipartUpload(ctx context.Context, uploadID string) er
 	return err
 }
 
-const deleteObjects = `-- name: DeleteObjects :exec
-DELETE FROM objects
-WHERE key = any($1::varchar [])
-`
-
-func (q *Queries) DeleteObjects(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, deleteObjects, dollar_1)
-	return err
-}
-
 const deletePin = `-- name: DeletePin :exec
 DELETE FROM pins
 WHERE name = $1
@@ -133,6 +123,19 @@ WHERE name = $1
 
 func (q *Queries) DeletePin(ctx context.Context, name string) error {
 	_, err := q.db.Exec(ctx, deletePin, name)
+	return err
+}
+
+const deleteTombstonedObjects = `-- name: DeleteTombstonedObjects :exec
+DELETE FROM objects
+WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL
+`
+
+// Drop rows of objects the sweep removed from S3. Conditional on the
+// tombstone so a row a concurrent push resurrected after re-uploading the
+// object survives.
+func (q *Queries) DeleteTombstonedObjects(ctx context.Context, dollar_1 []string) error {
+	_, err := q.db.Exec(ctx, deleteTombstonedObjects, dollar_1)
 	return err
 }
 

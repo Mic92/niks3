@@ -72,7 +72,7 @@ func deleteObjectsFromS3AndDB(t *testing.T, service *server.Service, queries *pg
 	}
 
 	// Delete from database
-	err := queries.DeleteObjects(ctx, objsToDelete)
+	err := queries.DeleteTombstonedObjects(ctx, objsToDelete)
 	ok(t, err)
 }
 
@@ -469,7 +469,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	}
 
 	// Delete from database
-	err = queries.DeleteObjects(ctx, objsToDelete)
+	err = queries.DeleteTombstonedObjects(ctx, objsToDelete)
 	ok(t, err)
 
 	// ===== Verify all active objects still exist =====
@@ -580,8 +580,8 @@ func TestResurrectedObjectNotDeleted(t *testing.T) {
 	}
 
 	// Step 4 & 5: Simulate S3 deletion failure scenario
-	// In real code, this happens when S3 deletion fails in removeS3Objects
-	// and MarkObjectsAsActive is called in handleFailedObject
+	// In real code, this happens when S3 deletion fails in removeS3Batch,
+	// which then calls MarkObjectsAsActive
 	err = queries.MarkObjectsAsActive(ctx, []string{objectKey, narKey})
 	ok(t, err)
 
