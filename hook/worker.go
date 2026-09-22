@@ -272,11 +272,22 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 // settle removes an uploaded batch and its closure from the queue and returns
 // what was removed and whether the removal succeeded. Removing the whole
 // closure prunes dependencies that were queued separately but went up as
-// part of a parent.
+// part of a parent. The batch is always removed: push reports the closures
+// it uploaded, not the paths it found already cached, so a cached path
+// batched with a larger closure would otherwise stay queued for good.
 func (w *Worker) settle(batch, uploaded []string) ([]string, bool) {
-	toRemove := batch
-	if len(uploaded) > len(batch) {
-		toRemove = uploaded
+	seen := make(map[string]struct{}, len(batch)+len(uploaded))
+	toRemove := make([]string, 0, len(batch)+len(uploaded))
+
+	for _, paths := range [][]string{batch, uploaded} {
+		for _, p := range paths {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+
+			seen[p] = struct{}{}
+			toRemove = append(toRemove, p)
+		}
 	}
 
 	return toRemove, w.remove(toRemove)
