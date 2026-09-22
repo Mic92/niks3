@@ -381,6 +381,46 @@ func TestWorkerPrunesClosureDeps(t *testing.T) {
 	}
 }
 
+// A path the server already has is left out of the closure push reports,
+// which only covers what was uploaded. Batched with a larger closure it must
+// still leave the queue, or it is fetched and probed again every round.
+func TestWorkerRemovesCachedPathBatchedWithLargerClosure(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	dir := t.TempDir()
+	cached := writeTestFile(t, dir, "cached")
+	top := writeTestFile(t, dir, "top")
+	dep1 := filepath.Join(dir, "dep1")
+	dep2 := filepath.Join(dir, "dep2")
+
+	if err := q.Enqueue([]string{cached, top}); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+
+	// "cached" is already on the server and is not part of the reported
+	// closure; "top" brings two dependencies, so the report is larger than
+	// the batch without containing all of it.
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		calls.Add(1)
+
+		if !slices.Contains(paths, top) {
+			return nil, nil
+		}
+
+		return []string{top, dep1, dep2}, nil
+	}
+
+	runWorkerUntilDrained(t, q, push, 10)
+
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected the batch to settle in 1 push, took %d", n)
+	}
+}
+
 // A hung server must not keep an unsupervised drain alive forever, and the
 // interrupted paths must stay queued in their original order.
 func TestDrainTimeout(t *testing.T) {
