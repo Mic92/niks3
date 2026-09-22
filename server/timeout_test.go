@@ -36,3 +36,32 @@ func TestProxyWriteTimeout(t *testing.T) {
 		})
 	}
 }
+
+// A pending-closure response is written after one S3 call per new object.
+// After a throttle the limiter runs at its floor, so the deadline must grow
+// with the closure or a large push is cut off after its rows were created.
+func TestPendingClosureWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		objects int
+		want    time.Duration
+	}{
+		{"empty", 0, time.Minute},
+		{"negative", -1, time.Minute},
+		// 400 NARs at the 5 rps floor take 80 s; the old fixed 60 s cut this off.
+		{"400 objects", 400, time.Minute + 80*time.Second},
+		{"670k objects", 670_000, time.Minute + 134_000*time.Second},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := server.PendingClosureWriteTimeout(tc.objects); got != tc.want {
+				t.Errorf("PendingClosureWriteTimeout(%d) = %v, want %v", tc.objects, got, tc.want)
+			}
+		})
+	}
+}

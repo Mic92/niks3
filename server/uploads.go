@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,24 @@ const (
 	// Worst case: complete with 10,000 parts (S3 hard max) ≈ 700 kB. 12× headroom.
 	maxAPIRequestBody = 8 << 20
 )
+
+// pendingClosureBaseTimeout is the write budget of a pending-closure response
+// before the per-object allowance.
+const pendingClosureBaseTimeout = time.Minute
+
+// PendingClosureWriteTimeout returns the write deadline for a pending-closure
+// request naming n objects: one minute plus one S3 call per object at the
+// rate limiter's floor, so a push that is being throttled still gets its
+// response.
+func PendingClosureWriteTimeout(n int) time.Duration {
+	if n < 0 {
+		n = 0
+	}
+
+	perObject := time.Duration(float64(time.Second) / ratelimit.RateMin)
+
+	return pendingClosureBaseTimeout + time.Duration(n)*perObject
+}
 
 // decodeJSONBody decodes a size-limited JSON request body. It writes a
 // 413/400 response and returns false on error.
@@ -142,6 +161,16 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	objectsMap, ok := s.validateObjects(w, req.Objects)
 	if !ok {
 		return
+	}
+
+	// The global WriteTimeout is sized for small responses. This handler
+	// makes one S3 call per new NAR (and per present object with verify_s3)
+	// under the adaptive rate limiter, which after a single throttle drops
+	// to a few requests per second. Give the response a budget proportional
+	// to the work, or a large push has its rows and multipart uploads created
+	// and then its response cut off, and the client retries the whole thing.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(PendingClosureWriteTimeout(len(objectsMap)))); err != nil {
+		slog.Debug("Failed to extend write deadline", "error", err)
 	}
 
 	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, nil, objectsMap, req.VerifyS3)

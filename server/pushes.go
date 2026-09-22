@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -61,6 +62,12 @@ func (s *Service) CreatePushHandler(w http.ResponseWriter, r *http.Request) {
 
 			return
 		}
+	}
+
+	// Same budget as CreatePendingClosureHandler: one S3 call per object under
+	// the rate limiter, or a throttled push loses its response.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(PendingClosureWriteTimeout(len(objectsMap)))); err != nil {
+		slog.Debug("Failed to extend write deadline", "error", err)
 	}
 
 	push, err := s.createPendingClosure(r.Context(), s.Pool, req.Roots[0], req.Roots, objectsMap, req.VerifyS3)
