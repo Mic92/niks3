@@ -108,8 +108,16 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 		}
 	}
 
+	// The old leader notices a lost connection on its next heartbeat, so the
+	// new one must not announce sooner, or the two overlap.
+	released := time.Now()
+
 	a.close()
 	b.until(api.LeadStatus{Lead: true})
+
+	if since := time.Since(released); since < server.LeadHeartbeat() {
+		t.Fatalf("b announced leadership %s after a released it, within one heartbeat (%s)", since, server.LeadHeartbeat())
+	}
 
 	c := openLead(t, s)
 	c.until(api.LeadStatus{Lead: false})

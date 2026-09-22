@@ -43,6 +43,10 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
 // LeadHandler elects the build farm scheduler. Each candidate keeps one
 // NDJSON stream open and is told every heartbeat whether it leads.
 // Leadership ends when the stream, this process or Postgres goes away.
+//
+// A leader whose connection died keeps leading until its next ping fails, but
+// the lock is already free. A new holder therefore stays quiet for one
+// heartbeat, or the two leaders would overlap.
 func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -73,7 +77,11 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	tick := time.NewTicker(leadHeartbeat)
 	defer tick.Stop()
 
-	var conn *pgxpool.Conn
+	var (
+		conn *pgxpool.Conn
+		// fresh marks the heartbeat that took the lock, which still says false.
+		fresh bool
+	)
 
 	defer func() { //nolint:contextcheck // must close even though ctx is done
 		if conn != nil {
@@ -84,6 +92,8 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
+		fresh = false
+
 		if conn == nil && !time.Now().Before(holdBack) {
 			var err error
 			if conn, err = tryLead(ctx, s.Pool); err != nil {
@@ -93,13 +103,15 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if conn != nil {
+				fresh = true
+
 				slog.Info("lead: acquired", "remote", r.RemoteAddr)
 			}
 		} else if conn != nil && conn.Ping(ctx) != nil {
 			return
 		}
 
-		if err := enc.Encode(api.LeadStatus{Lead: conn != nil}); err != nil {
+		if err := enc.Encode(api.LeadStatus{Lead: conn != nil && !fresh}); err != nil {
 			return
 		}
 
