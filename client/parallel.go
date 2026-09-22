@@ -113,8 +113,12 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 			g.Go(func() error {
 				return c.uploadNARWithListing(ctx, *entry.narTask, entry.lsTask, pathInfo)
 			})
-		} else if entry.narinfoTask != nil {
-			// Deduplicated NAR - queue metadata-only task
+		} else if entry.narinfoTask != nil || entry.lsTask != nil {
+			// The NAR is already in the cache (deduplicated, or present from an
+			// earlier push): only the metadata is pending. The listing alone is
+			// pending when GC tombstoned it or S3 verification found it missing
+			// behind a live narinfo; it must go up, because the closure commit
+			// records every pending object as present.
 			g.Go(func() error {
 				return c.uploadMetadataOnly(ctx, entry.lsTask, pathInfo)
 			})
