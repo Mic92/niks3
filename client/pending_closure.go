@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 )
 
 // createPendingClosureRequest is the request to create a pending closure.
@@ -62,14 +65,37 @@ type NarinfoMetadata struct {
 
 // CompletePendingClosure marks a closure or push (route) as complete after all objects have been uploaded.
 // This should be called after narinfos have been signed and uploaded.
-func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID string) error {
+//
+// The commit deletes the pending closure, so a retry after a lost response
+// finds nothing and is answered 404. closureKey (the closure's narinfo key,
+// or for a push its first root) lets the client tell that case from a
+// closure the server cleaned up: if the closure is now present, the commit
+// went through.
+func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID, closureKey string) error {
 	reqURL := c.baseURL.JoinPath("api", route, closureID, "complete")
 
-	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
+	err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent)
+	if err == nil {
+		slog.Debug("Completed pending closure", "id", closureID)
+
+		return nil
+	}
+
+	var statusErr *HTTPStatusError
+	if closureKey == "" || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
 		return err
 	}
 
-	slog.Debug("Completed pending closure", "id", closureID)
+	present, presentErr := c.presentKeys(ctx, []string{closureKey})
+	if presentErr != nil {
+		return fmt.Errorf("%w (and checking whether %s was committed: %w)", err, closureKey, presentErr)
+	}
+
+	if !slices.Contains(present, closureKey) {
+		return err
+	}
+
+	slog.Debug("Pending closure gone but its closure is present; an earlier commit went through", "id", closureID, "key", closureKey)
 
 	return nil
 }

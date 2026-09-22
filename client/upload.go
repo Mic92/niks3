@@ -375,36 +375,41 @@ nextClosure:
 // to sign and complete them on, plus the pending objects keyed by pending ID.
 // The server only signs narinfos that are pending for that specific ID, so
 // callers must not merge these sets when signing.
+// The third map gives each pending ID's narinfo key; for a push, that is its
+// first root.
 //
 // A server that announces pushes gets one push for all closures. Older
 // servers, and ones that answer 404 or 405, get one pending closure each.
-func (c *Client) createPending(ctx context.Context, closures []ClosureInfo) (string, map[string]map[string]PendingObject, error) {
+func (c *Client) createPending(ctx context.Context, closures []ClosureInfo) (string, map[string]map[string]PendingObject, map[string]string, error) {
 	if cfg, err := c.GetCacheConfig(ctx); err == nil && cfg.Pushes {
 		resp, err := c.CreatePush(ctx, closures, c.VerifyS3Integrity)
 		if err == nil {
-			return "pushes", map[string]map[string]PendingObject{resp.ID: resp.PendingObjects}, nil
+			return "pushes", map[string]map[string]PendingObject{resp.ID: resp.PendingObjects},
+				map[string]string{resp.ID: closures[0].NarinfoKey}, nil
 		}
 
 		var statusErr *HTTPStatusError
 		if !errors.As(err, &statusErr) || (statusErr.StatusCode != http.StatusNotFound && statusErr.StatusCode != http.StatusMethodNotAllowed) {
-			return "", nil, fmt.Errorf("creating push: %w", err)
+			return "", nil, nil, fmt.Errorf("creating push: %w", err)
 		}
 
 		slog.Warn("Server has no /api/pushes, using pending closures", "error", err)
 	}
 
 	pendingByClosureID := make(map[string]map[string]PendingObject, len(closures))
+	keyByClosureID := make(map[string]string, len(closures))
 
 	for _, closure := range closures {
 		resp, err := c.CreatePendingClosure(ctx, closure.NarinfoKey, closure.Objects, c.VerifyS3Integrity)
 		if err != nil {
-			return "", nil, fmt.Errorf("creating pending closure: %w", err)
+			return "", nil, nil, fmt.Errorf("creating pending closure: %w", err)
 		}
 
 		pendingByClosureID[resp.ID] = resp.PendingObjects
+		keyByClosureID[resp.ID] = closure.NarinfoKey
 	}
 
-	return "pending_closures", pendingByClosureID, nil
+	return "pending_closures", pendingByClosureID, keyByClosureID, nil
 }
 
 type narinfoTask struct {
@@ -631,7 +636,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	}
 
 	// Create pending closures and collect what needs uploading
-	route, pendingByClosureID, err := c.createPending(ctx, result.Closures)
+	route, pendingByClosureID, keyByClosureID, err := c.createPending(ctx, result.Closures)
 	if err != nil {
 		return nil, fmt.Errorf("creating pending closures: %w", err)
 	}
@@ -691,7 +696,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	// Complete all pending closures (all objects including narinfos are now uploaded)
 	for id := range pendingByClosureID {
-		if err := c.CompletePendingClosure(ctx, route, id); err != nil {
+		if err := c.CompletePendingClosure(ctx, route, id, keyByClosureID[id]); err != nil {
 			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
 	}
