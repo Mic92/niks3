@@ -24,11 +24,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// IssuerPath is appended to the listen address to form the issuer URL, so the
-// discovery document does not live at the server root.
-const IssuerPath = "/oidc"
-
 const (
+	// issuerPath is appended to the listen address to form the issuer URL, so
+	// the discovery document does not live at the server root.
+	issuerPath        = "/oidc"
 	discoveryPath     = "/.well-known/openid-configuration"
 	jwksPath          = "/.well-known/jwks.json"
 	keyBits           = 2048
@@ -38,8 +37,8 @@ const (
 
 // Keypair signs tokens and publishes the matching public key.
 type Keypair struct {
-	PrivateKey *rsa.PrivateKey
-	kid        string
+	key *rsa.PrivateKey
+	kid string
 }
 
 // NewKeypair generates a fresh RSA keypair.
@@ -56,12 +55,7 @@ func NewKeypair() (*Keypair, error) {
 
 	sum := sha256.Sum256(der)
 
-	return &Keypair{PrivateKey: key, kid: base64.RawURLEncoding.EncodeToString(sum[:])}, nil
-}
-
-// KeyID is the JWK "kid" of the public key.
-func (k *Keypair) KeyID() string {
-	return k.kid
+	return &Keypair{key: key, kid: base64.RawURLEncoding.EncodeToString(sum[:])}, nil
 }
 
 type jwk struct {
@@ -79,7 +73,7 @@ type jwkSet struct {
 
 // JWKS returns the JSON Web Key Set containing the public key.
 func (k *Keypair) JWKS() ([]byte, error) {
-	pub := &k.PrivateKey.PublicKey
+	pub := &k.key.PublicKey
 	set := jwkSet{Keys: []jwk{{
 		Kty: "RSA",
 		Use: "sig",
@@ -102,7 +96,7 @@ func (k *Keypair) SignJWT(claims jwt.Claims) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = k.kid
 
-	signed, err := token.SignedString(k.PrivateKey)
+	signed, err := token.SignedString(k.key)
 	if err != nil {
 		return "", fmt.Errorf("sign JWT: %w", err)
 	}
@@ -171,6 +165,7 @@ func (s *Server) Start(ln net.Listener) {
 	}()
 }
 
+// Shutdown stops a server started with Start or Run.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.srv == nil {
 		return nil
@@ -185,7 +180,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // Issuer is the value of the iss claim and the base of the discovery URL.
 func (s *Server) Issuer() string {
-	return "http://" + s.addr + IssuerPath
+	return "http://" + s.addr + issuerPath
 }
 
 // DiscoveryEndpoint is the URL of the OpenID configuration document.
@@ -193,15 +188,16 @@ func (s *Server) DiscoveryEndpoint() string {
 	return s.Issuer() + discoveryPath
 }
 
+// JWKSEndpoint is the URL of the JSON Web Key Set.
 func (s *Server) JWKSEndpoint() string {
 	return s.Issuer() + jwksPath
 }
 
-// Handler serves the discovery document and the JWKS under IssuerPath.
+// Handler serves the discovery document and the JWKS under issuerPath.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+IssuerPath+discoveryPath, s.serveDiscovery)
-	mux.HandleFunc("GET "+IssuerPath+jwksPath, s.serveJWKS)
+	mux.HandleFunc("GET "+issuerPath+discoveryPath, s.serveDiscovery)
+	mux.HandleFunc("GET "+issuerPath+jwksPath, s.serveJWKS)
 
 	return mux
 }
@@ -212,7 +208,6 @@ type discoveryDocument struct {
 	ResponseTypesSupported           []string `json:"response_types_supported"`
 	SubjectTypesSupported            []string `json:"subject_types_supported"`
 	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	ClaimsSupported                  []string `json:"claims_supported"`
 }
 
 func (s *Server) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
@@ -222,7 +217,6 @@ func (s *Server) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
 		ResponseTypesSupported:           []string{"id_token"},
 		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"RS256"},
-		ClaimsSupported:                  []string{"iss", "sub", "aud", "exp", "iat"},
 	}
 
 	data, err := json.Marshal(doc)
