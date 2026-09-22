@@ -9,7 +9,8 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 )
 
-// PresentHandler answers which narinfo keys are cached. Hits are touched.
+// PresentHandler answers which narinfo keys are cached as closure roots and
+// refreshes their age, so a client can skip pushing them.
 func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -20,7 +21,7 @@ func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 
 	q := pg.New(s.Pool)
 
-	present, err := q.GetPresentObjects(r.Context(), req.Keys)
+	present, err := q.GetPresentClosures(r.Context(), req.Keys)
 	if err != nil {
 		slog.Error("present", "error", err)
 		http.Error(w, "present: "+err.Error(), http.StatusInternalServerError)

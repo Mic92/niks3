@@ -43,6 +43,16 @@ WHERE key = any($1::varchar []);
 SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL;
 
+-- name: GetPresentClosures :many
+-- Narinfo keys that are roots of a committed closure with a live object.
+-- Only roots count: a narinfo that is present merely as a dependency of
+-- another closure disappears with that closure, so a client that skipped
+-- pushing it would lose it to GC.
+SELECT c.key
+FROM closures AS c
+JOIN objects AS o ON o.key = c.key
+WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL;
+
 -- name: TouchClosures :exec
 UPDATE closures SET updated_at = timezone('UTC', now())
 WHERE key = any($1::varchar []);
