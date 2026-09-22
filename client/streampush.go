@@ -48,8 +48,10 @@ type StreamResult struct {
 // StreamPusher pushes store paths read line by line from a reader as they
 // arrive and writes one JSON StreamResult per input path, so a long-running
 // CI driver learns per path when it is cached. While all `parallel` pushes
-// are busy, incoming paths accumulate into one batch of up to `batchSize`.
-// A line starting with `{` is a StreamRequest and forms a batch of its own.
+// are busy, incoming paths accumulate into one batch of up to `batchSize`;
+// once a push slot is free, a batch goes out as soon as no further input is
+// ready. A line starting with `{` is a StreamRequest and forms a batch of
+// its own.
 type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
@@ -108,9 +110,9 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	}
 
 	slots := make(chan struct{}, s.parallel)
-	submit := func(job func() []StreamResult) {
-		slots <- struct{}{}
 
+	// start runs job on a slot the caller already holds.
+	start := func(job func() []StreamResult) {
 		wg.Go(func() {
 			defer func() { <-slots }()
 
@@ -118,33 +120,86 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		})
 	}
 
+	// submit waits for a slot, then runs job.
+	submit := func(job func() []StreamResult) {
+		slots <- struct{}{}
+
+		start(job)
+	}
+
 	batch := make([]string, 0, s.batchSize)
+	takeBatch := func() []string {
+		b := batch
+		batch = make([]string, 0, s.batchSize)
+
+		return b
+	}
+
 	flush := func() {
 		if len(batch) > 0 {
-			b := batch
-			batch = make([]string, 0, s.batchSize)
+			b := takeBatch()
 
 			submit(func() []StreamResult { return s.upload(ctx, b) })
 		}
 	}
 
-	for {
-		line, ok := <-lines
-		if !ok {
-			break
-		}
-
+	take := func(line string) {
 		if strings.HasPrefix(line, "{") {
 			flush()
 			submit(func() []StreamResult { return s.uploadRequest(ctx, line) })
 
-			continue
+			return
 		}
 
 		batch = append(batch, line)
-		// Flush when full or when stdin has nothing more ready.
-		if len(batch) == s.batchSize || len(lines) == 0 {
+		if len(batch) == s.batchSize {
 			flush()
+		}
+	}
+
+loop:
+	for {
+		if len(batch) == 0 {
+			line, ok := <-lines
+			if !ok {
+				break
+			}
+
+			take(line)
+
+			continue
+		}
+
+		// A partial batch. Input that is already waiting joins it first, so
+		// consecutive lines coalesce regardless of how the reader and this
+		// loop are scheduled.
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				break loop
+			}
+
+			take(line)
+
+			continue
+		default:
+		}
+
+		// Nothing more ready: send the batch as soon as a slot is free, and
+		// keep growing it with whatever arrives until then. Fixing the batch
+		// before a slot is free would split input that arrives while all
+		// pushes are busy into many small pushes.
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				break loop
+			}
+
+			take(line)
+		case slots <- struct{}{}:
+			b := takeBatch()
+
+			start(func() []StreamResult { return s.upload(ctx, b) })
 		}
 	}
 
