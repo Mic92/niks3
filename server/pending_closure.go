@@ -137,15 +137,118 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
-	keys := make([]string, 0, len(objectsMap))
-	for k := range objectsMap {
-		keys = append(keys, k)
+	if s.testHookBeforePendingInsert != nil {
+		s.testHookBeforePendingInsert()
 	}
 
-	// The existence check and the optional S3 verification run before the
-	// transaction: they gained nothing from being inside it (READ COMMITTED
-	// snapshots per statement anyway), and the S3 round trips must not hold
-	// a pool connection, or a few verifying pushes starve every other handler.
+	// Every object of the closure gets a pending_objects row, whether or not
+	// it is present already. The row is what shields the object from GC while
+	// the push is in flight (MarkStaleObjects and GetObjectsReadyForDeletion
+	// skip pending keys) and what makes commit_pending_closure clear a
+	// tombstone the object picked up in the meantime.
+	//
+	// The rows are written before the existence check, not after: an object
+	// found present and then tombstoned and swept before its row existed
+	// would be committed live with nothing behind it in S3. With the rows in
+	// place first, anything the check then sees as live stays live until the
+	// closure commits or is cleaned up.
+	pendingClosure, allObjects, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap)
+	if err != nil {
+		return nil, err
+	}
+
+	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, verifyS3)
+	if err != nil {
+		// Without a response the client never commits this closure; drop it
+		// now rather than have its rows shield objects until GC cleans it up.
+		if delErr := pg.New(pool).DeletePendingClosure(context.WithoutCancel(ctx), pendingClosure.ID); delErr != nil {
+			slog.Warn("failed to drop pending closure after error", "id", pendingClosure.ID, "error", delErr)
+		}
+
+		return nil, err
+	}
+
+	return &PendingClosure{
+		id:             pendingClosure.ID,
+		startedAt:      pendingClosure.StartedAt.Time,
+		pendingObjects: uploadObjects,
+	}, nil
+}
+
+// insertPendingClosure records the closure and a pending row for each of its
+// objects in one transaction.
+func insertPendingClosure(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	closureKey string,
+	roots []string,
+	objectsMap map[string]objectWithRefs,
+) (pg.PendingClosure, []pg.InsertPendingObjectsParams, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	committed := false
+
+	// rollbackOnError reads err, so every error below must be assigned to it
+	// (no := in nested scopes) or the transaction and its connection leak.
+	defer rollbackOnError(ctx, &tx, &err, &committed)
+
+	queries := pg.New(tx)
+
+	var pendingClosure pg.PendingClosure
+
+	if roots != nil {
+		pendingClosure, err = queries.InsertPush(ctx, pg.InsertPushParams{Key: closureKey, Roots: roots})
+	} else {
+		pendingClosure, err = queries.InsertPendingClosure(ctx, closureKey)
+	}
+
+	if err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending closure: %w", err)
+	}
+
+	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
+
+	for objectKey, obj := range objectsMap {
+		allObjects = append(allObjects, pg.InsertPendingObjectsParams{
+			PendingClosureID: pendingClosure.ID,
+			Key:              objectKey,
+			Refs:             obj.Refs,
+			Size:             optionalSize(obj.NarSize),
+		})
+	}
+
+	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	committed = true
+
+	return pendingClosure, allObjects, nil
+}
+
+// objectsToUpload returns the pending rows whose objects the client must
+// upload: those the database does not consider live and, with verifyS3, those
+// the database considers live but S3 does not have.
+func (s *Service) objectsToUpload(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	allObjects []pg.InsertPendingObjectsParams,
+	verifyS3 bool,
+) ([]pg.InsertPendingObjectsParams, error) {
+	keys := make([]string, 0, len(allObjects))
+	for _, row := range allObjects {
+		keys = append(keys, row.Key)
+	}
+
+	// The S3 round trips must not hold a pool connection, or a few verifying
+	// pushes starve every other handler; neither query needs a transaction.
 	existingObjects, err := pg.New(pool).GetExistingObjects(ctx, keys)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get existing objects: %w", err)
@@ -183,70 +286,15 @@ func createPendingClosureInner(
 		}
 	}
 
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
-	}
+	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
 
-	committed := false
-
-	// rollbackOnError reads err, so every error below must be assigned to it
-	// (no := in nested scopes) or the transaction and its connection leak.
-	defer rollbackOnError(ctx, &tx, &err, &committed)
-
-	queries := pg.New(tx)
-
-	var pendingClosure pg.PendingClosure
-
-	if roots != nil {
-		pendingClosure, err = queries.InsertPush(ctx, pg.InsertPushParams{Key: closureKey, Roots: roots})
-	} else {
-		pendingClosure, err = queries.InsertPendingClosure(ctx, closureKey)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
-	}
-
-	// Every object of the closure gets a pending_objects row, whether or not
-	// it is present already. The row is what shields the object from GC while
-	// the push is in flight (MarkStaleObjects and GetObjectsReadyForDeletion
-	// skip pending keys) and what makes commit_pending_closure clear a
-	// tombstone the object picked up in the meantime. Only objects that are
-	// not present are handed to the client for upload.
-	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
-	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap)-len(present))
-
-	for objectKey, obj := range objectsMap {
-		row := pg.InsertPendingObjectsParams{
-			PendingClosureID: pendingClosure.ID,
-			Key:              objectKey,
-			Refs:             obj.Refs,
-			Size:             optionalSize(obj.NarSize),
-		}
-
-		allObjects = append(allObjects, row)
-
-		if !present[objectKey] {
+	for _, row := range allObjects {
+		if !present[row.Key] {
 			uploadObjects = append(uploadObjects, row)
 		}
 	}
 
-	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
-		return nil, fmt.Errorf("failed to insert pending objects: %w", err)
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	committed = true
-
-	return &PendingClosure{
-		id:             pendingClosure.ID,
-		startedAt:      pendingClosure.StartedAt.Time,
-		pendingObjects: uploadObjects,
-	}, nil
+	return uploadObjects, nil
 }
 
 // createPendingObjects generates presigned URLs or multipart upload info for pending objects.

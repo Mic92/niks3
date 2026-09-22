@@ -20,6 +20,11 @@ SELECT object_count, total_bytes FROM object_stats WHERE id;
 -- name: CountPendingClosures :one
 SELECT count(*) FROM pending_closures;
 
+-- name: DeletePendingClosure :exec
+-- Drop a pending closure this server could not hand to the client; its
+-- pending objects and multipart uploads cascade.
+DELETE FROM pending_closures WHERE id = $1;
+
 -- name: GetPendingObjectKeys :many
 SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;

@@ -90,3 +90,9 @@ func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, 
 		{server: &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}, ln: unix},
 	}, nil)
 }
+
+// SetTestHookBeforePendingInsert runs f right before a pending closure and
+// its objects are written, before the existence check.
+func (s *Service) SetTestHookBeforePendingInsert(f func()) {
+	s.testHookBeforePendingInsert = f
+}

@@ -118,6 +118,17 @@ func (q *Queries) DeleteMultipartUpload(ctx context.Context, uploadID string) er
 	return err
 }
 
+const deletePendingClosure = `-- name: DeletePendingClosure :exec
+DELETE FROM pending_closures WHERE id = $1
+`
+
+// Drop a pending closure this server could not hand to the client; its
+// pending objects and multipart uploads cascade.
+func (q *Queries) DeletePendingClosure(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deletePendingClosure, id)
+	return err
+}
+
 const deletePin = `-- name: DeletePin :exec
 DELETE FROM pins
 WHERE name = $1

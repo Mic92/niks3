@@ -139,6 +139,10 @@ type Service struct {
 
 	GCTasks *GCTaskStore
 	Metrics *Metrics
+
+	// testHookBeforePendingInsert runs right before a pending closure is
+	// written; tests use it to interleave a GC run with a push.
+	testHookBeforePendingInsert func()
 }
 
 // Close closes the database connection pool.
