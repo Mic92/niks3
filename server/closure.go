@@ -170,10 +170,18 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 }
 
 // runGarbageCollection executes the full GC sequence in a background goroutine,
-// updating the task snapshot after each phase. It uses context.Background() so
-// that client disconnects or reverse-proxy timeouts do not cancel the work.
+// updating the task snapshot after each phase. The context is detached from
+// the request so client disconnects or reverse-proxy timeouts do not cancel
+// the work, but tied to Streams so shutdown does: the run holds a pool
+// connection for the advisory lock, and Pool.Close would otherwise wait for
+// the whole run to finish. An interrupted sweep leaves tombstoned rows whose
+// objects are already gone from S3; the next run reaps them.
 func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Duration, force bool) {
 	ctx := context.Background()
+	if s.Streams != nil {
+		ctx = s.Streams
+	}
+
 	stats := &api.GCStats{}
 
 	start := time.Now()
