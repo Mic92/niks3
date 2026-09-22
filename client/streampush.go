@@ -41,6 +41,8 @@ type StreamResult struct {
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+	// What the server signed the path with, so the caller can add them to its own store.
+	Signatures []string `json:"signatures,omitempty"`
 }
 
 // StreamPusher pushes store paths read line by line from a reader as they
@@ -52,6 +54,8 @@ type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
 	batchSize int
+	// Signatures, if set, fills StreamResult.Signatures for pushed paths.
+	Signatures func(path string) []string
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -155,6 +159,15 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	return nil
 }
 
+func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult {
+	res := StreamResult{ID: id, Path: path, Status: status, Message: msg}
+	if status == streamStatusOK && s.Signatures != nil {
+		res.Signatures = s.Signatures(path)
+	}
+
+	return res
+}
+
 // All or nothing: the outputs of one build must not be published partially.
 func (s *StreamPusher) uploadRequest(ctx context.Context, line string) []StreamResult {
 	var req StreamRequest
@@ -172,7 +185,7 @@ func (s *StreamPusher) uploadRequest(ctx context.Context, line string) []StreamR
 
 	results := make([]StreamResult, 0, len(req.Paths))
 	for _, p := range req.Paths {
-		results = append(results, StreamResult{ID: req.ID, Path: p, Status: status, Message: msg})
+		results = append(results, s.result(req.ID, p, status, msg))
 	}
 
 	return results
@@ -185,7 +198,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 	_, err := s.push(ctx, batch)
 	if err == nil {
 		for _, p := range batch {
-			results = append(results, StreamResult{ID: 0, Path: p, Status: streamStatusOK, Message: ""})
+			results = append(results, s.result(0, p, streamStatusOK, ""))
 		}
 
 		return results
@@ -223,7 +236,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			continue
 		}
 
-		results = append(results, StreamResult{ID: 0, Path: p, Status: streamStatusOK, Message: ""})
+		results = append(results, s.result(0, p, streamStatusOK, ""))
 		succeeded++
 	}
 

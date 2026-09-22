@@ -22,15 +22,24 @@ type result struct {
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+
+	Signatures []string `json:"signatures"`
 }
 
 func runStream(t *testing.T, push client.StreamPushFunc, parallel, batch int, feed func(w io.Writer)) []result {
+	t.Helper()
+
+	return runStreamSigned(t, push, nil, parallel, batch, feed)
+}
+
+func runStreamSigned(t *testing.T, push client.StreamPushFunc, sigs func(string) []string, parallel, batch int, feed func(w io.Writer)) []result {
 	t.Helper()
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 
 	s := client.NewStreamPusher(push, parallel, batch)
+	s.Signatures = sigs
 
 	done := make(chan error, 1)
 
@@ -309,5 +318,57 @@ func TestStreamPushRequestLine(t *testing.T) {
 	wantCalls := []string{"[/nix/store/a]", "[/nix/store/b /nix/store/c]", "[/nix/store/d]"}
 	if !slices.Equal(calls, wantCalls) {
 		t.Fatalf("calls %v, want %v", calls, wantCalls)
+	}
+}
+
+func TestStreamPushReportsSignatures(t *testing.T) {
+	t.Parallel()
+
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		if slices.Contains(paths, "/nix/store/bad") {
+			return nil, errors.New("boom")
+		}
+
+		return paths, nil
+	}
+	sigs := func(p string) []string { return []string{"key-1:" + p} }
+
+	results := runStreamSigned(t, push, sigs, 1, 1, func(w io.Writer) {
+		fmt.Fprintln(w, "/nix/store/a")
+		fmt.Fprintln(w, `{"id":7,"paths":["/nix/store/b"]}`)
+		fmt.Fprintln(w, "/nix/store/bad")
+	})
+
+	got := map[string]result{}
+	for _, r := range results {
+		got[r.Path] = r
+	}
+
+	for _, p := range []string{"/nix/store/a", "/nix/store/b"} {
+		if got[p].Status != "ok" || !slices.Equal(got[p].Signatures, []string{"key-1:" + p}) {
+			t.Errorf("%s: %+v", p, got[p])
+		}
+	}
+
+	if got["/nix/store/bad"].Status != "error" || got["/nix/store/bad"].Signatures != nil {
+		t.Errorf("failed path reports signatures: %+v", got["/nix/store/bad"])
+	}
+}
+
+func TestClientSignaturesByStorePath(t *testing.T) {
+	t.Parallel()
+
+	c := &client.Client{}
+	c.RecordSignatures(
+		map[string]client.NarinfoMetadata{"h1.narinfo": {StorePath: "/nix/store/h1-a"}, "h2.narinfo": {StorePath: "/nix/store/h2-b"}},
+		map[string][]string{"h1.narinfo": {"k:1"}},
+	)
+
+	if got := c.Signatures("/nix/store/h1-a"); !slices.Equal(got, []string{"k:1"}) {
+		t.Errorf("signed path: %v", got)
+	}
+
+	if got := c.Signatures("/nix/store/h2-b"); got != nil {
+		t.Errorf("unsigned path: %v", got)
 	}
 }

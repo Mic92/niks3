@@ -42,7 +42,7 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "  --stdin")
 	fmt.Fprintln(os.Stderr, "        Read store paths line by line from stdin and push them as they")
 	fmt.Fprintln(os.Stderr, "        arrive. Writes one JSON line per path to stdout:")
-	fmt.Fprintln(os.Stderr, `        {"path":"...","status":"ok"|"error"|"stale","message":"..."}`)
+	fmt.Fprintln(os.Stderr, `        {"path":"...","status":"ok"|"error"|"stale","message":"...","signatures":["..."]}`)
 	fmt.Fprintln(os.Stderr, `        A line {"paths":[...]} is pushed as one unit.`)
 	fmt.Fprintln(os.Stderr, "        Exits after stdin is closed and everything was reported.")
 	fmt.Fprintf(os.Stderr, "  --batch-size int\n        With --stdin: max paths per push (default: %d)\n", client.DefaultStreamBatchSize)
@@ -255,7 +255,10 @@ func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, pa
 
 	defer c.WaitRegistrations()
 
-	return client.NewStreamPusher(c.PushPaths, parallel, batchSize).Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
+	pusher := client.NewStreamPusher(c.PushPaths, parallel, batchSize)
+	pusher.Signatures = c.Signatures
+
+	return pusher.Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
 }
 
 func gcCommand(serverURL string, ts client.TokenSource, olderThan, pendingOlderThan string, force bool, debug bool, tf cmdutil.TLSFlags) error {

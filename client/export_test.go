@@ -85,3 +85,8 @@ func NewTestClientForServer(serverURL string) (*Client, error) {
 func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *MultipartUploadInfo, objectKey string, partSize int) error {
 	return c.uploadMultipart(ctx, r, info, objectKey, partSize)
 }
+
+// RecordSignatures re-exports (*Client).recordSignatures for tests.
+func (c *Client) RecordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
+	c.recordSignatures(narinfos, signatures)
+}

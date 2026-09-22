@@ -424,10 +424,32 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, narinfosByClosureID 
 		}
 
 		maps.Copy(signaturesByKey, signatures)
+		c.recordSignatures(narinfos, signatures)
 	}
 
 	// Generate, compress, and upload narinfos in parallel
 	return c.uploadNarinfosInParallel(ctx, narinfosToSign, signaturesByKey, pendingObjects)
+}
+
+// Signatures returns what the server signed the path with during this process's pushes.
+func (c *Client) Signatures(path string) []string {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	return c.signed[path]
+}
+
+func (c *Client) recordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	if c.signed == nil {
+		c.signed = make(map[string][]string, len(signatures))
+	}
+
+	for key, sigs := range signatures {
+		c.signed[narinfos[key].StorePath] = sigs
+	}
 }
 
 // uploadNarinfosInParallel generates, compresses, and uploads narinfos in parallel.
