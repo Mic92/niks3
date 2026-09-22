@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"golang.org/x/sync/errgroup"
 )
 
-// uploadNARWithListing uploads a NAR and its listing.
+// uploadNARWithListing uploads a NAR and, in parallel, its listing.
 func (c *Client) uploadNARWithListing(
 	ctx context.Context,
 	narTask uploadTask,
@@ -18,7 +20,28 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("missing PathInfo for NAR %s", narTask.key)
 	}
 
-	listing, err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj, narTask.key)
+	var listingUpload errgroup.Group
+
+	onListing := func(listing *NarListing) {
+		if lsTask == nil || listing == nil {
+			return
+		}
+
+		listingUpload.Go(func() error {
+			if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
+				return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
+			}
+
+			c.RegisterUploadedObject(ctx, lsTask.key)
+			slog.Debug("Uploaded listing", "key", lsTask.key)
+
+			return nil
+		})
+	}
+
+	err := c.CompressAndUploadNAR(ctx, pathInfo.Path, pathInfo.NarSize, narTask.obj, narTask.key, onListing)
+	listingErr := listingUpload.Wait()
+
 	if err != nil {
 		if errors.Is(err, ErrUploadSuperseded) {
 			// A peer already uploaded this NAR (and its listing); nothing to do.
@@ -30,15 +53,5 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
 	}
 
-	// Upload listing immediately in same goroutine
-	if lsTask != nil && listing != nil {
-		if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
-			return fmt.Errorf("uploading listing %s: %w", lsTask.key, err)
-		}
-
-		c.RegisterUploadedObject(ctx, lsTask.key)
-		slog.Debug("Uploaded listing", "key", lsTask.key)
-	}
-
-	return nil
+	return listingErr //nolint:wrapcheck // wrapped in the task
 }
