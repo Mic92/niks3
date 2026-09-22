@@ -102,27 +102,26 @@ func terminateProcess(cmd *exec.Cmd) {
 		return
 	}
 
-	time.AfterFunc(10*time.Second, func() {
-		err = syscall.Kill(-pgid, syscall.SIGKILL)
-		if err != nil {
-			slog.Error("failed to kill rustfs", "error", err)
+	// The escalation runs on its own goroutine: it must not share err with
+	// this one, and it is stopped once Wait returns so it does not fire on a
+	// process group that is already gone.
+	killTimer := time.AfterFunc(10*time.Second, func() {
+		if killErr := syscall.Kill(-pgid, syscall.SIGKILL); killErr != nil {
+			slog.Error("failed to kill process group", "error", killErr)
 
 			return
 		}
 
-		slog.Info("killed rustfs")
+		slog.Info("killed process group", "pgid", pgid)
 	})
+	defer killTimer.Stop()
 
-	err = syscall.Kill(-pgid, syscall.SIGTERM)
-	if err != nil {
-		slog.Error("failed to kill rustfs", "error", err)
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+		slog.Error("failed to terminate process group", "error", err)
 	}
 
-	err = cmd.Wait()
-	if err != nil {
-		slog.Error("failed to wait for rustfs", "error", err)
-
-		return
+	if err := cmd.Wait(); err != nil {
+		slog.Error("failed to wait for process", "error", err)
 	}
 }
 
