@@ -414,3 +414,96 @@ func TestDrainTimeout(t *testing.T) {
 		t.Errorf("expected queue untouched %v, got %v", paths, left)
 	}
 }
+
+// A batch whose removal from the queue fails is not progress: treating it as
+// such spun on the same batch with no backoff and kept the drain from giving
+// up. The drain must terminate on its own here rather than run until killed.
+func TestWorkerRemoveFailureIsNotProgress(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+
+	q, err := hook.OpenQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gcedPath := filepath.Join(t.TempDir(), "nonexistent")
+	if err := q.Enqueue([]string{gcedPath}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen read-only: reads work, the DELETE fails.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Chmod(dbPath+suffix, 0o444); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+
+	q, err = hook.OpenQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = q.Close() })
+
+	if err := q.Remove([]string{gcedPath}); err == nil {
+		t.Skip("queue is writable despite read-only file (running as root?)")
+	}
+
+	push, batches := recordingPush()
+	drainWorker(t, q, push, 10)
+
+	if n := len(batches()); n != 0 {
+		t.Errorf("nonexistent path was pushed %d times", n)
+	}
+}
+
+// A stat error other than "not found" is not proof the path is gone, so the
+// path stays queued for a later attempt instead of being dropped.
+func TestWorkerKeepsPathItCannotStat(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("root can stat anything")
+	}
+
+	q := newTestQueue(t)
+
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	p := writeTestFile(t, locked, "aaa")
+
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	if err := q.Enqueue([]string{p}); err != nil {
+		t.Fatal(err)
+	}
+
+	push, batches := recordingPush()
+	drainWorker(t, q, push, 10)
+
+	if n := len(batches()); n != 0 {
+		t.Errorf("unreadable path was pushed %d times", n)
+	}
+
+	count, err := q.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count != 1 {
+		t.Errorf("queue holds %d paths, want the unreadable one kept", count)
+	}
+}
