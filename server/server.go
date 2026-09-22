@@ -145,6 +145,9 @@ type Service struct {
 	testHookBeforePendingInsert func()
 	// testHookBeforeProxyGet runs between the read proxy's Stat and its GET.
 	testHookBeforeProxyGet func()
+	// testHookBeforeRedundantAbort runs before a completed multipart upload
+	// aborts its peers' uploads.
+	testHookBeforeRedundantAbort func()
 }
 
 // Close closes the database connection pool.

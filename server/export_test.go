@@ -101,3 +101,9 @@ func (s *Service) SetTestHookBeforePendingInsert(f func()) {
 func (s *Service) SetTestHookBeforeProxyGet(f func()) {
 	s.testHookBeforeProxyGet = f
 }
+
+// SetTestHookBeforeRedundantAbort runs f before a completed multipart upload
+// aborts the uploads its peers opened for the same key.
+func (s *Service) SetTestHookBeforeRedundantAbort(f func()) {
+	s.testHookBeforeRedundantAbort = f
+}

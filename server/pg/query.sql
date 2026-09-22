@@ -94,7 +94,9 @@ LIMIT 1;
 
 -- name: CleanupPendingClosures :execrows
 -- Removes pending closures started before cutoff; pass the same cutoff that
--- selected the multipart uploads to abort (GetOldMultipartUploads).
+-- selected the multipart uploads to abort (GetOldMultipartUploads). Closures
+-- in keep are left alone: one of their multipart uploads could not be
+-- aborted, and the row is the only handle on it.
 WITH cutoff_time AS (
     SELECT sqlc.arg(cutoff)::timestamp AS time
 ),
@@ -103,6 +105,7 @@ old_closures AS (
     SELECT id
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
+      AND NOT (id = any(sqlc.arg(keep)::bigint []))
 ),
 
 -- Insert pending objects into objects table if they don't already exist
@@ -177,7 +180,7 @@ INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3);
 
 -- name: GetOldMultipartUploads :many
-SELECT upload_id, object_key
+SELECT upload_id, object_key, pending_closure_id
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
 WHERE pc.started_at < sqlc.arg(cutoff)::timestamp;
