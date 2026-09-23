@@ -156,6 +156,26 @@ func validateReadRedirect(opts *options) error {
 	return nil
 }
 
+func validateTLSOptions(opts *options) error {
+	if (opts.TLSCert == "") != (opts.TLSKey == "") {
+		return errors.New("--tls-cert and --tls-key must be set together")
+	}
+
+	if opts.MTLSProxySocket != "" && (opts.MTLSProxyHeader == "" || !strings.HasPrefix(opts.MTLSProxySocket, "/")) {
+		return errors.New("--mtls-proxy-socket needs --mtls-proxy-header and an absolute path")
+	}
+
+	if opts.TLSClientCA != "" && opts.TLSCert == "" {
+		return errors.New("--tls-client-ca requires --tls-cert and --tls-key")
+	}
+
+	if opts.TLSClientCA != "" && opts.MTLSProxyHeader != "" {
+		return errors.New("--tls-client-ca and --mtls-proxy-header are mutually exclusive")
+	}
+
+	return nil
+}
+
 func parseArgs() (*options, error) {
 	var opts options
 
@@ -205,6 +225,8 @@ func parseArgs() (*options, error) {
 		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
 	flag.StringVar(&opts.MTLSProxyHeader, "mtls-proxy-header", getEnvOrDefault("NIKS3_MTLS_PROXY_HEADER", ""),
 		"Header set to SUCCESS by the reverse proxy after mTLS client cert verification (e.g. X-SSL-Client-Verify). Requests with it skip bearer auth")
+	flag.StringVar(&opts.MTLSProxySocket, "mtls-proxy-socket", getEnvOrDefault("NIKS3_MTLS_PROXY_SOCKET", ""),
+		"Unix socket only the reverse proxy can reach. With --mtls-proxy-header, the header is trusted only there and stripped on --http-addr. A socket-activated fd named \"proxy\" is used for it")
 	flag.StringVar(&opts.MTLSSubjectHeader, "mtls-subject-header", getEnvOrDefault("NIKS3_MTLS_SUBJECT_HEADER", "X-SSL-Client-Dn"),
 		"Header carrying the verified cert's subject DN, used with --mtls-bound-subject")
 
@@ -317,16 +339,8 @@ func parseArgs() (*options, error) {
 		return nil, err
 	}
 
-	if (opts.TLSCert == "") != (opts.TLSKey == "") {
-		return nil, errors.New("--tls-cert and --tls-key must be set together")
-	}
-
-	if opts.TLSClientCA != "" && opts.TLSCert == "" {
-		return nil, errors.New("--tls-client-ca requires --tls-cert and --tls-key")
-	}
-
-	if opts.TLSClientCA != "" && opts.MTLSProxyHeader != "" {
-		return nil, errors.New("--tls-client-ca and --mtls-proxy-header are mutually exclusive")
+	if err := validateTLSOptions(&opts); err != nil {
+		return nil, err
 	}
 
 	if len(opts.APIToken) < minAPITokenLength {

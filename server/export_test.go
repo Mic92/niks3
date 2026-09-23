@@ -16,7 +16,7 @@ func SystemdListenerForTest() (net.Listener, error) { return systemdListener() }
 // ServeForTest exposes the graceful-shutdown serve loop to tests, driven by a
 // caller-supplied context and listener instead of OS signals.
 func ServeForTest(shutdownCtx context.Context, server *http.Server, ln net.Listener) error {
-	return serve(shutdownCtx, server, ln, false, nil)
+	return serve(shutdownCtx, []endpoint{{server: server, ln: ln}}, nil)
 }
 
 // RunWatchdogForTest exposes runWatchdog to tests.
@@ -79,4 +79,14 @@ func LeadHeartbeat() time.Duration { return leadHeartbeat }
 func RestartedNow(grace time.Duration) {
 	startedAt = time.Now()
 	incumbentGrace = grace
+}
+
+// ServeProxySocketForTest serves handler like Run does with
+// --mtls-proxy-socket: headers are stripped on the TCP listener and trusted
+// on the unix one.
+func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, tcp, unix net.Listener, headers ...string) error {
+	return serve(shutdownCtx, []endpoint{
+		{server: &http.Server{Handler: stripHeaders(handler, headers...), ReadHeaderTimeout: time.Second}, ln: tcp},
+		{server: &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}, ln: unix},
+	}, nil)
 }

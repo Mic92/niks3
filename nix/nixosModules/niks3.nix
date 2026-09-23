@@ -189,6 +189,8 @@ let
     )
   );
 
+  proxySocket = "/run/niks3/proxy.sock";
+
   serverArgs = [
     "--db"
     cfg.database.connectionString
@@ -233,6 +235,8 @@ let
     [
       "--mtls-proxy-header"
       "X-SSL-Client-Verify"
+      "--mtls-proxy-socket"
+      proxySocket
     ]
     ++ lib.concatMap (s: [
       "--mtls-bound-subject"
@@ -711,6 +715,22 @@ in
       socketConfig.ListenStream = cfg.httpAddr;
     };
 
+    # Only nginx can reach this socket, so the mTLS headers are trusted here
+    # and stripped on httpAddr.
+    systemd.sockets.niks3-proxy = lib.mkIf cfg.nginx.mtls.enable {
+      description = "niks3 server proxy socket";
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = proxySocket;
+        FileDescriptorName = "proxy";
+        Service = "niks3.service";
+        SocketUser = config.services.nginx.user;
+        SocketGroup = cfg.group;
+        SocketMode = "0600";
+        DirectoryMode = "0755";
+      };
+    };
+
     systemd.services.niks3 = {
       description = "niks3 server";
       # Start eagerly at boot (so bucket init and landing-page upload happen
@@ -720,8 +740,13 @@ in
         "network.target"
         "niks3.socket"
       ]
+      ++ lib.optional cfg.nginx.mtls.enable "niks3-proxy.socket"
       ++ lib.optional cfg.database.createLocally "postgresql.service";
-      requires = [ "niks3.socket" ] ++ lib.optional cfg.database.createLocally "postgresql.service";
+      requires = [
+        "niks3.socket"
+      ]
+      ++ lib.optional cfg.nginx.mtls.enable "niks3-proxy.socket"
+      ++ lib.optional cfg.database.createLocally "postgresql.service";
 
       serviceConfig = {
         # niks3-server sends sd_notify READY=1 once the listener is bound and
@@ -836,7 +861,8 @@ in
           };
         '';
         locations."/" = {
-          proxyPass = "http://${cfg.httpAddr}";
+          proxyPass =
+            if cfg.nginx.mtls.enable then "http://unix:${proxySocket}" else "http://${cfg.httpAddr}";
           extraConfig = ''
             proxy_connect_timeout ${cfg.nginx.proxyTimeout};
             proxy_send_timeout ${cfg.nginx.proxyTimeout};

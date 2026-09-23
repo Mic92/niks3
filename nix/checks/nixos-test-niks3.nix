@@ -309,6 +309,9 @@ testers.nixosTest {
     # With a verified client cert, no bearer token required.
     server.succeed(f"{niks3_cmd} push --server-url {https_url} {mtls_args} {test_path}")
 
+    # The plain listener ignores forged proxy headers.
+    server.fail("curl -sf -X POST -H 'X-SSL-Client-Verify: SUCCESS' -H 'X-SSL-Client-Dn: CN=niks3 test client' -d '{}' http://127.0.0.1:5751/api/pending_closures")
+
     # Without a client cert, anonymous TLS still gets 401 from niks3.
     server.fail(f"{niks3_cmd} push --server-url {https_url} --ca-cert {certs}/ca.pem {test_path}")
 
