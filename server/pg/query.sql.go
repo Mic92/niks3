@@ -69,6 +69,15 @@ func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) erro
 	return err
 }
 
+const commitPush = `-- name: CommitPush :exec
+SELECT commit_push($1::bigint)
+`
+
+func (q *Queries) CommitPush(ctx context.Context, dollar_1 int64) error {
+	_, err := q.db.Exec(ctx, commitPush, dollar_1)
+	return err
+}
+
 const countPendingClosures = `-- name: CountPendingClosures :one
 SELECT count(*) FROM pending_closures
 `
@@ -493,13 +502,18 @@ func (q *Queries) InsertMultipartUpload(ctx context.Context, arg InsertMultipart
 const insertPendingClosure = `-- name: InsertPendingClosure :one
 INSERT INTO pending_closures (started_at, key)
 VALUES (timezone('UTC', now()), $1)
-RETURNING id, key, started_at
+RETURNING id, key, started_at, roots
 `
 
 func (q *Queries) InsertPendingClosure(ctx context.Context, key string) (PendingClosure, error) {
 	row := q.db.QueryRow(ctx, insertPendingClosure, key)
 	var i PendingClosure
-	err := row.Scan(&i.ID, &i.Key, &i.StartedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.StartedAt,
+		&i.Roots,
+	)
 	return i, err
 }
 
@@ -508,6 +522,29 @@ type InsertPendingObjectsParams struct {
 	Key              string      `json:"key"`
 	Refs             []string    `json:"refs"`
 	Size             pgtype.Int8 `json:"size"`
+}
+
+const insertPush = `-- name: InsertPush :one
+INSERT INTO pending_closures (started_at, key, roots)
+VALUES (timezone('UTC', now()), $1, $2)
+RETURNING id, key, started_at, roots
+`
+
+type InsertPushParams struct {
+	Key   string   `json:"key"`
+	Roots []string `json:"roots"`
+}
+
+func (q *Queries) InsertPush(ctx context.Context, arg InsertPushParams) (PendingClosure, error) {
+	row := q.db.QueryRow(ctx, insertPush, arg.Key, arg.Roots)
+	var i PendingClosure
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.StartedAt,
+		&i.Roots,
+	)
+	return i, err
 }
 
 const listPins = `-- name: ListPins :many

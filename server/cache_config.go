@@ -22,6 +22,7 @@ func (s *Service) CacheConfigHandler(w http.ResponseWriter, r *http.Request) {
 		SubstituterURL: s.CacheURL,
 		PublicKeys:     make([]string, 0, len(s.SigningKeys)),
 		MaxNarSize:     s.MaxNarSize,
+		Pushes:         true,
 	}
 
 	for _, key := range s.SigningKeys {

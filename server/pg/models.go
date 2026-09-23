@@ -37,6 +37,7 @@ type PendingClosure struct {
 	ID        int64            `json:"id"`
 	Key       string           `json:"key"`
 	StartedAt pgtype.Timestamp `json:"started_at"`
+	Roots     []string         `json:"roots"`
 }
 
 type PendingObject struct {

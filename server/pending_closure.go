@@ -170,6 +170,7 @@ func createPendingClosureInner(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
+	roots []string,
 	objectsMap map[string]objectWithRefs,
 	s *Service,
 	verifyS3 bool,
@@ -191,7 +192,13 @@ func createPendingClosureInner(
 
 	var pendingClosure pg.PendingClosure
 
-	if pendingClosure, err = queries.InsertPendingClosure(ctx, closureKey); err != nil {
+	if roots != nil {
+		pendingClosure, err = queries.InsertPush(ctx, pg.InsertPushParams{Key: closureKey, Roots: roots})
+	} else {
+		pendingClosure, err = queries.InsertPendingClosure(ctx, closureKey)
+	}
+
+	if err != nil {
 		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
@@ -381,10 +388,11 @@ func (s *Service) createPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
+	roots []string,
 	objectsMap map[string]objectWithRefs,
 	verifyS3 bool,
 ) (*PendingClosureResponse, error) {
-	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, objectsMap, s, verifyS3)
+	pendingClosure, err := createPendingClosureInner(ctx, pool, closureKey, roots, objectsMap, s, verifyS3)
 	if err != nil {
 		return nil, err
 	}

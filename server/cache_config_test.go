@@ -43,6 +43,7 @@ func TestCacheConfigHandler(t *testing.T) {
 			want: api.CacheConfig{
 				SubstituterURL: "https://cache.example.com",
 				PublicKeys:     []string{testSigningPublic},
+				Pushes:         true,
 			},
 		},
 		{
@@ -53,6 +54,7 @@ func TestCacheConfigHandler(t *testing.T) {
 			want: api.CacheConfig{
 				SubstituterURL: "",
 				PublicKeys:     []string{testSigningPublic},
+				Pushes:         true,
 			},
 		},
 		{
@@ -63,6 +65,7 @@ func TestCacheConfigHandler(t *testing.T) {
 			want: api.CacheConfig{
 				SubstituterURL: "https://cache.example.com",
 				PublicKeys:     []string{},
+				Pushes:         true,
 			},
 		},
 		{
@@ -73,6 +76,7 @@ func TestCacheConfigHandler(t *testing.T) {
 			want: api.CacheConfig{
 				SubstituterURL: "https://cache.example.com",
 				PublicKeys:     []string{testSigningPublic},
+				Pushes:         true,
 				// OIDCAudience omitted — validator is nil
 			},
 		},

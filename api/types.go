@@ -93,4 +93,7 @@ type CacheConfig struct {
 	// MaxNarSize is the maximum uncompressed NAR size in bytes the server
 	// accepts. Clients skip closures containing larger paths. 0 means unlimited.
 	MaxNarSize uint64 `json:"max_nar_size,omitempty"`
+
+	// Pushes is true if the server has POST /api/pushes. Older servers omit it.
+	Pushes bool `json:"pushes,omitempty"`
 }

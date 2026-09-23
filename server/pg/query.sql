@@ -3,6 +3,14 @@ INSERT INTO pending_closures (started_at, key)
 VALUES (timezone('UTC', now()), $1)
 RETURNING *;
 
+-- name: InsertPush :one
+INSERT INTO pending_closures (started_at, key, roots)
+VALUES (timezone('UTC', now()), $1, $2)
+RETURNING *;
+
+-- name: CommitPush :exec
+SELECT commit_push($1::bigint);
+
 -- name: InsertPendingObjects :copyfrom
 INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2, $3, $4);
 

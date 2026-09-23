@@ -62,6 +62,34 @@ type createPendingClosureRequest struct {
 	VerifyS3 bool             `json:"verify_s3,omitempty"`
 }
 
+// validateObjects checks every key and size and indexes the objects by key.
+// On failure it has written the 400 response.
+func (s *Service) validateObjects(w http.ResponseWriter, objects []objectWithRefs) (map[string]objectWithRefs, bool) {
+	objectsMap := make(map[string]objectWithRefs, len(objects))
+
+	for _, object := range objects {
+		// Security gate: must run before any DB or S3 work.
+		if !IsValidUploadKey(object.Key, object.Type) {
+			http.Error(w, fmt.Sprintf("invalid object key %q for type %q", object.Key, object.Type), http.StatusBadRequest)
+
+			return nil, false
+		}
+
+		// Advisory size limit: nar_size is client-supplied and optional, the
+		// real filtering happens in the client based on /api/cache-config.
+		if s.MaxNarSize > 0 && object.NarSize != nil && *object.NarSize > s.MaxNarSize {
+			http.Error(w, fmt.Sprintf("NAR object %q size %d exceeds server max NAR size %d bytes",
+				object.Key, *object.NarSize, s.MaxNarSize), http.StatusBadRequest)
+
+			return nil, false
+		}
+
+		objectsMap[object.Key] = object
+	}
+
+	return objectsMap, true
+}
+
 // CreatePendingClosureHandler handles POST /pending_closures endpoint.
 // Request body:
 //
@@ -111,29 +139,12 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	objectsMap := make(map[string]objectWithRefs)
-
-	for _, object := range req.Objects {
-		// Security gate: must run before any DB or S3 work.
-		if !IsValidUploadKey(object.Key, object.Type) {
-			http.Error(w, fmt.Sprintf("invalid object key %q for type %q", object.Key, object.Type), http.StatusBadRequest)
-
-			return
-		}
-
-		// Advisory size limit: nar_size is client-supplied and optional, the
-		// real filtering happens in the client based on /api/cache-config.
-		if s.MaxNarSize > 0 && object.NarSize != nil && *object.NarSize > s.MaxNarSize {
-			http.Error(w, fmt.Sprintf("NAR object %q size %d exceeds server max NAR size %d bytes",
-				object.Key, *object.NarSize, s.MaxNarSize), http.StatusBadRequest)
-
-			return
-		}
-
-		objectsMap[object.Key] = object
+	objectsMap, ok := s.validateObjects(w, req.Objects)
+	if !ok {
+		return
 	}
 
-	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, objectsMap, req.VerifyS3)
+	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, nil, objectsMap, req.VerifyS3)
 	if err != nil {
 		if s.handleS3Error(w, err, "create pending closure") {
 			return

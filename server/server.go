@@ -310,23 +310,7 @@ func runServer(opts *options) error {
 	mux.HandleFunc("GET /api/cache-config", service.CacheConfigHandler)
 	mux.HandleFunc("GET /api/cache-stats", service.CacheStatsHandler)
 
-	mux.HandleFunc("POST /api/pending_closures", service.RequireScope(oidc.ScopeWrite, service.CreatePendingClosureHandler))
-	mux.HandleFunc("DELETE /api/pending_closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupPendingClosuresHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/sign", service.RequireScope(oidc.ScopeWrite, service.SignNarinfosHandler))
-	mux.HandleFunc("POST /api/pending_closures/{id}/complete", service.RequireScope(oidc.ScopeWrite, service.CommitPendingClosureHandler))
-	mux.HandleFunc("POST /api/multipart/complete", service.RequireScope(oidc.ScopeWrite, service.CompleteMultipartUploadHandler))
-	mux.HandleFunc("POST /api/uploads/complete", service.RequireScope(oidc.ScopeWrite, service.CompleteUploadHandler))
-	mux.HandleFunc("POST /api/uploads/skipped", service.RequireScope(oidc.ScopeWrite, service.SkippedUploadsHandler))
-	mux.HandleFunc("POST /api/multipart/request-parts", service.RequireScope(oidc.ScopeWrite, service.RequestMorePartsHandler))
-	mux.HandleFunc("HEAD /api/objects/{key...}", service.RequireScope(oidc.ScopeWrite, service.ObjectExistsHandler))
-	mux.HandleFunc("POST /api/objects/present", service.RequireScope(oidc.ScopeWrite, service.PresentHandler))
-	mux.HandleFunc("POST /api/farm/lead", service.RequireScope(oidc.ScopeWrite, service.LeadHandler))
-	mux.HandleFunc("GET /api/closures/{key}", service.RequireScope(oidc.ScopeWrite, service.GetClosureHandler))
-	mux.HandleFunc("DELETE /api/closures", service.RequireScope(oidc.ScopeAdmin, service.CleanupClosuresOlder))
-	mux.HandleFunc("GET /api/gc/status", service.RequireScope(oidc.ScopeAdmin, service.GCStatusHandler))
-	mux.HandleFunc("GET /api/pins", service.RequireScope(oidc.ScopeWrite, service.ListPinsHandler))
-	mux.HandleFunc("POST /api/pins/{name}", service.RequireScope(oidc.ScopeWrite, service.CreatePinHandler))
-	mux.HandleFunc("DELETE /api/pins/{name}", service.RequireScope(oidc.ScopeAdmin, service.DeletePinHandler))
+	service.registerAPIRoutes(mux)
 
 	if opts.EnableReadProxy {
 		service.EnableReadProxy = true
@@ -637,6 +621,30 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// registerAPIRoutes adds the authenticated API endpoints to mux.
+func (s *Service) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/pending_closures", s.RequireScope(oidc.ScopeWrite, s.CreatePendingClosureHandler))
+	mux.HandleFunc("DELETE /api/pending_closures", s.RequireScope(oidc.ScopeAdmin, s.CleanupPendingClosuresHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/sign", s.RequireScope(oidc.ScopeWrite, s.SignNarinfosHandler))
+	mux.HandleFunc("POST /api/pending_closures/{id}/complete", s.RequireScope(oidc.ScopeWrite, s.CommitPendingClosureHandler))
+	mux.HandleFunc("POST /api/pushes", s.RequireScope(oidc.ScopeWrite, s.CreatePushHandler))
+	mux.HandleFunc("POST /api/pushes/{id}/complete", s.RequireScope(oidc.ScopeWrite, s.CompletePushHandler))
+	mux.HandleFunc("POST /api/pushes/{id}/sign", s.RequireScope(oidc.ScopeWrite, s.SignNarinfosHandler))
+	mux.HandleFunc("POST /api/multipart/complete", s.RequireScope(oidc.ScopeWrite, s.CompleteMultipartUploadHandler))
+	mux.HandleFunc("POST /api/uploads/complete", s.RequireScope(oidc.ScopeWrite, s.CompleteUploadHandler))
+	mux.HandleFunc("POST /api/uploads/skipped", s.RequireScope(oidc.ScopeWrite, s.SkippedUploadsHandler))
+	mux.HandleFunc("POST /api/multipart/request-parts", s.RequireScope(oidc.ScopeWrite, s.RequestMorePartsHandler))
+	mux.HandleFunc("HEAD /api/objects/{key...}", s.RequireScope(oidc.ScopeWrite, s.ObjectExistsHandler))
+	mux.HandleFunc("POST /api/objects/present", s.RequireScope(oidc.ScopeWrite, s.PresentHandler))
+	mux.HandleFunc("POST /api/farm/lead", s.RequireScope(oidc.ScopeWrite, s.LeadHandler))
+	mux.HandleFunc("GET /api/closures/{key}", s.RequireScope(oidc.ScopeWrite, s.GetClosureHandler))
+	mux.HandleFunc("DELETE /api/closures", s.RequireScope(oidc.ScopeAdmin, s.CleanupClosuresOlder))
+	mux.HandleFunc("GET /api/gc/status", s.RequireScope(oidc.ScopeAdmin, s.GCStatusHandler))
+	mux.HandleFunc("GET /api/pins", s.RequireScope(oidc.ScopeWrite, s.ListPinsHandler))
+	mux.HandleFunc("POST /api/pins/{name}", s.RequireScope(oidc.ScopeWrite, s.CreatePinHandler))
+	mux.HandleFunc("DELETE /api/pins/{name}", s.RequireScope(oidc.ScopeAdmin, s.DeletePinHandler))
 }
 
 // logAuthFailure logs detailed information about an authentication failure.
