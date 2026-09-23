@@ -95,6 +95,10 @@ type options struct {
 	// no proxy headers involved.
 	TLSClientCA string
 
+	// TLSAddr, when set with TLSCert/TLSKey, serves HTTPS there and leaves
+	// HTTPAddr plain.
+	TLSAddr string
+
 	Debug bool
 }
 
@@ -342,69 +346,93 @@ func runServer(opts *options) error {
 		mux.HandleFunc("GET /", service.RootRedirectHandler)
 	}
 
-	server := &http.Server{
-		Addr:    opts.HTTPAddr,
-		Handler: service.Metrics.Instrument(mux),
-		// Bound slowloris on API endpoints. Bodies are JSON (<128 MB) and
-		// responses are small. The read proxy extends its own write deadline
-		// per-request via ProxyWriteTimeout for large NAR streams.
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+	newServer := func(addr string) *http.Server {
+		srv := &http.Server{
+			Addr:    addr,
+			Handler: service.Metrics.Instrument(mux),
+			// Bound slowloris on API endpoints. The read proxy extends its own
+			// write deadline per request for large NAR streams.
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		srv.RegisterOnShutdown(stopStreams)
+
+		return srv
 	}
 
-	server.RegisterOnShutdown(stopStreams)
+	main := endpoint{server: newServer(opts.HTTPAddr)}
+	endpoints := []endpoint{main}
 
-	useTLS := opts.TLSCert != ""
-	if useTLS {
+	if opts.TLSCert != "" {
 		tlsCfg, err := serverTLSConfig(opts.TLSClientCA)
 		if err != nil {
 			return err
 		}
 
-		// Load the keypair up front so a missing/invalid cert fails startup
-		// before we signal readiness, rather than inside ServeTLS afterwards.
+		// Fail startup on a bad keypair instead of inside ServeTLS.
 		cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
 		if err != nil {
 			return fmt.Errorf("loading TLS keypair: %w", err)
 		}
 
 		tlsCfg.Certificates = []tls.Certificate{cert}
-		server.TLSConfig = tlsCfg
 		service.NativeMTLS = opts.TLSClientCA != ""
+
+		if opts.TLSAddr == "" {
+			main.server.TLSConfig = tlsCfg
+			main.tls = true
+			endpoints = []endpoint{main}
+		} else {
+			tlsEndpoint := endpoint{server: newServer(opts.TLSAddr), tls: true, name: tlsListenerName}
+			tlsEndpoint.server.TLSConfig = tlsCfg
+			endpoints = append(endpoints, tlsEndpoint)
+		}
 	}
 
 	// DB pool ping is the watchdog liveness signal.
-	return serveWithGracefulShutdown(server, opts, useTLS, service.Pool.Ping)
+	return serveWithGracefulShutdown(endpoints, service.Pool.Ping)
 }
 
-// serveWithGracefulShutdown runs the HTTP server until a SIGINT/SIGTERM
+// tlsListenerName is the FileDescriptorName= of the TLS socket.
+const tlsListenerName = "tls"
+
+type endpoint struct {
+	server *http.Server
+	tls    bool
+	// name picks the socket-activated fd; empty takes whichever is left.
+	name string
+	ln   net.Listener
+}
+
+// serveWithGracefulShutdown runs the HTTP servers until a SIGINT/SIGTERM
 // arrives, then drains in-flight requests within shutdownTimeout.
-func serveWithGracefulShutdown(server *http.Server, opts *options, useTLS bool, healthCheck func(context.Context) error) error {
-	ln, err := makeListener(opts)
-	if err != nil {
+func serveWithGracefulShutdown(endpoints []endpoint, healthCheck func(context.Context) error) error {
+	if err := bindEndpoints(endpoints); err != nil {
 		return err
 	}
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return serve(sigCtx, server, ln, useTLS, healthCheck)
+	return serve(sigCtx, endpoints, healthCheck)
 }
 
-// serve runs the HTTP server on ln until shutdownCtx is done, then drains
-// in-flight requests within shutdownTimeout. Split out from
-// serveWithGracefulShutdown so tests can supply their own listener and drive
+// serve runs the HTTP servers on their listeners until shutdownCtx is done,
+// then drains in-flight requests within shutdownTimeout. Split out from
+// serveWithGracefulShutdown so tests can supply their own listeners and drive
 // shutdown without sending real signals.
-func serve(shutdownCtx context.Context, server *http.Server, ln net.Listener, useTLS bool, healthCheck func(context.Context) error) error {
-	serveErr := make(chan error, 1)
+func serve(shutdownCtx context.Context, endpoints []endpoint, healthCheck func(context.Context) error) error {
+	serveErr := make(chan error, len(endpoints))
 
-	go func() {
-		serveErr <- serveListener(server, ln, useTLS)
-	}()
+	for _, ep := range endpoints {
+		go func() {
+			serveErr <- serveListener(ep.server, ep.ln, ep.tls)
+		}()
+	}
 
-	// Listener is bound, so we are ready to accept connections.
+	// Listeners are bound, so we are ready to accept connections.
 	notifySystemd("READY=1")
 
 	if interval := watchdogInterval(); interval > 0 && healthCheck != nil {
@@ -429,29 +457,76 @@ func serve(shutdownCtx context.Context, server *http.Server, ln net.Listener, us
 	}
 
 	//nolint:contextcheck // drain context is intentionally independent of the shutdown signal
-	return drain(server)
+	return drain(endpoints)
 }
 
-// makeListener returns a socket-activated listener when systemd passed one,
-// otherwise it binds the configured HTTP address.
-func makeListener(opts *options) (net.Listener, error) {
-	sdListener, err := systemdListener()
+// bindEndpoints gives every endpoint a socket-activated fd or binds its address.
+func bindEndpoints(endpoints []endpoint) error {
+	activated, err := systemdListeners()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if sdListener != nil {
-		slog.Info("Using socket-activated listener", "address", sdListener.Addr())
+	closeAll := func() {
+		for _, l := range activated {
+			_ = l.ln.Close()
+		}
 
-		return sdListener, nil
+		for _, ep := range endpoints {
+			if ep.ln != nil {
+				_ = ep.ln.Close()
+			}
+		}
 	}
 
-	ln, err := net.Listen("tcp", opts.HTTPAddr) //nolint:noctx // listener lives for the whole server lifetime
-	if err != nil {
-		return nil, fmt.Errorf("failed to listen on %s: %w", opts.HTTPAddr, err)
+	take := func(name string) net.Listener {
+		for i, l := range activated {
+			if name == "" || l.name == name {
+				activated = append(activated[:i], activated[i+1:]...)
+
+				return l.ln
+			}
+		}
+
+		return nil
 	}
 
-	return ln, nil
+	for i := range endpoints {
+		if endpoints[i].name != "" {
+			endpoints[i].ln = take(endpoints[i].name)
+		}
+	}
+
+	for i := range endpoints {
+		if endpoints[i].name == "" {
+			endpoints[i].ln = take("")
+		}
+	}
+
+	for i := range endpoints {
+		ep := &endpoints[i]
+		if ep.ln != nil {
+			slog.Info("Using socket-activated listener", "address", ep.ln.Addr())
+
+			continue
+		}
+
+		ln, err := net.Listen("tcp", ep.server.Addr) //nolint:noctx // listener lives for the whole server lifetime
+		if err != nil {
+			closeAll()
+
+			return fmt.Errorf("failed to listen on %s: %w", ep.server.Addr, err)
+		}
+
+		ep.ln = ln
+	}
+
+	for _, l := range activated {
+		slog.Warn("Unused socket-activated fd", "name", l.name)
+		_ = l.ln.Close()
+	}
+
+	return nil
 }
 
 func serveListener(server *http.Server, ln net.Listener, useTLS bool) error {
@@ -470,21 +545,39 @@ func serveListener(server *http.Server, ln net.Listener, useTLS bool) error {
 // drain gives in-flight requests up to shutdownTimeout to finish, then
 // force-closes anything left so the process exits promptly. The drain context
 // is detached on purpose so it survives the cancelled shutdown signal.
-func drain(server *http.Server) error {
+func drain(endpoints []endpoint) error {
 	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := server.Shutdown(drainCtx); err == nil {
-		return nil
+	errs := make(chan error, len(endpoints))
+
+	for _, ep := range endpoints {
+		go func() {
+			if err := ep.server.Shutdown(drainCtx); err == nil {
+				errs <- nil
+
+				return
+			}
+
+			slog.Warn("Graceful shutdown timed out, forcing close", "address", ep.server.Addr)
+
+			if err := ep.server.Close(); err != nil {
+				errs <- fmt.Errorf("failed to force-close server: %w", err)
+
+				return
+			}
+
+			errs <- nil
+		}()
 	}
 
-	slog.Warn("Graceful shutdown timed out, forcing close")
+	var out error
 
-	if err := server.Close(); err != nil {
-		return fmt.Errorf("failed to force-close server: %w", err)
+	for range endpoints {
+		out = errors.Join(out, <-errs)
 	}
 
-	return nil
+	return out
 }
 
 // defaultCachePriority sorts before cache.nixos.org (40).

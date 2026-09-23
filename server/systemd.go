@@ -16,11 +16,18 @@ import (
 // activation; see sd_listen_fds(3).
 const listenFdsStart = 3
 
-// systemdListener returns the listener systemd passed via socket activation
-// (LISTEN_FDS / LISTEN_PID), or nil when the process was not socket activated.
-// niks3 only has one HTTP socket, so any extra fds are ignored. The activation
-// environment variables are unset so children do not inherit them.
-func systemdListener() (net.Listener, error) {
+// namedListener carries the fd name from LISTEN_FDNAMES.
+type namedListener struct {
+	name string
+	ln   net.Listener
+}
+
+// systemdListeners returns the sockets systemd passed (LISTEN_FDS), or nil when
+// not socket activated. The activation variables are unset so children do not
+// inherit them.
+func systemdListeners() ([]namedListener, error) {
+	names := os.Getenv("LISTEN_FDNAMES")
+
 	defer func() {
 		_ = os.Unsetenv("LISTEN_PID")
 		_ = os.Unsetenv("LISTEN_FDS")
@@ -29,32 +36,60 @@ func systemdListener() (net.Listener, error) {
 
 	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
 	if err != nil || pid != os.Getpid() {
-		return nil, nil //nolint:nilnil // not socket activated
+		return nil, nil
 	}
 
 	count, err := strconv.Atoi(os.Getenv("LISTEN_FDS"))
 	if err != nil || count == 0 {
-		return nil, nil //nolint:nilnil // not socket activated
+		return nil, nil
 	}
 
-	if count > 1 {
-		slog.Warn("Multiple socket-activated fds passed, using the first", "count", count)
+	fdNames := strings.Split(names, ":")
+	out := make([]namedListener, 0, count)
+
+	for i := range count {
+		fd := listenFdsStart + i
+
+		syscall.CloseOnExec(fd)
+
+		file := os.NewFile(uintptr(fd), "LISTEN_FD")
+
+		ln, err := net.FileListener(file)
+
+		// FileListener dups the fd, so the original file is no longer needed.
+		_ = file.Close()
+
+		if err != nil {
+			for _, l := range out {
+				_ = l.ln.Close()
+			}
+
+			return nil, fmt.Errorf("failed to use socket-activated fd %d: %w", fd, err)
+		}
+
+		name := ""
+		if i < len(fdNames) {
+			name = fdNames[i]
+		}
+
+		out = append(out, namedListener{name: name, ln: ln})
 	}
 
-	syscall.CloseOnExec(listenFdsStart)
+	return out, nil
+}
 
-	file := os.NewFile(uintptr(listenFdsStart), "LISTEN_FD")
-
-	ln, err := net.FileListener(file)
-
-	// FileListener dups the fd, so the original file is no longer needed.
-	_ = file.Close()
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to use socket-activated fd %d: %w", listenFdsStart, err)
+// systemdListener returns the first socket-activated listener.
+func systemdListener() (net.Listener, error) {
+	lns, err := systemdListeners()
+	if err != nil || len(lns) == 0 {
+		return nil, err
 	}
 
-	return ln, nil
+	for _, l := range lns[1:] {
+		_ = l.ln.Close()
+	}
+
+	return lns[0].ln, nil
 }
 
 // sdNotify sends a status update to systemd via the NOTIFY_SOCKET. It is a

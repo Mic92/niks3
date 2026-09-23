@@ -16,7 +16,7 @@ func SystemdListenerForTest() (net.Listener, error) { return systemdListener() }
 // ServeForTest exposes the graceful-shutdown serve loop to tests, driven by a
 // caller-supplied context and listener instead of OS signals.
 func ServeForTest(shutdownCtx context.Context, server *http.Server, ln net.Listener) error {
-	return serve(shutdownCtx, server, ln, false, nil)
+	return serve(shutdownCtx, []endpoint{{server: server, ln: ln}}, nil)
 }
 
 // RunWatchdogForTest exposes runWatchdog to tests.

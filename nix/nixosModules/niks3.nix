@@ -243,6 +243,28 @@ let
       s
     ]) cfg.nginx.mtls.boundSubjectsRead
   )
+  ++ lib.optionals cfg.tls.enable (
+    [
+      "--tls-addr"
+      cfg.tls.listenAddr
+      "--tls-cert"
+      (toString cfg.tls.certFile)
+      "--tls-key"
+      (toString cfg.tls.keyFile)
+    ]
+    ++ lib.optionals (cfg.tls.clientCAFile != null) [
+      "--tls-client-ca"
+      (toString cfg.tls.clientCAFile)
+    ]
+    ++ lib.concatMap (s: [
+      "--mtls-bound-subject"
+      s
+    ]) cfg.tls.boundSubjects
+    ++ lib.concatMap (s: [
+      "--mtls-bound-subject-read"
+      s
+    ]) cfg.tls.boundSubjectsRead
+  )
   ++ lib.optional cfg.readProxy.enable "--enable-read-proxy"
   ++ lib.optionals (cfg.readProxy.redirectTTL != null) [
     "--read-redirect-ttl"
@@ -291,6 +313,55 @@ in
       type = lib.types.str;
       default = "127.0.0.1:5751";
       description = "HTTP address to listen on.";
+    };
+
+    tls = {
+      enable = lib.mkEnableOption "a TLS listener next to {option}`httpAddr`, which stays plain HTTP";
+
+      listenAddr = lib.mkOption {
+        type = lib.types.str;
+        default = "[::]:5752";
+        description = "Address of the TLS listener.";
+      };
+
+      certFile = lib.mkOption {
+        type = lib.types.path;
+        example = "/var/lib/acme/niks3.example.com/fullchain.pem";
+        description = "Server certificate chain. Read at start, so restart niks3.service after a renewal.";
+      };
+
+      keyFile = lib.mkOption {
+        type = lib.types.path;
+        example = "/var/lib/acme/niks3.example.com/key.pem";
+        description = "Private key of {option}`certFile`, readable by {option}`user`.";
+      };
+
+      clientCAFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/etc/niks3/client-ca.pem";
+        description = "CA bundle for client certificates. Clients without one can still use a token.";
+      };
+
+      boundSubjects = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "CN=worker-*" ];
+        description = "Subject DN globs allowed to write by certificate. Empty means any verified certificate.";
+      };
+
+      boundSubjectsRead = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "CN=*,O=Acme" ];
+        description = "Subject DN globs allowed to read through a certificate. Empty leaves reads to the read proxy's own setting.";
+      };
+
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Open the TLS listener's port in the firewall.";
+      };
     };
 
     database = {
@@ -671,6 +742,10 @@ in
         message = "services.niks3.s3.secretKeyFile must be set (or enable s3.useIAM)";
       }
       {
+        assertion = !(cfg.tls.enable && cfg.tls.clientCAFile != null && cfg.nginx.mtls.enable);
+        message = "services.niks3.tls.clientCAFile and services.niks3.nginx.mtls check certificates in different places; use one";
+      }
+      {
         assertion = !(cfg.s3.useIAM && (cfg.s3.accessKeyFile != null || cfg.s3.secretKeyFile != null));
         message = "s3.useIAM cannot be combined with s3.accessKeyFile / s3.secretKeyFile";
       }
@@ -711,6 +786,20 @@ in
       socketConfig.ListenStream = cfg.httpAddr;
     };
 
+    networking.firewall.allowedTCPPorts = lib.mkIf (cfg.tls.enable && cfg.tls.openFirewall) [
+      (lib.toInt (lib.last (lib.splitString ":" cfg.tls.listenAddr)))
+    ];
+
+    systemd.sockets.niks3-tls = lib.mkIf cfg.tls.enable {
+      description = "niks3 server TLS socket";
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = cfg.tls.listenAddr;
+        FileDescriptorName = "tls";
+        Service = "niks3.service";
+      };
+    };
+
     systemd.services.niks3 = {
       description = "niks3 server";
       # Start eagerly at boot (so bucket init and landing-page upload happen
@@ -720,8 +809,13 @@ in
         "network.target"
         "niks3.socket"
       ]
+      ++ lib.optional cfg.tls.enable "niks3-tls.socket"
       ++ lib.optional cfg.database.createLocally "postgresql.service";
-      requires = [ "niks3.socket" ] ++ lib.optional cfg.database.createLocally "postgresql.service";
+      requires = [
+        "niks3.socket"
+      ]
+      ++ lib.optional cfg.tls.enable "niks3-tls.socket"
+      ++ lib.optional cfg.database.createLocally "postgresql.service";
 
       serviceConfig = {
         # niks3-server sends sd_notify READY=1 once the listener is bound and

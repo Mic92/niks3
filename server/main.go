@@ -214,6 +214,8 @@ func parseArgs() (*options, error) {
 		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob. Repeat for multiple patterns. Empty = public reads")
 	flag.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
 		"TLS certificate. When set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
+	flag.StringVar(&opts.TLSAddr, "tls-addr", getEnvOrDefault("NIKS3_TLS_ADDR", ""),
+		"HTTPS address next to --http-addr, which then stays plain HTTP. Needs --tls-cert and --tls-key. A socket-activated fd named \"tls\" is used for it")
 	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
 	flag.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
 		"CA bundle for native mTLS client cert verification. Subjects are checked against --mtls-bound-subject")
@@ -319,6 +321,10 @@ func parseArgs() (*options, error) {
 
 	if (opts.TLSCert == "") != (opts.TLSKey == "") {
 		return nil, errors.New("--tls-cert and --tls-key must be set together")
+	}
+
+	if opts.TLSAddr != "" && opts.TLSCert == "" {
+		return nil, errors.New("--tls-addr requires --tls-cert and --tls-key")
 	}
 
 	if opts.TLSClientCA != "" && opts.TLSCert == "" {

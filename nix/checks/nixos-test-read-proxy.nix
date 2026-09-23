@@ -12,6 +12,7 @@ let
   signingSecretKey = writeText "niks3-signing-key" "niks3-test-1:0knWkx/F+6IJmI4dkvNs14SCaewg9ZWSAQUNg9juRxh/8x+rzUJx9SWdyGOVl21IbJlQemUKG40qW2TTyrE++w==";
   signingPublicKey = "niks3-test-1:f/Mfq81CcfUlnchjlZdtSGyZUHplChuNKltk08qxPvs=";
   apiToken = "test-token-that-is-at-least-36-characters-long";
+  certs = "/etc/niks3-test-certs";
 in
 testers.nixosTest {
   name = "nixos-test-read-proxy";
@@ -41,6 +42,45 @@ testers.nixosTest {
       apiTokenFile = writeText "api-token" apiToken;
       signKeyFiles = [ signingSecretKey ];
       readProxy.enable = true;
+      tls = {
+        enable = true;
+        listenAddr = "127.0.0.1:5752";
+        certFile = "${certs}/server.pem";
+        keyFile = "${certs}/server.key";
+        clientCAFile = "${certs}/ca.pem";
+        boundSubjects = [ "CN=worker-*" ];
+      };
+    };
+
+    systemd.services.niks3-test-certs = {
+      unitConfig.DefaultDependencies = false;
+      before = [
+        "niks3.socket"
+        "niks3-tls.socket"
+      ];
+      wantedBy = [ "multi-user.target" ];
+      path = [ pkgs.openssl ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        mkdir -p ${certs}
+        cd ${certs}
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+          -keyout ca.key -out ca.pem -subj "/CN=test CA"
+        openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+          -keyout server.key -out server.csr -subj "/CN=server" -addext "subjectAltName=IP:127.0.0.1"
+        openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+          -days 1 -copy_extensions copy -out server.pem
+        for cn in worker-a someone; do
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+            -keyout $cn.key -out $cn.csr -subj "/CN=$cn"
+          openssl x509 -req -in $cn.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+            -days 1 -out $cn.pem
+        done
+        chmod 644 *.pem *.key
+      '';
     };
 
     systemd.services.rustfs = {
@@ -88,6 +128,7 @@ testers.nixosTest {
   testScript = ''
     server.wait_for_unit("niks3.service")
     server.wait_for_open_port(5751)
+    server.wait_for_open_port(5752)
 
     # Smoke: nix-cache-info and health served through proxy
     server.succeed("curl -sf http://localhost:5751/nix-cache-info | grep StoreDir")
@@ -104,5 +145,16 @@ testers.nixosTest {
 
     # Invalid paths must 404
     server.succeed("test $(curl -so /dev/null -w '%{http_code}' http://localhost:5751/nonexistent) = 404")
+
+    tls = "https://127.0.0.1:5752"
+    ca = "--ca-cert ${certs}/ca.pem"
+    niks3 = "${niks3}/bin/niks3"
+    cert = lambda cn: f"--client-cert ${certs}/{cn}.pem --client-key ${certs}/{cn}.key"
+
+    server.succeed(f"{niks3} push --server-url {tls} {ca} {cert('worker-a')} $(cat /tmp/proxy-path)")
+    server.fail(f"{niks3} push --server-url {tls} {ca} {cert('someone')} $(cat /tmp/proxy-path)")
+    server.fail(f"{niks3} push --server-url {tls} {ca} $(cat /tmp/proxy-path)")
+    server.succeed(f"NIKS3_AUTH_TOKEN_FILE=/tmp/auth-token {niks3} push --server-url {tls} {ca} $(cat /tmp/proxy-path)")
+    server.fail(f"{niks3} push --server-url http://localhost:5751 $(cat /tmp/proxy-path)")
   '';
 }
