@@ -60,10 +60,10 @@ type NarinfoMetadata struct {
 	CA          *string  `json:"ca,omitempty"`
 }
 
-// CompletePendingClosure marks a closure as complete after all objects have been uploaded.
+// CompletePendingClosure marks a closure or push (route) as complete after all objects have been uploaded.
 // This should be called after narinfos have been signed and uploaded.
-func (c *Client) CompletePendingClosure(ctx context.Context, closureID string) error {
-	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "complete")
+func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID string) error {
+	reqURL := c.baseURL.JoinPath("api", route, closureID, "complete")
 
 	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
 		return err
@@ -83,8 +83,8 @@ type signNarinfosResponse struct {
 }
 
 // SignPendingClosure sends narinfo metadata to the server for signing and returns signatures.
-func (c *Client) SignPendingClosure(ctx context.Context, closureID string, narinfos map[string]NarinfoMetadata) (map[string][]string, error) {
-	reqURL := c.baseURL.JoinPath("api/pending_closures", closureID, "sign")
+func (c *Client) SignPendingClosure(ctx context.Context, route, closureID string, narinfos map[string]NarinfoMetadata) (map[string][]string, error) {
+	reqURL := c.baseURL.JoinPath("api", route, closureID, "sign")
 
 	reqBody := signNarinfosRequest{
 		Narinfos: narinfos,
@@ -98,4 +98,37 @@ func (c *Client) SignPendingClosure(ctx context.Context, closureID string, narin
 	slog.Debug("Signed narinfos", "id", closureID, "count", len(result.Signatures))
 
 	return result.Signatures, nil
+}
+
+type createPushRequest struct {
+	Roots    []string         `json:"roots"`
+	Objects  []ObjectWithRefs `json:"objects"`
+	VerifyS3 bool             `json:"verify_s3,omitempty"`
+}
+
+// CreatePush registers all roots in one request and returns the objects to
+// upload. Every object is sent once, however many roots reach it.
+func (c *Client) CreatePush(ctx context.Context, closures []ClosureInfo, verifyS3 bool) (*CreatePendingClosureResponse, error) {
+	req := createPushRequest{VerifyS3: verifyS3}
+	seen := make(map[string]bool)
+
+	for _, closure := range closures {
+		req.Roots = append(req.Roots, closure.NarinfoKey)
+
+		for _, obj := range closure.Objects {
+			if !seen[obj.Key] {
+				seen[obj.Key] = true
+				req.Objects = append(req.Objects, obj)
+			}
+		}
+	}
+
+	var result CreatePendingClosureResponse
+	if err := c.doJSONRequest(ctx, http.MethodPost, c.baseURL.JoinPath("api/pushes").String(), req, &result, http.StatusOK); err != nil {
+		return nil, err
+	}
+
+	slog.Debug("Created push", "id", result.ID, "roots", len(req.Roots), "pending_objects", len(result.PendingObjects))
+
+	return &result, nil
 }
