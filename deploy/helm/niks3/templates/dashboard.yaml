@@ -1,0 +1,12 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "niks3.fullname" . }}-dashboard
+  labels:
+    {{- include "niks3.labels" . | nindent 4 }}
+    {{- toYaml .Values.grafanaDashboard.labels | nindent 4 }}
+data:
+  niks3.json: |-
+    {{- .Files.Get "files/niks3.json" | nindent 4 }}
+{{- end }}

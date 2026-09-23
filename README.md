@@ -101,6 +101,12 @@ Chart: `oci://ghcr.io/mic92/charts/niks3` (source in [`deploy/helm/niks3`](deplo
 See the [Kubernetes](https://github.com/Mic92/niks3/wiki/Kubernetes) wiki page
 for Postgres/S3 wiring and letting pods push via their service account token.
 
+## Monitoring
+
+Prometheus metrics on `/metrics` and a Grafana dashboard
+(`deploy/helm/niks3/files/niks3.json`, flake output `dashboards.niks3`). See the
+[Monitoring](https://github.com/Mic92/niks3/wiki/Monitoring) wiki page.
+
 ## OIDC Authentication (CI/CD)
 
 niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:

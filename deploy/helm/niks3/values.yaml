@@ -104,3 +104,8 @@ metrics:
     enabled: false
     interval: 30s
     labels: {}
+# ConfigMap with the Grafana dashboard, for Grafana's dashboard sidecar.
+grafanaDashboard:
+  enabled: false
+  labels:
+    grafana_dashboard: "1"

@@ -30,6 +30,8 @@
         niks3-auto-upload = ./nix/darwinModules/niks3-auto-upload.nix;
       };
 
+      dashboards.niks3 = ./deploy/helm/niks3/files/niks3.json;
+
       packages = forAllSystems (_: pkgs: import ./nix/packages { inherit pkgs; });
 
       checks = forAllSystems (
