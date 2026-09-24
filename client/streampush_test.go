@@ -35,11 +35,17 @@ func runStream(t *testing.T, push client.StreamPushFunc, parallel, batch int, fe
 func runStreamSigned(t *testing.T, push client.StreamPushFunc, sigs func(string) []string, parallel, batch int, feed func(w io.Writer)) []result {
 	t.Helper()
 
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-
 	s := client.NewStreamPusher(push, parallel, batch)
 	s.Signatures = sigs
+
+	return runPusher(t, s, feed)
+}
+
+func runPusher(t *testing.T, s *client.StreamPusher, feed func(w io.Writer)) []result {
+	t.Helper()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
 
 	done := make(chan error, 1)
 
@@ -130,22 +136,60 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 func TestStreamPushBatchesUnderLoad(t *testing.T) {
 	t.Parallel()
 
+	// waitTaken reports whether Run took want next. The pusher's test hook
+	// makes the schedule explicit: sleeping between lines left it to the
+	// scheduler, and a loaded builder delivered the last line only after the
+	// first push had returned.
+	waitTaken := func(t *testing.T, taken <-chan string, want string) bool {
+		t.Helper()
+
+		select {
+		case got := <-taken:
+			if got != want {
+				t.Errorf("took %s, want %s", got, want)
+
+				return false
+			}
+
+			return true
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s was never taken: the batch was fixed while the push was busy", want)
+
+			return false
+		}
+	}
+
 	for _, tc := range []struct {
 		name string
-		feed func(w io.Writer)
+		feed func(t *testing.T, w io.Writer, taken <-chan string)
 	}{
 		{
 			name: "together",
-			feed: func(w io.Writer) {
+			feed: func(t *testing.T, w io.Writer, taken <-chan string) {
+				t.Helper()
+
 				_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
+
+				for _, p := range []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"} {
+					if !waitTaken(t, taken, p) {
+						return
+					}
+				}
 			},
 		},
 		{
 			name: "one at a time",
-			feed: func(w io.Writer) {
+			feed: func(t *testing.T, w io.Writer, taken <-chan string) {
+				t.Helper()
+
+				// Each line is written only once the previous one was
+				// taken, so Run finds the input empty in between.
 				for _, p := range []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"} {
 					_, _ = io.WriteString(w, p+"\n")
-					time.Sleep(20 * time.Millisecond)
+
+					if !waitTaken(t, taken, p) {
+						return
+					}
 				}
 			},
 		},
@@ -153,6 +197,7 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			started := make(chan struct{})
 			release := make(chan struct{})
 
 			var (
@@ -169,21 +214,37 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 				mu.Unlock()
 
 				if first {
+					close(started)
 					<-release
 				}
 
 				return paths, nil
 			}
 
-			results := runStream(t, push, 1, 10, func(w io.Writer) {
+			taken := make(chan string, 4)
+
+			s := client.NewStreamPusher(push, 1, 10)
+			s.SetTestHookTaken(func(line string) { taken <- line })
+
+			results := runPusher(t, s, func(w io.Writer) {
+				defer close(release)
+
 				_, _ = io.WriteString(w, "/nix/store/first\n")
-				time.Sleep(50 * time.Millisecond)
 
-				tc.feed(w)
+				if !waitTaken(t, taken, "/nix/store/first") {
+					return
+				}
 
-				time.Sleep(50 * time.Millisecond)
+				// The only push is busy from here on.
+				select {
+				case <-started:
+				case <-time.After(5 * time.Second):
+					t.Error("the first push never started")
 
-				close(release)
+					return
+				}
+
+				tc.feed(t, w, taken)
 			})
 
 			if len(results) != 4 {
