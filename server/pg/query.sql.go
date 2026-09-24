@@ -20,6 +20,7 @@ old_closures AS (
     SELECT id
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
+    FOR UPDATE OF pending_closures SKIP LOCKED
 ),
 
 inserted_objects AS (
@@ -47,6 +48,7 @@ USING old_closures
 WHERE pending_closures.id = old_closures.id
 `
 
+// Skips closures being committed, which hold their row.
 // Insert pending objects into objects table if they don't already exist
 // We mark them as deleted so they can be cleaned up later
 // Delete pending objects that were inserted into the objects table

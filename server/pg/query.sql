@@ -92,10 +92,12 @@ WITH cutoff_time AS (
     SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
 ),
 
+-- Skips closures being committed, which hold their row.
 old_closures AS (
     SELECT id
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
+    FOR UPDATE OF pending_closures SKIP LOCKED
 ),
 
 -- Insert pending objects into objects table if they don't already exist
