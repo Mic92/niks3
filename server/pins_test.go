@@ -180,6 +180,49 @@ func TestConcurrentPinUpdatesAgree(t *testing.T) {
 	}
 }
 
+// The pin body comes from any writer and its store path is served verbatim
+// to consumers who substitute it into a command line. It must be bounded and
+// be exactly one absolute store path, even when its hash names a closure.
+func TestCreatePinRejectsBadInput(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	hash := strings.Repeat("d", 32)
+	insertClosureRow(t, service, hash)
+
+	for _, c := range []struct {
+		name, storePath string
+	}{
+		{"relative", "nix/store/" + hash + "-app"},
+		{"bare base name", hash + "-app"},
+		{"second argument", "/nix/store/" + hash + "-app --option substituters http://elsewhere"},
+		{"second line", `/nix/store/` + hash + `-app\n/nix/store/` + hash + `-app`},
+		{"dot-dot component", "/nix/store/../store/" + hash + "-app"},
+		{"short hash", "/nix/store/" + hash[:31] + "-app"},
+		{"hash outside nix32", "/nix/store/" + strings.Repeat("e", 32) + "-app"},
+		{"name outside store alphabet", "/nix/store/" + hash + "-a/pp"},
+	} {
+		if w := createPin(t.Context(), service, "deploy", c.storePath); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %q answered %d, want 400", c.name, c.storePath, w.Code)
+		}
+	}
+
+	huge := `{"store_path":"/nix/store/` + hash + "-" + strings.Repeat("a", 9<<20) + `"}`
+	if w := callPinHandler(t.Context(), service.CreatePinHandler, http.MethodPost, "deploy", huge); w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("9 MiB body answered %d, want 413", w.Code)
+	}
+
+	if db, s3 := pinInBothStores(t, service, "deploy"); db != "" || s3 != "" {
+		t.Errorf("rejected requests left pin deploy behind: %d bytes in the database, %d in S3", len(db), len(s3))
+	}
+
+	if w := createPin(t.Context(), service, "deploy", "/nix/store/"+hash+"-app-1.0+git_x?y=z"); w.Code != http.StatusNoContent {
+		t.Errorf("valid store path answered %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // A pin whose S3 object could not be removed must keep its row: the object
 // stays public, and without the row its closure is no longer a GC root.
 func TestDeletePinKeepsRowWhenS3Fails(t *testing.T) {
