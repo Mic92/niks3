@@ -172,10 +172,6 @@ WHERE closures.key IN (
     FOR UPDATE SKIP LOCKED
 );
 
--- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar []);
-
 -- name: DeleteTombstonedObjects :exec
 -- Drop rows of objects the sweep removed from S3. Conditional on the
 -- tombstone so a row a concurrent push resurrected after re-uploading the

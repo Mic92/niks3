@@ -1,7 +1,13 @@
 package server_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -579,10 +585,9 @@ func TestResurrectedObjectNotDeleted(t *testing.T) {
 		t.Fatal("Objects should be marked for deletion after MarkStaleObjects")
 	}
 
-	// Step 4 & 5: Simulate S3 deletion failure scenario
-	// In real code, this happens when S3 deletion fails in removeS3Batch,
-	// which then calls MarkObjectsAsActive
-	err = queries.MarkObjectsAsActive(ctx, []string{objectKey, narKey})
+	// Step 4 & 5: A row live again with first_deleted_at still set, as the
+	// sweep used to leave behind after a failed S3 delete.
+	_, err = service.Pool.Exec(ctx, "UPDATE objects SET deleted_at = NULL WHERE key = any($1)", []string{objectKey, narKey})
 	ok(t, err)
 
 	// Verify objects are resurrected (deleted_at = NULL, first_deleted_at still set)
@@ -612,5 +617,103 @@ func TestResurrectedObjectNotDeleted(t *testing.T) {
 			t.Fatalf("BUG: Resurrected object %q was incorrectly selected for deletion! "+
 				"This would cause active objects to be deleted from S3.", key)
 		}
+	}
+}
+
+// lostDeleteProxy forwards every request to S3, except that it answers a
+// multi-object delete with 500 after S3 has carried it out, as a gateway does
+// when the backend's response is lost.
+type lostDeleteProxy struct {
+	target *url.URL
+}
+
+func (p *lostDeleteProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	proxy := httputil.NewSingleHostReverseProxy(p.target)
+
+	if r.Method != http.MethodPost || !r.URL.Query().Has("delete") {
+		proxy.ServeHTTP(w, r)
+
+		return
+	}
+
+	proxy.ServeHTTP(httptest.NewRecorder(), r)
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+		`<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>`))
+}
+
+// A multi-object delete that fails as a request reports every key of the
+// page as failed, whether or not S3 carried it out. The rows must stay
+// tombstoned: a live row makes the next push skip the upload and commit the
+// object with nothing behind it in S3.
+func TestSweepKeepsTombstoneWhenDeleteOutcomeUnknown(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	hash := strings.Repeat("m", 32)
+	narKey := "nar/" + strings.Repeat("n", 52) + ".nar.zst"
+
+	createOrphanedObjects(t, service, []struct {
+		key  string
+		refs []string
+	}{{key: narKey, refs: []string{}}})
+
+	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
+	ok(t, err)
+
+	proxy := httptest.NewServer(&lostDeleteProxy{target: target})
+	defer proxy.Close()
+
+	proxyURL, err := url.Parse(proxy.URL)
+	ok(t, err)
+
+	proxied, err := minio.New(proxyURL.Host, &minio.Options{Creds: testRustfsServer.Creds(), MaxRetries: 1})
+	ok(t, err)
+
+	direct := service.MinioClient
+	service.MinioClient = proxied
+
+	st := service.RunGCForTest(24*time.Hour, 24*time.Hour, true)
+	if st.State != "failed" {
+		t.Fatalf("GC state %q, want failed: the sweep's delete was answered 500", st.State)
+	}
+
+	service.MinioClient = direct
+
+	if objectInS3(t, service, narKey) {
+		t.Fatalf("%s still in S3: the proxy did not forward the delete", narKey)
+	}
+
+	if objectIsLive(t, service, narKey) {
+		t.Errorf("%s is live in the database after a delete whose outcome was unknown", narKey)
+	}
+
+	w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp server.PendingClosureResponse
+	ok(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	if _, offered := resp.PendingObjects[narKey]; !offered {
+		t.Errorf("%s is gone from S3 but was not offered for upload", narKey)
+	}
+
+	// With S3 answering again the next run finishes the job.
+	st = service.RunGCForTest(24*time.Hour, 0, true)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	var rows int
+	ok(t, service.Pool.QueryRow(t.Context(), "SELECT count(*) FROM objects WHERE key = $1", narKey).Scan(&rows))
+
+	if rows != 0 {
+		t.Errorf("tombstoned row of %s survived a sweep that could reach S3", narKey)
 	}
 }

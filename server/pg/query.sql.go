@@ -625,16 +625,6 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 	return items, nil
 }
 
-const markObjectsAsActive = `-- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar [])
-`
-
-func (q *Queries) MarkObjectsAsActive(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, markObjectsAsActive, dollar_1)
-	return err
-}
-
 const markStaleObjects = `-- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now

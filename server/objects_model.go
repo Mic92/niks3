@@ -29,7 +29,10 @@ type sweepBatchResult struct {
 
 // removeS3Batch deletes one page of keys from S3 and reconciles the database:
 // rows of deleted (or already absent) objects are removed, rows whose S3
-// delete failed are marked active again so the next mark phase retries them.
+// delete failed keep their tombstone so the next sweep retries them. A failure
+// does not mean the object is still there: when the multi-object delete fails
+// as a request (a 5xx or a connection lost after S3 acted on it) minio reports
+// every key of the page with that error.
 //
 // The page is handed to S3 in a single request right after it was selected,
 // so the window in which a concurrent push can re-upload one of these keys
@@ -44,7 +47,6 @@ func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *Objec
 	close(objectCh)
 
 	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
-	failedKeys := make([]string, 0, len(keys))
 	deletedKeys := make([]string, 0, len(keys))
 
 	var result sweepBatchResult
@@ -61,7 +63,6 @@ func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *Objec
 		if res.Err != nil && minio.ToErrorResponse(res.Err).Code != minio.NoSuchKey {
 			slog.Error("failed to remove object", "object", res.ObjectName, "error", res.Err)
 			result.s3Errors = append(result.s3Errors, fmt.Errorf("failed to remove object %q: %w", res.ObjectName, res.Err))
-			failedKeys = append(failedKeys, res.ObjectName)
 			stats.FailedCount++
 		} else {
 			// Deleted, or already absent from S3: either way the object is gone,
@@ -75,19 +76,10 @@ func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *Objec
 		}
 	}
 
-	queries := pg.New(s.Pool)
-
-	if len(failedKeys) > 0 {
-		if err := queries.MarkObjectsAsActive(ctx, failedKeys); err != nil {
-			slog.Error("failed to mark objects active", "error", err, "count", len(failedKeys))
-			result.batchErrors = append(result.batchErrors, fmt.Errorf("mark %d objects active: %w", len(failedKeys), err))
-		}
-	}
-
 	if len(deletedKeys) > 0 {
 		// Conditional on the tombstone: a push that re-uploaded and registered
 		// one of these keys after the S3 delete owns the row now.
-		if err := queries.DeleteTombstonedObjects(ctx, deletedKeys); err != nil {
+		if err := pg.New(s.Pool).DeleteTombstonedObjects(ctx, deletedKeys); err != nil {
 			slog.Error("failed to delete object rows", "error", err, "count", len(deletedKeys))
 			result.batchErrors = append(result.batchErrors, fmt.Errorf("delete %d object rows: %w", len(deletedKeys), err))
 		}
