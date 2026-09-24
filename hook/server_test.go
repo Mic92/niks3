@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -340,8 +341,13 @@ func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
 
 	defer func() { _ = stalled.Close() }()
 
-	// Give the server time to accept before shutting down.
-	time.Sleep(50 * time.Millisecond)
+	// Connections are accepted in order, so once a later send has been
+	// answered the stalled one has been accepted too and its handler is
+	// waiting for a request.
+	if err := hook.SendPaths(socketPath, []string{"/nix/store/aaa"}); err != nil {
+		t.Fatalf("send after the stalled client: %v", err)
+	}
+
 	cancel()
 
 	select {
@@ -349,4 +355,88 @@ func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return while a client held an idle connection")
 	}
+}
+
+// A persistent Accept error (EMFILE) must not spin: Serve backs off, up to a
+// second, and a shutdown during the backoff ends it at once.
+func TestServerBacksOffOnAcceptErrors(t *testing.T) {
+	t.Parallel()
+
+	ln := &failingListener{closed: make(chan struct{}), eighth: make(chan struct{})}
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	serving := time.Now()
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	// 5+10+...+320ms of backoff lie behind the eighth failure, and 640ms
+	// ahead of it.
+	select {
+	case <-ln.eighth:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("only %d accept calls in 5s", ln.calls.Load())
+	}
+
+	if elapsed := time.Since(serving); elapsed < 500*time.Millisecond {
+		t.Errorf("eight accept failures within %v: no backoff between them", elapsed)
+	}
+
+	cancel()
+
+	start := time.Now()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after shutdown")
+	}
+
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Errorf("Serve took %v to return: shutdown waited out the backoff", elapsed)
+	}
+
+	// The eight failures, and one more Accept once the shutdown ended the
+	// backoff.
+	if n := ln.calls.Load(); n > 9 {
+		t.Errorf("%d accept calls, want at most 9: no backoff between failures", n)
+	}
+}
+
+// failingListener fails every Accept until it is closed.
+type failingListener struct {
+	calls     atomic.Int32
+	closed    chan struct{}
+	closeOnce sync.Once
+	eighth    chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if l.calls.Add(1) == 8 {
+		close(l.eighth)
+	}
+
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		return nil, syscall.EMFILE
+	}
+}
+
+func (l *failingListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+
+	return nil
+}
+
+func (l *failingListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: "failing", Net: "unix"}
 }
