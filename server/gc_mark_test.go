@@ -16,8 +16,8 @@ func TestGC_KeepsWhatAPushCommittedDuringTheMark(t *testing.T) {
 	ctx := t.Context()
 
 	other, dep, top := newBuild(1, 1, 1), newBuild(2, 1, 1), newBuild(3, 1, 1)
-	completePush(t, service, other.push(t, service))
-	completePush(t, service, dep.push(t, service))
+	commitPush(t, service, other.push(t, service))
+	commitPush(t, service, dep.push(t, service))
 
 	_, err := service.Pool.Exec(ctx, `DELETE FROM closures`)
 	ok(t, err)
@@ -52,7 +52,7 @@ func TestGC_KeepsWhatAPushCommittedDuringTheMark(t *testing.T) {
 		{"key": depKeys[0], "type": "narinfo", "refs": []string{depKeys[1]}},
 		{"key": depKeys[1], "type": "nar", "refs": []string{}},
 	})
-	completePush(t, service, push.ID)
+	completePush(t, service, push)
 
 	ok(t, hold.Rollback(ctx))
 	<-collected
@@ -64,7 +64,7 @@ func TestGC_KeepsWhatAPushCommittedDuringTheMark(t *testing.T) {
 }
 
 // openPush starts a push of top, which depends on dep, and leaves it open.
-func openPush(t *testing.T, service *server.Service, top, dep build) string {
+func openPush(t *testing.T, service *server.Service, top, dep build) server.PendingClosureResponse {
 	t.Helper()
 
 	return createPush(t, service, top.keys(), []map[string]any{
@@ -72,7 +72,7 @@ func openPush(t *testing.T, service *server.Service, top, dep build) string {
 		{"key": top.nars[0], "type": "nar", "refs": []string{}},
 		{"key": dep.keys()[0], "type": "narinfo", "refs": []string{dep.nars[0]}},
 		{"key": dep.nars[0], "type": "nar", "refs": []string{}},
-	}).ID
+	})
 }
 
 func TestGC_WaitsForAPushThatIsRecording(t *testing.T) {
@@ -82,7 +82,7 @@ func TestGC_WaitsForAPushThatIsRecording(t *testing.T) {
 	defer service.Close()
 
 	dep, top := newBuild(1, 1, 1), newBuild(2, 1, 1)
-	completePush(t, service, dep.push(t, service))
+	commitPush(t, service, dep.push(t, service))
 
 	_, err := service.Pool.Exec(t.Context(), `DELETE FROM closures`)
 	ok(t, err)
