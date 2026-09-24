@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
@@ -13,6 +14,10 @@ import (
 
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
+
+	// multipartCreateTimeout bounds the creation of a multipart upload once
+	// its request no longer ends with the request that asked for it.
+	multipartCreateTimeout = 2 * time.Minute
 )
 
 // useSimpleUpload reports whether a NAR of the given uncompressed size should
@@ -90,8 +95,16 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		return PendingObject{}, fmt.Errorf("rate limiter: %w", err)
 	}
 
-	// Initiate multipart upload
-	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
+	// Initiate multipart upload and record it. Both run to their end even if
+	// ctx is cancelled meanwhile, by a sibling in the errgroup failing or by
+	// the client going away: a request cut short after S3 carried it out
+	// leaves an upload whose ID nobody learns, and an upload whose row was
+	// never written can only be aborted here, once. With the row, a failed
+	// abort is retried through it. The timeout bounds work nobody waits for.
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), multipartCreateTimeout)
+	defer cancelCreate()
+
+	uploadID, err := coreClient.NewMultipartUpload(createCtx, s.Bucket, objectKey, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	if err != nil {
@@ -104,11 +117,10 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 
 	s.S3RateLimiter.RecordSuccess()
 
-	// Store upload ID in database
-	// A cancelled ctx is the usual reason to get here, and the abort would fail on it.
+	// A cancelled ctx is the usual reason to abort, and the abort would fail on it.
 	abortCtx := context.WithoutCancel(ctx)
 
-	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
+	if err := pg.New(s.Pool).InsertMultipartUpload(createCtx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
@@ -116,6 +128,13 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
 
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
+	}
+
+	// Nobody will use an upload whose request was cancelled meanwhile.
+	if err := ctx.Err(); err != nil {
+		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
+
+		return PendingObject{}, fmt.Errorf("creating multipart upload: %w", err)
 	}
 
 	// Generate presigned URLs for each part (starting from part 1)
