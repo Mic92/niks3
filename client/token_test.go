@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -151,6 +154,75 @@ func TestScriptTokenEmptyCommand(t *testing.T) {
 	if _, err := client.ScriptToken("   ")(t.Context()); err == nil {
 		t.Fatal("expected error for empty command")
 	}
+}
+
+// Only the script's own process is killed when the request is cancelled; a
+// command it runs keeps its stdout open, and so does a helper it leaves in
+// the background after printing the token. Neither may keep the token
+// source, which every server request of the process waits on, from
+// returning.
+func TestScriptTokenDoesNotWaitForItsChildren(t *testing.T) {
+	t.Parallel()
+
+	// Each script records the child it leaves behind so the test can end it.
+	killChild := func(t *testing.T, pidFile string) {
+		t.Helper()
+
+		t.Cleanup(func() {
+			if data, err := os.ReadFile(pidFile); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			}
+		})
+	}
+
+	const bound = 10 * time.Second // the children sleep twice as long
+
+	t.Run("cancelled while a child runs", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		pidFile := filepath.Join(dir, "pid")
+		killChild(t, pidFile)
+
+		cmd := writeScript(t, dir, "slow.sh",
+			fmt.Sprintf("#!/bin/sh\nsleep 20 &\necho $! > %q\nwait\nprintf '{\"token\":\"late\"}'\n", pidFile))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+
+		if _, err := client.ScriptToken(cmd)(ctx); err == nil {
+			t.Error("a cancelled script produced a token")
+		}
+
+		if d := time.Since(start); d > bound {
+			t.Errorf("token source returned %v after its context was cancelled", d.Round(time.Second))
+		}
+	})
+
+	t.Run("child left holding stdout", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		pidFile := filepath.Join(dir, "pid")
+		killChild(t, pidFile)
+
+		cmd := writeScript(t, dir, "daemon.sh",
+			fmt.Sprintf("#!/bin/sh\nprintf '{\"token\":\"tok\"}'\nsleep 20 &\necho $! > %q\n", pidFile))
+
+		start := time.Now()
+
+		if tok, err := client.ScriptToken(cmd)(t.Context()); err != nil || tok != "tok" {
+			t.Errorf("got %q, %v; want the printed token", tok, err)
+		}
+
+		if d := time.Since(start); d > bound {
+			t.Errorf("token source returned %v after the script had exited", d.Round(time.Second))
+		}
+	})
 }
 
 // counterScript writes a shell helper that bumps a counter file and prints

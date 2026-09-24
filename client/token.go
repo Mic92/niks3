@@ -95,6 +95,10 @@ type scriptOutput struct {
 // elapsed — same heuristic kubelet uses for projected tokens.
 const scriptRefreshFraction = 0.75
 
+// tokenScriptWaitDelay bounds how long a token script's stdout may stay open
+// after the script exited or its context was cancelled.
+const tokenScriptWaitDelay = 2 * time.Second
+
 // ScriptToken returns a TokenSource that obtains tokens by running a command.
 //
 // The command string is split with shell-like quoting rules (single/double
@@ -160,9 +164,18 @@ func runTokenScript(ctx context.Context, script string) (*scriptOutput, error) {
 	//nolint:gosec // command is user-provided config, like git's credential.helper
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stderr = os.Stderr
+	// Output returns once stdout is closed by everything holding it, not
+	// when the script exits. A cancellation kills only the script, and a
+	// helper it leaves behind may never exit, so without a bound a command
+	// the script runs (sh -c 'curl ...') or a background helper it starts
+	// would hold every request of the process, which all wait on this
+	// token source.
+	cmd.WaitDelay = tokenScriptWaitDelay
 
 	stdout, err := cmd.Output()
-	if err != nil {
+	// ErrWaitDelay means the script exited successfully but something it
+	// started still held stdout: what it printed is there.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return nil, fmt.Errorf("running auth token script: %w", err)
 	}
 
