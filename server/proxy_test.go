@@ -277,6 +277,39 @@ func TestReadProxy404(t *testing.T) {
 		deleteBeforeGet = key
 		proxyGet(t, ts, "/"+key, http.StatusNotFound)
 	}
+
+	service.SetTestHookBeforeProxyGet(nil)
+
+	// A GET that S3 throttles after the Stat went through is a throttle too:
+	// 429 with Retry-After, and recorded by the adaptive limiter.
+	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/x\n")),
+		minio.PutObjectOptions{ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, narKey, bytes.Repeat([]byte("nar"), 1024), minio.PutObjectOptions{})
+
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Query().Has("location") {
+			return next.RoundTrip(r)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": {"application/xml"}},
+			Body: io.NopCloser(strings.NewReader(`<?xml version="1.0" encoding="UTF-8"?>` +
+				`<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message></Error>`)),
+			Request: r,
+		}, nil
+	})
+
+	for _, key := range []string{narinfoKey, narKey} {
+		header, _ := proxyGet(t, ts, "/"+key, http.StatusTooManyRequests)
+		if header.Get("Retry-After") == "" {
+			t.Errorf("GET %s: throttled without Retry-After", key)
+		}
+	}
+
+	if !service.S3RateLimiter.IsEnabled() {
+		t.Error("a throttled GET did not reach the adaptive rate limiter")
+	}
 }
 
 func TestReadProxyInvalidPath(t *testing.T) {
