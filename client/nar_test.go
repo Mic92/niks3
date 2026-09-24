@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Mic92/niks3/client"
@@ -218,5 +220,75 @@ func TestDumpPathWriterError(t *testing.T) {
 		if !errors.Is(err, errSimulated) {
 			t.Fatalf("n=%d: expected wrapped errSimulated, got %v", n, err)
 		}
+	}
+}
+
+// processBytesRead returns the bytes this process has read through read(2)
+// and friends, or skips the test where /proc/self/io is unavailable.
+func processBytesRead(t *testing.T) uint64 {
+	t.Helper()
+
+	data, err := os.ReadFile("/proc/self/io")
+	if err != nil {
+		t.Skipf("no /proc/self/io: %v", err)
+	}
+
+	for line := range strings.Lines(string(data)) {
+		if v, ok := strings.CutPrefix(line, "rchar: "); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				t.Fatalf("parsing rchar %q: %v", v, err)
+			}
+
+			return n
+		}
+	}
+
+	t.Skip("no rchar in /proc/self/io")
+
+	return 0
+}
+
+// Once the writer has failed the dump is abandoned, so the prefetcher must
+// stop reading the store path: a push cancelled or failed during a multipart
+// upload would otherwise wait for every remaining small file of the path to
+// be read before the error came back.
+//
+// Not parallel: it measures the whole process's reads.
+//
+//nolint:paralleltest // counts process-wide bytes read
+func TestDumpPathWriterErrorStopsReading(t *testing.T) {
+	const (
+		files    = 4000
+		fileSize = 8 << 10
+	)
+
+	tmp := t.TempDir()
+	data := bytes.Repeat([]byte{'x'}, fileSize)
+
+	for i := range files {
+		dir := filepath.Join(tmp, fmt.Sprintf("d%02d", i%40))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d", i)), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before := processBytesRead(t)
+
+	if _, err := client.DumpPathWithListing(&failAfterWriter{n: 0}, tmp); !errors.Is(err, errSimulated) {
+		t.Fatalf("expected wrapped errSimulated, got %v", err)
+	}
+
+	// What was queued before the failure may have been read; that is a few
+	// hundred files at most, not the whole tree.
+	read := processBytesRead(t) - before
+	t.Logf("read %d of %d bytes", read, files*fileSize)
+
+	if read > files*fileSize/4 {
+		t.Errorf("read %d bytes after the writer failed on its first write; the tree holds %d", read, files*fileSize)
 	}
 }
