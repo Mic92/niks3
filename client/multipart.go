@@ -70,17 +70,29 @@ var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should 
 	},
 }
 
-func getPartBuffer(partSize int) ([]byte, func()) {
+// partBufferPool is what part buffers come from; *sync.Pool satisfies it.
+type partBufferPool interface {
+	Get() any
+	Put(x any)
+}
+
+// getPartBuffer takes a part buffer from pool, or from uploadBufferPool when
+// pool is nil (always, outside tests).
+func getPartBuffer(pool partBufferPool, partSize int) ([]byte, func()) {
 	if partSize > multipartPartSize {
 		return make([]byte, partSize), func() {}
 	}
 
-	ptr, ok := uploadBufferPool.Get().(*[]byte)
+	if pool == nil {
+		pool = &uploadBufferPool
+	}
+
+	ptr, ok := pool.Get().(*[]byte)
 	if !ok {
 		return make([]byte, multipartPartSize), func() {}
 	}
 
-	return *ptr, func() { uploadBufferPool.Put(ptr) }
+	return *ptr, func() { pool.Put(ptr) }
 }
 
 // ErrUploadSuperseded means a concurrent closure already finished the same NAR
@@ -252,7 +264,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 				return nil
 			}
 
-			buffer, release := getPartBuffer(partSize)
+			buffer, release := getPartBuffer(c.partBuffers, partSize)
 
 			// ReadFull reports the end of the stream as io.EOF or, after a
 			// short last part, io.ErrUnexpectedEOF, and only when r itself

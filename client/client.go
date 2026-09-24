@@ -40,6 +40,7 @@ type Client struct {
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 	registrations           errgroup.Group
+	partBuffers             partBufferPool // nil: the shared pool; tests substitute one to force buffer reuse
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
 	cacheConfigMu           sync.Mutex
