@@ -27,6 +27,13 @@ const (
 	// proxyTimeoutSlack absorbs TLS handshake, S3 first-byte latency, and
 	// TCP slow start. Dominates for small objects (narinfos, listings).
 	proxyTimeoutSlack = 5 * time.Minute
+
+	// maxNarinfoSize bounds a narinfo the proxy buffers and decompresses,
+	// both as stored and decompressed. Clients write narinfos through
+	// presigned URLs, so their size is not the server's to choose, and a few
+	// kilobytes of zstd expand to gigabytes. Real narinfos are a few hundred
+	// bytes; this leaves room for a couple hundred thousand references.
+	maxNarinfoSize = 16 << 20
 )
 
 // ProxyWriteTimeout returns the per-request write deadline for streaming an
@@ -134,7 +141,7 @@ func parseSingleRange(spec string, size int64) (*byteRange, error) {
 // that on every proxied narinfo request.
 var zstdDecoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() any {
-		decoder, err := zstd.NewReader(nil)
+		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxNarinfoSize))
 		if err != nil {
 			panic("failed to create zstd decoder: " + err.Error())
 		}
@@ -429,16 +436,23 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 
 // serveDecompressedNarinfo reads a narinfo from S3 and writes the decompressed
 // content to the response. Narinfos are tiny (~500 bytes compressed) so
-// buffering the whole thing is fine.
+// buffering the whole thing is fine, up to maxNarinfoSize either way.
 //
 // Narinfos are stored zstd-compressed in S3 with Content-Encoding: zstd.
 // A transparent proxy (e.g. Cloudflare Tunnel) may decompress the data and
 // strip the Content-Encoding header before it reaches us. We only decompress
 // when the Content-Encoding header is still present.
 func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader, info *minio.ObjectInfo) {
-	data, err := io.ReadAll(obj)
+	data, err := io.ReadAll(io.LimitReader(obj, maxNarinfoSize+1))
 	if err != nil {
 		slog.Error("Failed to read narinfo from S3", "error", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+
+		return
+	}
+
+	if len(data) > maxNarinfoSize {
+		slog.Error("Refusing narinfo larger than the limit", "key", info.Key, "limit", maxNarinfoSize)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 
 		return

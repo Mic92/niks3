@@ -173,6 +173,20 @@ func TestReadProxyNarinfo(t *testing.T) {
 	if header.Get("Last-Modified") == "" {
 		t.Error("expected Last-Modified header")
 	}
+
+	// Clients write narinfos through presigned URLs, so their size is not
+	// the server's to choose, and a few kilobytes of zstd expand to
+	// gigabytes. Past the bound the proxy must refuse instead of buffering.
+	oversized := bytes.Repeat([]byte("References: x\n"), server.MaxNarinfoSize/14+1)
+
+	bomb := "3hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	putTestObject(ctx, t, service, bomb, zstdCompress(t, oversized),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+	proxyGet(t, ts, "/"+bomb, http.StatusBadGateway)
+
+	plain := "5hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	putTestObject(ctx, t, service, plain, oversized, minio.PutObjectOptions{ContentType: "application/x-nix-narinfo"})
+	proxyGet(t, ts, "/"+plain, http.StatusBadGateway)
 }
 
 // TestReadProxyNarinfoAlreadyDecompressed verifies that narinfos already
