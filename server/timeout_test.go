@@ -1,6 +1,10 @@
 package server_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,4 +68,42 @@ func TestPendingClosureWriteTimeout(t *testing.T) {
 			}
 		})
 	}
+
+	// The handler must apply it. Behind a server whose WriteTimeout runs out
+	// while the handler is still working, the response is otherwise cut off
+	// after the pending closure was created.
+	t.Run("handler extends the server's deadline", func(t *testing.T) {
+		t.Parallel()
+
+		service := createTestService(t)
+		defer service.Close()
+
+		const writeTimeout = 200 * time.Millisecond
+
+		service.SetTestHookBeforePendingInsert(func() { time.Sleep(4 * writeTimeout) })
+
+		ts := httptest.NewUnstartedServer(http.HandlerFunc(service.CreatePendingClosureHandler))
+		ts.Config.WriteTimeout = writeTimeout
+		ts.Start()
+
+		defer ts.Close()
+
+		hash := strings.Repeat("w", 32)
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/api/pending_closures",
+			strings.NewReader(closureBody(hash, narKeyFor(hash))))
+		ok(t, err)
+
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("response cut off by the server's write timeout: %v", err)
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+
+		var pc server.PendingClosureResponse
+		if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&pc) != nil || pc.ID == "" {
+			t.Fatalf("status=%d, pending closure %+v: response incomplete", resp.StatusCode, pc)
+		}
+	})
 }
