@@ -27,7 +27,12 @@ func (c *Client) RegisterUploadedObject(ctx context.Context, objectKey string) {
 		// slot of the registrations group for as long as the kernel keeps the
 		// connection, block upload workers once the group is full, and keep
 		// WaitRegistrations from returning after Ctrl-C.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), registrationTimeout)
+		timeout := registrationTimeout
+		if c.registrationTimeout > 0 {
+			timeout = c.registrationTimeout // tests only
+		}
+
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 		defer cancel()
 
 		err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(),
