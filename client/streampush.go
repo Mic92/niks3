@@ -120,6 +120,19 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		})
 	}
 
+	// cancelledAfterSlot gives back a slot just taken if ctx is done by now.
+	// select chooses at random among ready cases, so a slot that came free
+	// while the run was being cancelled can win over ctx.Done.
+	cancelledAfterSlot := func() bool {
+		if ctx.Err() == nil {
+			return false
+		}
+
+		<-slots
+
+		return true
+	}
+
 	// submit waits for a slot, then runs job. It reports false, and runs
 	// nothing, once ctx is done.
 	submit := func(job func() []StreamResult) bool {
@@ -127,6 +140,10 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		case <-ctx.Done():
 			return false
 		case slots <- struct{}{}:
+		}
+
+		if cancelledAfterSlot() {
+			return false
 		}
 
 		start(job)
@@ -224,6 +241,10 @@ loop:
 
 			take(line)
 		case slots <- struct{}{}:
+			if cancelledAfterSlot() {
+				break loop
+			}
+
 			b := takeBatch()
 
 			start(func() []StreamResult { return s.upload(ctx, b) })
@@ -241,20 +262,7 @@ loop:
 		// Whatever was taken or already read but not pushed is not going to
 		// be; say so rather than leave the caller waiting for those lines.
 		unsent = append(unsent, takeBatch()...)
-
-	drain:
-		for {
-			select {
-			case line, ok := <-lines:
-				if !ok {
-					break drain
-				}
-
-				unsent = append(unsent, line)
-			default:
-				break drain
-			}
-		}
+		unsent = append(unsent, readyLines(lines)...)
 
 		report(s.failUnsent(unsent, ctx.Err()))
 		wg.Wait()
@@ -380,4 +388,22 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 	}
 
 	return results
+}
+
+// readyLines returns the lines already waiting on lines, without blocking.
+func readyLines(lines <-chan string) []string {
+	var ready []string
+
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return ready
+			}
+
+			ready = append(ready, line)
+		default:
+			return ready
+		}
+	}
 }
