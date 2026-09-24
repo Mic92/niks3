@@ -86,6 +86,30 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 		t.Fatalf("status with no task and no lock: %d %s", w.Code, w.Body.String())
 	}
 
+	// The same lock held on another database belongs to another cache's
+	// collection: advisory locks are per database, pg_locks spans the
+	// cluster.
+	other := createTestService(t)
+	defer other.Close()
+
+	otherConn, err := other.Pool.Acquire(ctx)
+	ok(t, err)
+
+	defer otherConn.Release()
+
+	ok(t, otherConn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired))
+
+	if !acquired {
+		t.Fatal("expected to acquire the GC advisory lock on the other database")
+	}
+
+	if w := statusReq(); w.Code != http.StatusNotFound {
+		t.Fatalf("status with the lock held only on another database: %d %s", w.Code, w.Body.String())
+	}
+
+	_, err = otherConn.Exec(ctx, "SELECT pg_advisory_unlock($1)", server.GCAdvisoryLockKey)
+	ok(t, err)
+
 	// Re-take the lock so the deferred unlock has something to release.
 	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired)
 	ok(t, err)
