@@ -50,15 +50,25 @@ func createPush(t *testing.T, service *server.Service, roots []string, objects .
 	return resp
 }
 
-func completePush(t *testing.T, service *server.Service, id string, status int) {
+// completePush uploads what the push was offered, as the client does, and
+// completes it.
+func completePush(t *testing.T, service *server.Service, push server.PendingClosureResponse, status int) {
 	t.Helper()
+
+	for key, pendingObject := range push.PendingObjects {
+		if pendingObject.MultipartInfo != nil {
+			handleMultipartUpload(t.Context(), t, key, pendingObject, service)
+		} else {
+			handlePresignedUpload(t.Context(), t, pendingObject.PresignedURL)
+		}
+	}
 
 	check := checkStatusCode(status)
 	testRequest(t, &TestRequest{
 		method:        "POST",
-		path:          "/api/pushes/" + id + "/complete",
+		path:          "/api/pushes/" + push.ID + "/complete",
 		handler:       service.CompletePushHandler,
-		pathValues:    map[string]string{"id": id},
+		pathValues:    map[string]string{"id": push.ID},
 		checkResponse: &check,
 	})
 }
@@ -113,7 +123,7 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 
 	resp := createPush(t, service, []string{rootA + ".narinfo", rootB + ".narinfo"},
 		pkgObjects(base), pkgObjects(rootA, base), pkgObjects(rootB, base))
-	completePush(t, service, resp.ID, http.StatusNoContent)
+	completePush(t, service, resp, http.StatusNoContent)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = ANY($1)",
 		[]string{rootA + ".narinfo", rootB + ".narinfo"}); n != 2 {
@@ -144,7 +154,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 	second := strings.Repeat("c", 32)
 
 	one := createPush(t, service, []string{first + ".narinfo"}, pkgObjects(base), pkgObjects(first, base))
-	completePush(t, service, one.ID, http.StatusNoContent)
+	completePush(t, service, one, http.StatusNoContent)
 
 	two := createPush(t, service, []string{second + ".narinfo"}, pkgObjects(base), pkgObjects(second, base))
 
@@ -166,7 +176,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 		}
 	}
 
-	completePush(t, service, two.ID, http.StatusNoContent)
+	completePush(t, service, two, http.StatusNoContent)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", second+".narinfo"); n != 1 {
 		t.Errorf("closure rows for the second push = %d, want 1", n)

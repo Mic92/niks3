@@ -65,6 +65,10 @@ func createTestService(tb testing.TB) *server.Service {
 	testBucketMu.Unlock()
 	ok(tb, err)
 
+	// Runs after the test and its defers: whatever the test did, the
+	// database and the bucket must still agree.
+	tb.Cleanup(func() { checkStoreInvariants(tb, connectionString, bucketName) })
+
 	return &server.Service{
 		Pool:          pool,
 		Bucket:        bucketName,

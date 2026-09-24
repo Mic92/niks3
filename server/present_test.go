@@ -29,6 +29,7 @@ func TestPresentReportsOnlyClosureRoots(t *testing.T) {
 	_, err := service.Pool.Exec(ctx,
 		`INSERT INTO objects (key, refs) VALUES ($1, $2), ($3, '{}')`, root, []string{dep}, dep)
 	ok(t, err)
+	seededWithoutS3(t, root, dep)
 
 	_, err = service.Pool.Exec(ctx,
 		`INSERT INTO objects (key, deleted_at, first_deleted_at) VALUES ($1, now(), now())`, tombstoned)
@@ -80,6 +81,7 @@ func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
 
 	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs) VALUES ($1, '{}')`, root)
 	ok(t, err)
+	seededWithoutS3(t, root)
 
 	_, err = service.Pool.Exec(ctx,
 		`INSERT INTO closures (key, updated_at) VALUES ($1, now() - interval '30 days')`, root)

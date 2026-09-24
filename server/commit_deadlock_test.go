@@ -19,6 +19,7 @@ func TestConcurrentCommitsSharingObjectsDoNotDeadlock(t *testing.T) {
 
 	service := createTestService(t)
 	defer service.Close()
+	databaseOnlyTest(t)
 
 	ctx := t.Context()
 	q := pg.New(service.Pool)
