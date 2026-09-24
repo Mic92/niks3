@@ -253,6 +253,10 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate limiter waits after a throttle can outlast the server's WriteTimeout.
+	// A NAR stream extends this budget by its size once the Stat has returned.
+	setProxyWriteDeadline(w, key, 0)
+
 	// Wait for rate limiter
 	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -406,12 +410,7 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	// Override the global short WriteTimeout: large NARs need a budget
-	// proportional to their size.
-	rc := http.NewResponseController(w)
-	if err := rc.SetWriteDeadline(time.Now().Add(ProxyWriteTimeout(objInfo.Size))); err != nil {
-		slog.Debug("Failed to extend write deadline", "key", key, "error", err)
-	}
+	setProxyWriteDeadline(w, key, objInfo.Size)
 
 	setProxyHeaders(w, &objInfo)
 	w.Header().Set("Accept-Ranges", "bytes")
@@ -495,6 +494,14 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader,
 	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(plain)
+}
+
+// setProxyWriteDeadline replaces the server's WriteTimeout with ProxyWriteTimeout(size).
+func setProxyWriteDeadline(w http.ResponseWriter, key string, size int64) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(ProxyWriteTimeout(size))); err != nil {
+		slog.Debug("Failed to extend write deadline", "key", key, "error", err)
+	}
 }
 
 // setProxyHeaders sets response headers from S3 object metadata.
