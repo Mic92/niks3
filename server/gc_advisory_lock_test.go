@@ -10,6 +10,7 @@ import (
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestGCAdvisoryLockBlocksConcurrentRun checks GC fails fast when another
@@ -88,4 +89,20 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 	// Re-take the lock so the deferred unlock has something to release.
 	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired)
 	ok(t, err)
+
+	// A replica that cannot tell whether the lock is held must not answer as
+	// if nothing were running: a client that saw the peer's run takes a 404
+	// as its end.
+	unreachable, err := pgxpool.New(ctx, "postgres:///niks3?host=/nonexistent&connect_timeout=1")
+	ok(t, err)
+
+	defer unreachable.Close()
+
+	blind := &server.Service{Pool: unreachable, GCTasks: server.NewGCTaskStore()}
+	w = httptest.NewRecorder()
+	blind.GCStatusHandler(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/gc/status", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status when the lock cannot be checked: %d %s, want 503", w.Code, w.Body.String())
+	}
 }

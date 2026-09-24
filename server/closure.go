@@ -299,7 +299,12 @@ func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	held, err := gcLockHeld(r.Context(), s.Pool)
 	if err != nil {
+		// Not knowing is not "nothing is running": a client that saw
+		// another replica's run takes a 404 as its end.
 		slog.Error("failed to check GC advisory lock", "error", err)
+		http.Error(w, "could not check for a garbage collection on another replica", http.StatusServiceUnavailable)
+
+		return
 	}
 
 	if !held {
