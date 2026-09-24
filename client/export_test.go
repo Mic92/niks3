@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -128,6 +129,11 @@ func (p *lifoPartBuffers) Put(x any) {
 	if buf, ok := x.(*[]byte); ok {
 		p.free = append(p.free, buf)
 	}
+}
+
+// SetRegistrationTimeout shortens the bound on one upload registration.
+func (c *Client) SetRegistrationTimeout(d time.Duration) {
+	c.registrationTimeout = d
 }
 
 // UseLIFOPartBuffers makes the client reuse a released part buffer for the
