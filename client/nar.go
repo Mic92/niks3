@@ -294,9 +294,13 @@ func DumpPathWithListing(w io.Writer, path string) (*NarListing, error) {
 		pf.close()
 	}()
 
-	// On error, drain the prefetch queue so the enqueuer goroutine unblocks
-	// and the worker pool shuts down cleanly.
+	// On error, stop prefetching and drain the prefetch queue so the enqueuer
+	// goroutine unblocks and the worker pool shuts down cleanly. Without the
+	// stop, the drain would wait for every remaining small file of the path
+	// to be read, delaying a cancelled or failed upload by as much.
 	drain := func() {
+		pf.stop()
+
 		go func() {
 			for f := range pf.queue {
 				<-f.done
@@ -460,6 +464,10 @@ func shouldPrefetch(n *narNode) bool {
 // enqueuePrefetch walks the node tree in the same DFS order the writer uses
 // and registers small regular files with the prefetcher.
 func enqueuePrefetch(p *prefetcher, n *narNode) {
+	if p.stopped.Load() {
+		return
+	}
+
 	if shouldPrefetch(n) {
 		p.enqueue(n.path, n.size)
 
