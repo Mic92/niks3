@@ -28,6 +28,7 @@ func TestPresentReportsOnlyClosureRoots(t *testing.T) {
 	_, err := service.Pool.Exec(ctx,
 		`INSERT INTO objects (key, refs) VALUES ($1, $2), ($3, '{}')`, root, []string{dep}, dep)
 	ok(t, err)
+	seededWithoutS3(t, root, dep)
 
 	_, err = service.Pool.Exec(ctx,
 		`INSERT INTO objects (key, deleted_at, first_deleted_at) VALUES ($1, now(), now())`, tombstoned)
@@ -77,6 +78,7 @@ func TestPresentRefreshesOnlyStaleClosures(t *testing.T) {
 
 	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs) VALUES ($1, '{}'), ($2, '{}')`, fresh, stale)
 	ok(t, err)
+	seededWithoutS3(t, fresh, stale)
 
 	_, err = service.Pool.Exec(ctx,
 		`INSERT INTO closures (key, updated_at) VALUES
@@ -134,6 +136,7 @@ func presentWaitsForGC(t *testing.T, age string) {
 
 	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs) VALUES ($1, '{}')`, root)
 	ok(t, err)
+	seededWithoutS3(t, root)
 
 	_, err = service.Pool.Exec(ctx,
 		`INSERT INTO closures (key, updated_at) VALUES ($1, timezone('UTC', now()) - $2::interval)`, root, age)

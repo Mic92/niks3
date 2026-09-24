@@ -19,6 +19,7 @@ func TestMetricsInventory(t *testing.T) {
 
 	service := createTestService(t)
 	defer service.Close()
+	databaseOnlyTest(t)
 
 	ctx := t.Context()
 	queries := pg.New(service.Pool)
@@ -97,7 +98,7 @@ func TestMetricsCommit(t *testing.T) {
 	root := strings.Repeat("b", 32)
 
 	resp := createPush(t, service, []string{root + ".narinfo"}, pkgObjects(base), pkgObjects(root, base))
-	completePush(t, service, resp.ID) // 4 pending objects
+	completePush(t, service, resp) // 4 pending objects
 
 	ctx := t.Context()
 	queries := pg.New(service.Pool)
@@ -111,6 +112,7 @@ func TestMetricsCommit(t *testing.T) {
 		{PendingClosureID: pending.ID, Key: narKeyFor(other), Refs: []string{}},
 	})
 	ok(t, err)
+	seededWithoutS3(t, other+".narinfo", narKeyFor(other))
 
 	check := checkStatusCode(http.StatusNoContent)
 	id := strconv.FormatInt(pending.ID, 10)
