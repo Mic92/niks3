@@ -21,6 +21,7 @@ old_closures AS (
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
       AND NOT (id = any($2::bigint []))
+    FOR UPDATE OF pending_closures SKIP LOCKED
 ),
 
 inserted_objects AS (
@@ -58,6 +59,8 @@ type CleanupPendingClosuresParams struct {
 // selected the multipart uploads to abort (GetOldMultipartUploads). Closures
 // in keep are left alone: one of their multipart uploads could not be
 // aborted, and the row is the only handle on it.
+// A closure that is being committed holds its row (commit_pending_closure)
+// and is skipped; once committed there is nothing left to clean.
 // Insert pending objects into objects table if they don't already exist
 // We mark them as deleted so they can be cleaned up later. Key order keeps
 // row locking consistent with commit_pending_closure.

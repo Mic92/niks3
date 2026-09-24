@@ -101,11 +101,14 @@ WITH cutoff_time AS (
     SELECT sqlc.arg(cutoff)::timestamp AS time
 ),
 
+-- A closure that is being committed holds its row (commit_pending_closure)
+-- and is skipped; once committed there is nothing left to clean.
 old_closures AS (
     SELECT id
     FROM pending_closures, cutoff_time
     WHERE started_at < cutoff_time.time
       AND NOT (id = any(sqlc.arg(keep)::bigint []))
+    FOR UPDATE OF pending_closures SKIP LOCKED
 ),
 
 -- Insert pending objects into objects table if they don't already exist

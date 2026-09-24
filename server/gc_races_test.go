@@ -595,3 +595,109 @@ func TestSweepSparesObjectReuploadedMidSweep(t *testing.T) {
 		t.Errorf("%s live in the database but deleted from S3 by the sweep", narKey)
 	}
 }
+
+// waitForLockWaiter returns once a backend of the service's database is
+// waiting for a lock.
+func waitForLockWaiter(t *testing.T, service *server.Service) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+
+	for {
+		var waiting int
+		ok(t, service.Pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting))
+
+		if waiting > 0 {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("no backend started waiting for a lock")
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A commit that GC's pending cleanup races must either fail or leave every
+// object of the closure recorded, live and in S3. Here the commit waits on
+// the closure row, held by a concurrent commit or present check of the same
+// root, while a collection whose cleanup takes the aged pending closure runs.
+func TestCommitRacingPendingCleanupKeepsObjects(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	q := pg.New(service.Pool)
+
+	hash := strings.Repeat("z", 32)
+	narinfo := hash + ".narinfo"
+	narKey := "nar/" + strings.Repeat("9", 52) + ".nar.zst"
+
+	// The root is a closure already, as on a push with --verify-s3-integrity.
+	_, err := service.Pool.Exec(ctx, "INSERT INTO closures (key, updated_at) VALUES ($1, timezone('UTC', now()))", narinfo)
+	ok(t, err)
+
+	// A push that uploaded everything and aged past the cleanup cutoff
+	// before committing.
+	pc, err := q.InsertPendingClosure(ctx, narinfo)
+	ok(t, err)
+
+	_, err = q.InsertPendingObjects(ctx, []pg.InsertPendingObjectsParams{
+		{PendingClosureID: pc.ID, Key: narinfo, Refs: []string{narKey}},
+		{PendingClosureID: pc.ID, Key: narKey, Refs: []string{}},
+	})
+	ok(t, err)
+
+	for _, key := range []string{narinfo, narKey} {
+		_, err = service.MinioClient.PutObject(ctx, service.Bucket, key, strings.NewReader("x"), 1, minio.PutObjectOptions{})
+		ok(t, err)
+	}
+
+	_, err = service.Pool.Exec(ctx, "UPDATE pending_closures SET started_at = started_at - interval '2 days' WHERE id = $1", pc.ID)
+	ok(t, err)
+
+	holder, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = holder.Rollback(ctx) }()
+
+	_, err = holder.Exec(ctx, "SELECT 1 FROM closures WHERE key = $1 FOR UPDATE", narinfo)
+	ok(t, err)
+
+	committed := make(chan error, 1)
+
+	go func() { committed <- q.CommitPendingClosure(ctx, pc.ID) }()
+
+	waitForLockWaiter(t, service)
+
+	st := service.RunGCForTest(24*time.Hour, 24*time.Hour, true)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	ok(t, holder.Rollback(ctx))
+
+	if err := <-committed; err != nil {
+		t.Logf("commit failed, as it may: %v", err)
+
+		return
+	}
+
+	// The client is told its closure is cached, so all of it must be.
+	for _, key := range []string{narinfo, narKey} {
+		var live int
+		ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM objects WHERE key = $1 AND deleted_at IS NULL", key).Scan(&live))
+
+		if live != 1 {
+			t.Errorf("commit succeeded but %s is not recorded live", key)
+		}
+
+		if !objectInS3(t, service, key) {
+			t.Errorf("commit succeeded but %s is gone from S3", key)
+		}
+	}
+}
