@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
@@ -13,6 +14,10 @@ import (
 
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
+
+	// multipartCreateTimeout bounds the creation of a multipart upload once
+	// its request no longer ends with the request that asked for it.
+	multipartCreateTimeout = 2 * time.Minute
 )
 
 // useSimpleUpload reports whether a NAR of the given uncompressed size should
@@ -90,8 +95,16 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		return PendingObject{}, fmt.Errorf("rate limiter: %w", err)
 	}
 
-	// Initiate multipart upload
-	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
+	// Initiate multipart upload. The request runs to its end even if ctx is
+	// cancelled meanwhile, by a sibling in the errgroup failing or by the
+	// client going away: a request cut short after S3 carried it out leaves
+	// an upload whose ID nobody learns, and nothing could ever abort it. With
+	// the ID in hand, the row insert below fails on the cancelled ctx and the
+	// upload is aborted. The timeout bounds a creation nobody waits for.
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), multipartCreateTimeout)
+	defer cancelCreate()
+
+	uploadID, err := coreClient.NewMultipartUpload(createCtx, s.Bucket, objectKey, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	if err != nil {
