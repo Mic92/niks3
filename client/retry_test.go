@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +16,9 @@ import (
 
 // TestDoWithRetry_BodyReplayedViaGetBody verifies that request bodies are
 // replayed via GetBody on retries rather than copied into a heap buffer.
-// This is critical for mmap'd uploads where copying defeats the purpose.
+// The first attempt sends the caller's body and later ones fresh ones from
+// GetBody, and the transport closes every one of them: a file-backed body
+// replaced before the first attempt was left open with nobody to close it.
 func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 	t.Parallel()
 
@@ -58,10 +61,28 @@ func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 		Jitter:         0,
 	})
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut, srv.URL, bytes.NewReader(payload))
+	var (
+		bodiesMu sync.Mutex
+		bodies   []*closeTrackingBody
+	)
+
+	newBody := func() *closeTrackingBody {
+		b := &closeTrackingBody{Reader: bytes.NewReader(payload)}
+
+		bodiesMu.Lock()
+		bodies = append(bodies, b)
+		bodiesMu.Unlock()
+
+		return b
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut, srv.URL, newBody())
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	req.ContentLength = int64(len(payload))
+	req.GetBody = func() (io.ReadCloser, error) { return newBody(), nil }
 
 	resp, err := c.DoWithRetry(context.Background(), req)
 	if err != nil {
@@ -81,6 +102,33 @@ func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 	if got := int(attempts.Load()); got != 3 {
 		t.Fatalf("expected 3 attempts, got %d", got)
 	}
+
+	bodiesMu.Lock()
+	defer bodiesMu.Unlock()
+
+	// The caller's body and one from GetBody per retry.
+	if len(bodies) != 3 {
+		t.Errorf("%d request bodies made, want 3: the caller's and one per retry", len(bodies))
+	}
+
+	for i, b := range bodies {
+		if !b.closed.Load() {
+			t.Errorf("request body %d was never closed", i)
+		}
+	}
+}
+
+// closeTrackingBody is a request body that records whether it was closed.
+type closeTrackingBody struct {
+	*bytes.Reader
+
+	closed atomic.Bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed.Store(true)
+
+	return nil
 }
 
 // The last retryable response is returned to the caller with its body intact,
