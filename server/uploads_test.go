@@ -70,7 +70,10 @@ func uploadPendingObjects(ctx context.Context, t *testing.T, service *server.Ser
 	for key, pendingObject := range resp.PendingObjects {
 		switch {
 		case pendingObject.Type == objectTypeNarinfo:
-			// Narinfo is handled server-side - collect metadata instead
+			// The client uploads the narinfo like any other small object;
+			// the metadata is what it would have had the server sign.
+			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
+
 			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureHash + "-test-package",
 				"url":         narKey,
@@ -430,6 +433,11 @@ func TestService_verifyS3Integrity(t *testing.T) {
 	if _, exists := responseWithVerify.PendingObjects[narinfoKey]; !exists {
 		t.Errorf("expected narinfo %s to be in pending objects", narinfoKey)
 	}
+
+	// The client re-uploads what verification offered and commits, which
+	// leaves the database and the bucket agreeing again.
+	commitPendingClosure(t, service, responseWithVerify.ID,
+		uploadPendingObjects(ctx, t, service, responseWithVerify, closureKey, narKey))
 }
 
 // TestCompleteMultipartUnregistered ensures complete refuses an upload that
