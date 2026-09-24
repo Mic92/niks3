@@ -33,8 +33,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS object_stats_trigger ON objects;
-CREATE TRIGGER object_stats_trigger
-AFTER INSERT OR UPDATE OR DELETE ON objects
-FOR EACH ROW EXECUTE FUNCTION object_stats_apply();
+-- This file runs on every start. Creating or dropping a trigger locks the
+-- whole table, and that lock waits for every transaction using objects
+-- while holding every later query on it behind itself, so a replica starting
+-- during a mark or a large commit would stall all pushes until that ended.
+-- The trigger is created once; the function above is replaced in place. A
+-- change to the trigger's own definition needs a versioned migration.
+DO $do$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'objects'::regclass AND tgname = 'object_stats_trigger'
+    ) THEN
+        CREATE TRIGGER object_stats_trigger
+        AFTER INSERT OR UPDATE OR DELETE ON objects
+        FOR EACH ROW EXECUTE FUNCTION object_stats_apply();
+    END IF;
+END
+$do$;
 -- +goose statementend
