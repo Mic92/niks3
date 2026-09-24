@@ -41,10 +41,16 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c.SetRegistrationTimeout(200 * time.Millisecond)
+	// Long enough for the requests to reach the server on a loaded builder
+	// under the race detector: at 200ms, some runs saw none of them.
+	const timeout = 2 * time.Second
+
+	c.SetRegistrationTimeout(timeout)
 
 	// The push that registers is cancelled (Ctrl-C) while the requests hang.
 	pushCtx, cancelPush := context.WithCancel(t.Context())
+
+	start := time.Now()
 
 	const registrations = 3
 	for range registrations {
@@ -53,7 +59,6 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 
 	cancelPush()
 
-	start := time.Now()
 	done := make(chan struct{})
 
 	go func() {
@@ -64,7 +69,7 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(5 * timeout):
 		t.Fatal("WaitRegistrations did not return: registrations against a silent server are unbounded")
 	}
 
@@ -74,7 +79,7 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 		t.Errorf("server saw %d registrations, want %d", n, registrations)
 	}
 
-	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+	if elapsed := time.Since(start); elapsed < timeout {
 		t.Errorf("registrations ended after %v, before their bound: cancelled with the push", elapsed)
 	}
 }
