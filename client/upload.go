@@ -169,10 +169,20 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 			}
 		}
 
-		// Narinfo references both dependencies, its own NAR file, .ls file, and any realisations
-		narinfoRefs := make([]string, 0, len(references)+2+len(realisationKeys))
+		logKey := findBuildLog(pathInfo, storePath, logPathsByKey)
+
+		// Narinfo references its dependencies and every object pushed with
+		// it: its NAR, .ls file, build log and realisations. GC keeps only
+		// what a closure root reaches through these references, so an object
+		// left out here is collected while its closure is still live.
+		narinfoRefs := make([]string, 0, len(references)+3+len(realisationKeys))
 		narinfoRefs = append(narinfoRefs, references...)
 		narinfoRefs = append(narinfoRefs, narKey, lsKey)
+
+		if logKey != "" {
+			narinfoRefs = append(narinfoRefs, logKey)
+		}
+
 		narinfoRefs = append(narinfoRefs, realisationKeys...)
 		narinfoKey := hash + ".narinfo"
 
@@ -196,30 +206,12 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 			},
 		}
 
-		// Check if this path has a deriver (i.e., was built) and has a build log
-		if pathInfo.Deriver != nil && *pathInfo.Deriver != "" {
-			drvPath := *pathInfo.Deriver
-
-			logPath, err := GetBuildLogPath(drvPath)
-			if err != nil {
-				slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
-			} else if logPath != "" {
-				// Build log exists - add log object
-				// Use filepath.Base to get just the derivation filename (works with any store directory)
-				drvName := filepath.Base(drvPath)
-				logKey := "log/" + drvName
-
-				objects = append(objects, ObjectWithRefs{
-					Key:  logKey,
-					Type: ObjectTypeBuildLog,
-					Refs: []string{}, // Logs don't reference anything
-				})
-
-				// Track the log path for later upload
-				logPathsByKey[logKey] = logPath
-
-				slog.Debug("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
-			}
+		if logKey != "" {
+			objects = append(objects, ObjectWithRefs{
+				Key:  logKey,
+				Type: ObjectTypeBuildLog,
+				Refs: []string{}, // Logs don't reference anything
+			})
 		}
 
 		// Add realisation objects for CA derivations
@@ -273,6 +265,36 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		LogPathsByKey:     logPathsByKey,
 		RealisationsByKey: realisations,
 	}, nil
+}
+
+// findBuildLog returns the cache key of the build log of a built store path,
+// recording where the log lives for the upload, or "" if the path has no
+// deriver or no log.
+func findBuildLog(pathInfo *PathInfo, storePath string, logPathsByKey map[string]string) string {
+	if pathInfo.Deriver == nil || *pathInfo.Deriver == "" {
+		return ""
+	}
+
+	drvPath := *pathInfo.Deriver
+
+	logPath, err := GetBuildLogPath(drvPath)
+	if err != nil {
+		slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
+
+		return ""
+	}
+
+	if logPath == "" {
+		return ""
+	}
+
+	// Use filepath.Base to get just the derivation filename (works with any store directory)
+	logKey := "log/" + filepath.Base(drvPath)
+	logPathsByKey[logKey] = logPath
+
+	slog.Debug("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
+
+	return logKey
 }
 
 // computeClosureMembership returns, for each top-level path, the set of store
