@@ -95,17 +95,26 @@ func (l *leadStream) close() {
 	<-l.done
 }
 
+// A new leader must not announce on the heartbeat that took the lock, nor
+// until the old leader's ping has had time to fail: the old leader notices a
+// lost connection only on its next heartbeat, and on a dead connection a ping
+// timeout after that, so the two would overlap. The standby's stream is
+// gated, so the test knows which heartbeat ran while the old leader still
+// held the lock and can let the next one run only once the lock is free: that
+// next heartbeat is the one that takes the lock, and it and the quiet
+// heartbeats after it must still say false.
 func TestLeadElectsOneAndHandsOver(t *testing.T) {
 	t.Parallel()
 
 	s := createTestService(t)
-	defer s.Close()
+	// Registered before the streams, so on a failure they are closed first
+	// and Close does not wait forever for their lock connections.
+	t.Cleanup(s.Close)
 
 	a := openLead(t, s)
 	a.until(api.LeadStatus{Lead: true})
 
-	b := openLead(t, s)
-	b.until(api.LeadStatus{Lead: false})
+	b := openLeadGated(t, s)
 
 	// Still exactly one leader a few beats later.
 	for range 3 {
@@ -113,28 +122,177 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 			t.Fatalf("a lost lead: %+v", st)
 		}
 
-		if st := b.next(); st.Lead {
+		if st := b.held(); st.Lead {
 			t.Fatalf("two leaders: %+v", st)
 		}
+
+		b.release()
 	}
 
-	// The old leader notices a lost connection only on its next heartbeat,
-	// and on a dead connection a ping timeout after that, so the new one
-	// must not announce before both have passed since the lock became free,
-	// or the two overlap.
-	released := time.Now()
+	// b is held inside a heartbeat whose lock attempt ran while a led.
+	if st := b.held(); st.Lead {
+		t.Fatalf("two leaders: %+v", st)
+	}
 
 	a.close()
-	b.until(api.LeadStatus{Lead: true})
+	waitLeadLockFree(t, s)
+	b.release()
 
-	if since, bound := time.Since(released), server.LeadHeartbeat()+server.LeadPingTimeout(); since < bound {
-		t.Fatalf("b announced leadership %s after a released it, within a heartbeat and a ping timeout (%s)", since, bound)
+	// The old leader runs its next heartbeat within one heartbeat of losing
+	// the lock and its ping may take a ping timeout to fail, so b must say
+	// false on the heartbeat that takes the lock and on every one until both
+	// have passed.
+	quiet := 1 + int((server.LeadPingTimeout()+server.LeadHeartbeat()-1)/server.LeadHeartbeat())
+
+	for beat := range quiet {
+		if st := b.held(); st.Lead {
+			t.Fatalf("b announced leadership on heartbeat %d after taking the lock, before the old leader's ping could fail", beat)
+		}
+
+		b.release()
 	}
+
+	if st := b.held(); !st.Lead {
+		t.Fatalf("b did not announce leadership %d heartbeats after taking the lock: %+v", quiet, st)
+	}
+
+	b.release()
 
 	c := openLead(t, s)
 	c.until(api.LeadStatus{Lead: false})
 	c.close()
 	b.close()
+}
+
+// gatedLead is a lead stream whose handler blocks in each status write until
+// the test releases it, so the test decides when the next heartbeat runs.
+type gatedLead struct {
+	t       *testing.T
+	cancel  context.CancelFunc
+	lines   chan api.LeadStatus
+	resume  chan struct{}
+	done    chan struct{}
+	pending bool
+}
+
+type gatedWriter struct {
+	ctx    context.Context //nolint:containedctx // the stream's lifetime
+	header http.Header
+	g      *gatedLead
+}
+
+func (w *gatedWriter) Header() http.Header { return w.header }
+func (w *gatedWriter) WriteHeader(int)     {}
+func (w *gatedWriter) Flush()              {}
+
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	var st api.LeadStatus
+	if err := json.Unmarshal(p, &st); err != nil {
+		return 0, err //nolint:wrapcheck // test writer
+	}
+
+	select {
+	case w.g.lines <- st:
+	case <-w.ctx.Done():
+		return 0, w.ctx.Err() //nolint:wrapcheck // test writer
+	}
+
+	select {
+	case <-w.g.resume:
+		return len(p), nil
+	case <-w.ctx.Done():
+		return 0, w.ctx.Err() //nolint:wrapcheck // test writer
+	}
+}
+
+func openLeadGated(t *testing.T, s *server.Service) *gatedLead {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	g := &gatedLead{t: t, cancel: cancel, lines: make(chan api.LeadStatus), resume: make(chan struct{}), done: make(chan struct{})}
+
+	go func() {
+		defer close(g.done)
+
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/farm/lead", nil)
+		s.LeadHandler(&gatedWriter{ctx: ctx, header: http.Header{}, g: g}, r)
+	}()
+
+	t.Cleanup(g.close)
+
+	return g
+}
+
+// held returns the status the handler is writing; the handler stays blocked
+// in that write, its lock attempt for the heartbeat already made, until
+// release.
+func (g *gatedLead) held() api.LeadStatus {
+	g.t.Helper()
+
+	if g.pending {
+		g.t.Fatal("held called twice without release")
+	}
+
+	select {
+	case st := <-g.lines:
+		g.pending = true
+
+		return st
+	case <-g.done:
+		g.t.Fatal("lead stream closed")
+	case <-time.After(5 * time.Second):
+		g.t.Fatal("timeout waiting for lead status")
+	}
+
+	return api.LeadStatus{}
+}
+
+// release lets the handler finish the held write and run its next heartbeat.
+func (g *gatedLead) release() {
+	g.t.Helper()
+
+	g.pending = false
+
+	select {
+	case g.resume <- struct{}{}:
+	case <-g.done:
+		g.t.Fatal("lead stream closed")
+	}
+}
+
+func (g *gatedLead) close() {
+	g.cancel()
+	<-g.done
+}
+
+// waitLeadLockFree waits until no session holds the farm lead lock on the
+// service's database. A closed connection's session, and its lock, end only
+// once its backend has noticed.
+func waitLeadLockFree(t *testing.T, s *server.Service) {
+	t.Helper()
+
+	key := uint64(server.FarmLeadLockKey)
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		var held bool
+		ok(t, s.Pool.QueryRow(t.Context(), `SELECT EXISTS (
+			SELECT 1 FROM pg_locks
+			WHERE locktype = 'advisory' AND granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND objsubid = 1 AND classid = $1 AND objid = $2)`,
+			int64(key>>32), int64(key&0xffffffff)).Scan(&held))
+
+		if !held {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the old leader's lock was never released")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func openLeadAs(t *testing.T, s *server.Service, incumbent bool) *leadStream {
@@ -158,6 +316,8 @@ func openLeadAs(t *testing.T, s *server.Service, incumbent bool) *leadStream {
 	}()
 
 	go scanLead(pr, ls.lines)
+
+	t.Cleanup(ls.close)
 
 	return ls
 }

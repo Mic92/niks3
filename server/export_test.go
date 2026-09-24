@@ -89,6 +89,9 @@ func SetLeadHeartbeat(d time.Duration) func() {
 	return func() { leadHeartbeat = old }
 }
 
+// FarmLeadLockKey exposes the farm election's advisory lock key to tests.
+const FarmLeadLockKey = farmLeadLockKey
+
 // RestartedNow makes the lead handler behave as if the server just started.
 func RestartedNow(grace time.Duration) {
 	startedAt = time.Now()
