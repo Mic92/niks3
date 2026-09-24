@@ -153,6 +153,7 @@ func TestDeduplicatedObjectsRecordedAsPending(t *testing.T) {
 
 	_, err := service.Pool.Exec(ctx, "INSERT INTO objects (key, refs) VALUES ($1, '{}')", narKey)
 	ok(t, err)
+	seededWithoutS3(t, narKey)
 
 	w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
 	if w.Code != http.StatusOK {
@@ -209,9 +210,12 @@ func TestGCSweepSkipsPendingObjects(t *testing.T) {
 		t.Fatalf("tombstoned object %s must be offered for upload", narKey)
 	}
 
-	// The client uploads the NAR; its async registration has not landed yet.
-	_, err = service.MinioClient.PutObject(ctx, service.Bucket, narKey, nil, 0, minio.PutObjectOptions{})
-	ok(t, err)
+	// The client uploads what it was offered; the NAR's async registration
+	// has not landed yet.
+	for key := range resp.PendingObjects {
+		_, err = service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
+		ok(t, err)
+	}
 
 	st := service.RunGCForTest(24*time.Hour, 24*time.Hour, true)
 	if st.State != "succeeded" {
@@ -327,6 +331,7 @@ func TestCreatePendingClosureVerifyS3FailureReleasesConnection(t *testing.T) {
 
 	_, err := service.Pool.Exec(ctx, "INSERT INTO objects (key, refs) VALUES ($1, '{}')", narKey)
 	ok(t, err)
+	seededWithoutS3(t, narKey)
 
 	// Point S3 verification at a closed port.
 	bad, err := minio.New("127.0.0.1:1", &minio.Options{Creds: credentials.NewStaticV4("a", "b", ""), MaxRetries: 1})
