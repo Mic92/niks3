@@ -52,15 +52,32 @@ func createPush(t *testing.T, service *server.Service, roots []string, objects .
 	return resp
 }
 
-func completePush(t *testing.T, service *server.Service, id string) {
+// uploadPush uploads what the push was offered, as the client does before
+// completing it.
+func uploadPush(t *testing.T, service *server.Service, push server.PendingClosureResponse) {
 	t.Helper()
+
+	for key, pendingObject := range push.PendingObjects {
+		if pendingObject.MultipartInfo != nil {
+			handleMultipartUpload(t.Context(), t, key, pendingObject, service)
+		} else {
+			handlePresignedUpload(t.Context(), t, pendingObject.PresignedURL)
+		}
+	}
+}
+
+// completePush uploads what the push was offered and completes it.
+func completePush(t *testing.T, service *server.Service, push server.PendingClosureResponse) {
+	t.Helper()
+
+	uploadPush(t, service, push)
 
 	check := checkStatusCode(http.StatusNoContent)
 	testRequest(t, &TestRequest{
 		method:        "POST",
-		path:          "/api/pushes/" + id + "/complete",
+		path:          "/api/pushes/" + push.ID + "/complete",
 		handler:       service.CompletePushHandler,
-		pathValues:    map[string]string{"id": id},
+		pathValues:    map[string]string{"id": push.ID},
 		checkResponse: &check,
 	})
 }
@@ -115,7 +132,7 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 
 	resp := createPush(t, service, []string{rootA + ".narinfo", rootB + ".narinfo"},
 		pkgObjects(base), pkgObjects(rootA, base), pkgObjects(rootB, base))
-	completePush(t, service, resp.ID)
+	completePush(t, service, resp)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = ANY($1)",
 		[]string{rootA + ".narinfo", rootB + ".narinfo"}); n != 2 {
@@ -142,7 +159,7 @@ func TestPush_RepeatedRootCommitsOnce(t *testing.T) {
 
 	resp := createPush(t, service, []string{root + ".narinfo", root + ".narinfo"},
 		pkgObjects(base), pkgObjects(root, base))
-	completePush(t, service, resp.ID)
+	completePush(t, service, resp)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", root+".narinfo"); n != 1 {
 		t.Errorf("closure rows = %d, want 1", n)
@@ -159,6 +176,7 @@ func TestPush_CompleteWaitsForCleanupOfThePush(t *testing.T) {
 
 	root := strings.Repeat("b", 32)
 	resp := createPush(t, service, []string{root + ".narinfo"}, pkgObjects(root))
+	uploadPush(t, service, resp)
 
 	cleanup, err := service.Pool.Begin(ctx)
 	ok(t, err)
@@ -213,6 +231,7 @@ func TestPush_RootsAreLockedInByteOrder(t *testing.T) {
 	}
 
 	resp := createPush(t, service, roots, objects...)
+	uploadPush(t, service, resp)
 
 	_, err := service.Pool.Exec(ctx,
 		`INSERT INTO closures (key, updated_at) SELECT k, now() FROM unnest($1::varchar[]) AS k`, roots)
@@ -289,7 +308,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 	second := strings.Repeat("c", 32)
 
 	one := createPush(t, service, []string{first + ".narinfo"}, pkgObjects(base), pkgObjects(first, base))
-	completePush(t, service, one.ID)
+	completePush(t, service, one)
 
 	two := createPush(t, service, []string{second + ".narinfo"}, pkgObjects(base), pkgObjects(second, base))
 
@@ -311,7 +330,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 		}
 	}
 
-	completePush(t, service, two.ID)
+	completePush(t, service, two)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", second+".narinfo"); n != 1 {
 		t.Errorf("closure rows for the second push = %d, want 1", n)
