@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,5 +97,70 @@ func TestUploadMultipart_PartsInParallel(t *testing.T) {
 		if p.PartNumber != i+1 || p.ETag != fmt.Sprintf("etag-%d", i+1) {
 			t.Fatalf("part %d completed as %+v", i+1, p)
 		}
+	}
+}
+
+// Only the stream's own EOF ends an upload. The NAR dump reports a store file
+// that reads short with an error wrapping io.ErrUnexpectedEOF, or io.EOF when
+// nothing was left to read, and the pipe hands it to the reader as is;
+// completing on it would register a truncated NAR.
+func TestUploadMultipart_ProducerErrorIsNotEOF(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		written int
+		cause   error
+	}{
+		{name: "short read inside a part", written: client.MultipartPartSize * 3 / 2, cause: io.ErrUnexpectedEOF},
+		{name: "empty read on a part boundary", written: client.MultipartPartSize, cause: io.EOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var completes atomic.Int32
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/part/"):
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("ETag", `"etag"`)
+					w.WriteHeader(http.StatusOK)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/multipart/complete":
+					completes.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.Error(w, "unexpected request", http.StatusBadRequest)
+				}
+			}))
+			defer srv.Close()
+
+			c, err := client.NewTestClientForServer(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			info := &client.MultipartUploadInfo{
+				UploadID: "upload-1",
+				PartURLs: []string{srv.URL + "/part/1", srv.URL + "/part/2", srv.URL + "/part/3"},
+			}
+
+			// The shape of compressAndMultipartUploadNAR's pipe on a dump error.
+			pr, pw := io.Pipe()
+
+			go func() {
+				_, _ = pw.Write(bytes.Repeat([]byte{'x'}, tc.written))
+				pw.CloseWithError(fmt.Errorf("serializing NAR: reading file blob: expected 42 more bytes: %w", tc.cause))
+			}()
+
+			err = c.UploadMultipart(context.Background(), pr, info, "nar/abc.nar.zst", client.MultipartPartSize)
+			if !errors.Is(err, tc.cause) {
+				t.Errorf("got %v, want the producer's error", err)
+			}
+
+			if n := completes.Load(); n != 0 {
+				t.Errorf("multipart upload completed %d times on a producer error", n)
+			}
+		})
 	}
 }
