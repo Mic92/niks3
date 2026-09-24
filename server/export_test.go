@@ -96,3 +96,8 @@ func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, 
 func (s *Service) SetTestHookBeforePendingInsert(f func()) {
 	s.testHookBeforePendingInsert = f
 }
+
+// SetTestHookAfterPresenceCheck runs f once a push has decided what is present.
+func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
+	s.testHookAfterPresenceCheck = f
+}
