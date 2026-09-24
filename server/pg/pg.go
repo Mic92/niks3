@@ -20,6 +20,9 @@ var embedMigrations embed.FS
 //
 // A goose Provider avoids the package-level goose globals, which race, and
 // its session lock serialises replicas starting against one database.
+//
+// ctx bounds reaching the database, not migrating it, so a slow migration
+// cannot fail every restart.
 func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 	slog.Debug("connecting to database", "connection_string", connString)
 
@@ -28,7 +31,13 @@ func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}
 
-	if err := migrate(ctx, pool); err != nil {
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+
+		return nil, fmt.Errorf("unable to connect to database: %w", err)
+	}
+
+	if err := migrate(context.WithoutCancel(ctx), pool); err != nil {
 		pool.Close()
 
 		return nil, err
