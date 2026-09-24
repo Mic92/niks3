@@ -809,6 +809,11 @@ func TestPinProtectsFromGC(t *testing.T) {
 	pinTx, err := testService.Pool.Begin(ctx)
 	ok(t, err)
 
+	// Ends the transaction if the test fails while it is open: a GC blocked
+	// behind its lock would otherwise hold the pool, and the cleanup's Close
+	// with it, until the package times out.
+	defer func() { _ = pinTx.Rollback(context.WithoutCancel(ctx)) }()
+
 	_, err = pinTx.Exec(ctx, "SELECT updated_at FROM closures WHERE key = $1 FOR SHARE", pinnedHash+".narinfo")
 	ok(t, err)
 
