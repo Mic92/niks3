@@ -253,6 +253,18 @@ func pushToServerWith(ctx context.Context, serverURL, authToken string, paths []
 	return nil
 }
 
+// commitStatusWriter records the status a commit was answered with.
+type commitStatusWriter struct {
+	http.ResponseWriter
+
+	status int
+}
+
+func (w *commitStatusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
 func TestClientIntegration(t *testing.T) {
 	t.Parallel()
 
@@ -267,13 +279,41 @@ func TestClientIntegration(t *testing.T) {
 	mux := http.NewServeMux()
 	registerTestHandlers(mux, testService)
 
-	var pendingCalls atomic.Int32
+	var (
+		pendingCalls atomic.Int32
+		// loseCommit lets the next commit through but drops its response,
+		// as when the connection breaks after the server committed.
+		loseCommit       atomic.Bool
+		lostCommits      atomic.Int32
+		lastCommitStatus atomic.Int32
+	)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A push registers through /api/pushes when the server announces it,
 		// and one pending closure per root otherwise.
 		if r.URL.Path == "/api/pushes" || r.URL.Path == "/api/pending_closures" {
 			pendingCalls.Add(1)
+		}
+
+		if (strings.HasPrefix(r.URL.Path, "/api/pushes/") || strings.HasPrefix(r.URL.Path, "/api/pending_closures/")) &&
+			strings.HasSuffix(r.URL.Path, "/complete") {
+			if loseCommit.CompareAndSwap(true, false) {
+				mux.ServeHTTP(httptest.NewRecorder(), r)
+
+				if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+
+				lostCommits.Add(1)
+
+				return
+			}
+
+			sw := &commitStatusWriter{ResponseWriter: w, status: http.StatusOK}
+			mux.ServeHTTP(sw, r)
+			lastCommitStatus.Store(int32(sw.status)) //nolint:gosec // an HTTP status fits
+
+			return
 		}
 
 		mux.ServeHTTP(w, r)
@@ -371,6 +411,28 @@ func TestClientIntegration(t *testing.T) {
 	if tombstoned {
 		t.Errorf("listing %s still tombstoned after re-push", lsKey)
 	}
+
+	// A commit whose response was lost is retried; the retry finds the
+	// pending closure gone and is answered 404, and the push must still
+	// succeed because the closure it would have committed is present.
+	lostFile := filepath.Join(t.TempDir(), "lost-commit.txt")
+	ok(t, os.WriteFile(lostFile, []byte("pushed while the commit response is lost"), 0o600))
+	lostPath := nixStoreAdd(t, nixEnv, lostFile)
+
+	loseCommit.Store(true)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{lostPath}, nixEnv)
+	ok(t, err)
+
+	if n := lostCommits.Load(); n != 1 {
+		t.Fatalf("%d commit responses were dropped, want 1", n)
+	}
+
+	if status := lastCommitStatus.Load(); status != http.StatusNotFound {
+		t.Fatalf("replayed commit answered %d, want 404: the replay path was not exercised", status)
+	}
+
+	verifyNarinfoInS3(ctx, t, testService, strings.Split(filepath.Base(lostPath), "-")[0], lostPath)
 
 	// Test garbage collection
 	t.Log("Testing garbage collection...")
