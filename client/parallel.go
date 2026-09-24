@@ -91,16 +91,30 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(numWorkers)
 
+	// Once a task has failed or the push was cancelled, nothing new starts.
+	// SetLimit makes Go wait for a slot regardless of ctx, and a NAR task
+	// serializes and compresses its whole path before its first request would
+	// notice the cancellation, so every remaining path would still be read.
+	spawn := func(task func() error) {
+		g.Go(func() error {
+			if err := ctx.Err(); err != nil {
+				return err //nolint:wrapcheck // the group's own cancellation
+			}
+
+			return task()
+		})
+	}
+
 	// Queue all log tasks
 	for _, task := range logTasks {
-		g.Go(func() error {
+		spawn(func() error {
 			return c.uploadLog(ctx, task, uploadCtx.LogPathsByKey)
 		})
 	}
 
 	// Queue all realisation tasks
 	for _, task := range realisationTasks {
-		g.Go(func() error {
+		spawn(func() error {
 			return c.uploadRealisation(ctx, task, uploadCtx.RealisationsByKey)
 		})
 	}
@@ -110,12 +124,12 @@ func (c *Client) UploadPendingObjects(ctx context.Context, uploadCtx *UploadCont
 		pathInfo := uploadCtx.PathInfoByHash[hash]
 
 		if entry.narTask != nil {
-			g.Go(func() error {
+			spawn(func() error {
 				return c.uploadNARWithListing(ctx, *entry.narTask, entry.lsTask, pathInfo)
 			})
 		} else if entry.narinfoTask != nil || entry.lsTask != nil {
 			// The NAR is already in the cache, only metadata is pending.
-			g.Go(func() error {
+			spawn(func() error {
 				return c.uploadMetadataOnly(ctx, entry.lsTask, pathInfo)
 			})
 		}
