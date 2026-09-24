@@ -167,7 +167,8 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 // validPath reports whether p is a store path under s.StoreDir: absolute,
-// clean, and exactly one component below the store directory.
+// clean, exactly one component below the store directory, and that component
+// a store path name.
 func (s *Server) validPath(p string) bool {
 	if s.StoreDir == "" {
 		return true
@@ -182,7 +183,42 @@ func (s *Server) validPath(p string) bool {
 		return false
 	}
 
-	return rel != "." && rel != ".." && !strings.ContainsRune(rel, filepath.Separator) && !strings.HasPrefix(rel, "..")
+	return isStorePathName(rel)
+}
+
+// Store path names as Nix defines them (StorePath in libstore/path.cc): a
+// hash part in Nix's base-32 alphabet, a dash, and a name of limited length
+// drawn from a small set of characters.
+const (
+	storeHashLen     = 32
+	storeMaxNameLen  = 211
+	nixBase32Chars   = "0123456789abcdfghijklmnpqrsvwxyz"
+	storeNameSymbols = "+-._?="
+)
+
+// isStorePathName reports whether base is a valid store path base name.
+// Anything else directly below the store directory, such as .links, would
+// be queued for good: it exists (or cannot even be stat'ed) and never
+// becomes a valid path the push could upload.
+func isStorePathName(base string) bool {
+	if len(base) < storeHashLen+2 || len(base) > storeHashLen+1+storeMaxNameLen || base[storeHashLen] != '-' {
+		return false
+	}
+
+	for _, c := range base[:storeHashLen] {
+		if !strings.ContainsRune(nixBase32Chars, c) {
+			return false
+		}
+	}
+
+	for _, c := range base[storeHashLen+1:] {
+		isAlnum := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if !isAlnum && !strings.ContainsRune(storeNameSymbols, c) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func writeResponse(conn net.Conn, resp Response) {
