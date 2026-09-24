@@ -62,6 +62,9 @@ type StreamPusher struct {
 	Signatures func(path string) []string
 	// Skipped, if set, tells why a pushed path was left out, or "".
 	Skipped func(path string) string
+	// testHookTaken runs once Run has taken a line into its batch or
+	// submitted it as a request.
+	testHookTaken func(line string)
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -73,7 +76,7 @@ func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher
 		batchSize = DefaultStreamBatchSize
 	}
 
-	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize}
+	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize, testHookTaken: func(string) {}}
 }
 
 // Run returns after EOF on `in`, or once ctx is canceled, when every path it
@@ -178,6 +181,8 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	}
 
 	take := func(line string) {
+		defer s.testHookTaken(line)
+
 		if strings.HasPrefix(line, "{") {
 			flush()
 

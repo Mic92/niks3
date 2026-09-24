@@ -131,6 +131,11 @@ func (p *lifoPartBuffers) Put(x any) {
 	}
 }
 
+// SetTestHookTaken makes Run call f once it has taken line.
+func (s *StreamPusher) SetTestHookTaken(f func(line string)) {
+	s.testHookTaken = f
+}
+
 // SetRegistrationTimeout shortens the bound on one upload registration.
 func (c *Client) SetRegistrationTimeout(d time.Duration) {
 	c.registrationTimeout = d
