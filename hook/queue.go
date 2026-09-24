@@ -34,6 +34,14 @@ func OpenQueue(dbPath string) (*Queue, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	// One connection: the daemon's writers then queue for it in turn. With a
+	// pool each has its own connection and SQLite arbitrates by polling, so a
+	// writer that loses the lock for busy_timeout, behind a slow commit or to
+	// others that keep committing, fails with SQLITE_BUSY; for Enqueue that
+	// means the path is never queued. busy_timeout still covers other
+	// processes opening the file.
+	db.SetMaxOpenConns(1)
+
 	ctx := context.Background()
 
 	// Create the queue table.
