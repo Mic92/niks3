@@ -101,3 +101,43 @@ func TestConnectWaitsForAPeerMigration(t *testing.T) {
 		t.Fatalf("schema not migrated after Connect returned")
 	}
 }
+
+// Replicas that start together against one fresh database must not run the
+// same migrations at once. pg.Connect migrates through a goose provider that
+// holds a Postgres session lock for the run; the package-level goose
+// functions it replaced took no lock and kept their state in globals. Each
+// Connect gets the ten seconds runServer gives it.
+func TestConnectSerialisesConcurrentMigrations(t *testing.T) {
+	t.Parallel()
+
+	connString := createTestDatabase(t)
+
+	const replicas = 2
+
+	begin := make(chan struct{})
+	errs := make(chan error, replicas)
+
+	for range replicas {
+		go func() {
+			<-begin
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			pool, err := pg.Connect(ctx, connString)
+			if err == nil {
+				pool.Close()
+			}
+
+			errs <- err
+		}()
+	}
+
+	close(begin)
+
+	for range replicas {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Connect: %v", err)
+		}
+	}
+}
