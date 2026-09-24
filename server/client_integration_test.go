@@ -228,6 +228,11 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 
 // pushToServer uses the client package to push store paths.
 func pushToServer(ctx context.Context, serverURL, authToken string, paths []string, nixEnv []string) error {
+	return pushToServerWith(ctx, serverURL, authToken, paths, nixEnv, func(*client.Client) {})
+}
+
+// pushToServerWith is pushToServer with a hook to configure the client.
+func pushToServerWith(ctx context.Context, serverURL, authToken string, paths []string, nixEnv []string, configure func(*client.Client)) error {
 	// Create client
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
@@ -238,6 +243,7 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	// Tested 8, 16, 24: 16 showed best throughput (3.33s vs 3.59s and 3.62s)
 	c.MaxConcurrentNARUploads = 16
 	c.NixEnv = nixEnv
+	configure(c)
 
 	// Use the high-level PushPaths method
 	if _, err := c.PushPaths(ctx, paths); err != nil {
@@ -245,6 +251,18 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	}
 
 	return nil
+}
+
+// commitStatusWriter records the status a commit was answered with.
+type commitStatusWriter struct {
+	http.ResponseWriter
+
+	status int
+}
+
+func (w *commitStatusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
 
 func TestClientIntegration(t *testing.T) {
@@ -261,11 +279,41 @@ func TestClientIntegration(t *testing.T) {
 	mux := http.NewServeMux()
 	registerTestHandlers(mux, testService)
 
-	var pendingCalls atomic.Int32
+	var (
+		pendingCalls atomic.Int32
+		// loseCommit lets the next commit through but drops its response,
+		// as when the connection breaks after the server committed.
+		loseCommit       atomic.Bool
+		lostCommits      atomic.Int32
+		lastCommitStatus atomic.Int32
+	)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/pending_closures" {
+		// A push registers through /api/pushes when the server announces it,
+		// and one pending closure per root otherwise.
+		if r.URL.Path == "/api/pushes" || r.URL.Path == "/api/pending_closures" {
 			pendingCalls.Add(1)
+		}
+
+		if (strings.HasPrefix(r.URL.Path, "/api/pushes/") || strings.HasPrefix(r.URL.Path, "/api/pending_closures/")) &&
+			strings.HasSuffix(r.URL.Path, "/complete") {
+			if loseCommit.CompareAndSwap(true, false) {
+				mux.ServeHTTP(httptest.NewRecorder(), r)
+
+				if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+
+				lostCommits.Add(1)
+
+				return
+			}
+
+			sw := &commitStatusWriter{ResponseWriter: w, status: http.StatusOK}
+			mux.ServeHTTP(sw, r)
+			lastCommitStatus.Store(int32(sw.status)) //nolint:gosec // an HTTP status fits
+
+			return
 		}
 
 		mux.ServeHTTP(w, r)
@@ -311,6 +359,80 @@ func TestClientIntegration(t *testing.T) {
 	// Verify the upload
 	verifyNarinfoInS3(ctx, t, testService, hash, storePath)
 	verifyLsFileInS3(ctx, t, testService, hash)
+
+	// A listing that went missing from S3 is the only pending object of a
+	// re-push: the narinfo and NAR are still present. It must be uploaded,
+	// not silently skipped, since the closure commit records it as present.
+	lsKey := hash + ".ls"
+	removeListing := func() {
+		ok(t, testService.MinioClient.RemoveObject(ctx, testService.Bucket, lsKey, minio.RemoveObjectOptions{}))
+
+		if _, err := testService.MinioClient.StatObject(ctx, testService.Bucket, lsKey, minio.StatObjectOptions{}); err == nil {
+			t.Fatal("listing still in S3 after removal")
+		}
+	}
+
+	// With S3 verification the client must not take the present shortcut:
+	// the server can only verify objects a pending closure names.
+	removeListing()
+	pendingCalls.Store(0)
+
+	err = pushToServerWith(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv, func(c *client.Client) {
+		c.VerifyS3Integrity = true
+	})
+	ok(t, err)
+
+	if n := pendingCalls.Load(); n != 1 {
+		t.Fatalf("verifying re-push created %d pending closures, want 1", n)
+	}
+
+	verifyLsFileInS3(ctx, t, testService, hash)
+
+	// GC tombstoned the listing and collected the closure while the narinfo
+	// and NAR stayed live (they are reachable from another closure, say).
+	removeListing()
+
+	_, err = testService.Pool.Exec(ctx,
+		`UPDATE objects SET deleted_at = now(), first_deleted_at = now() WHERE key = $1`, lsKey)
+	ok(t, err)
+
+	_, err = testService.Pool.Exec(ctx, `DELETE FROM closures WHERE key = $1`, hash+".narinfo")
+	ok(t, err)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)
+	ok(t, err)
+
+	verifyLsFileInS3(ctx, t, testService, hash)
+
+	var tombstoned bool
+	ok(t, testService.Pool.QueryRow(ctx,
+		"SELECT deleted_at IS NOT NULL FROM objects WHERE key = $1", lsKey).Scan(&tombstoned))
+
+	if tombstoned {
+		t.Errorf("listing %s still tombstoned after re-push", lsKey)
+	}
+
+	// A commit whose response was lost is retried; the retry finds the
+	// pending closure gone and is answered 404, and the push must still
+	// succeed because the closure it would have committed is present.
+	lostFile := filepath.Join(t.TempDir(), "lost-commit.txt")
+	ok(t, os.WriteFile(lostFile, []byte("pushed while the commit response is lost"), 0o600))
+	lostPath := nixStoreAdd(t, nixEnv, lostFile)
+
+	loseCommit.Store(true)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{lostPath}, nixEnv)
+	ok(t, err)
+
+	if n := lostCommits.Load(); n != 1 {
+		t.Fatalf("%d commit responses were dropped, want 1", n)
+	}
+
+	if status := lastCommitStatus.Load(); status != http.StatusNotFound {
+		t.Fatalf("replayed commit answered %d, want 404: the replay path was not exercised", status)
+	}
+
+	verifyNarinfoInS3(ctx, t, testService, strings.Split(filepath.Base(lostPath), "-")[0], lostPath)
 
 	// Test garbage collection
 	t.Log("Testing garbage collection...")
@@ -614,6 +736,20 @@ func TestClientWithDependencies(t *testing.T) {
 
 	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, testAuthToken, nixEnv)
 
+	// The build log is pushed with the closure and must live as long as it:
+	// a collection that keeps the closure must keep the log too.
+	var logKey string
+	ok(t, testService.Pool.QueryRow(ctx, "SELECT key FROM objects WHERE key LIKE 'log/%'").Scan(&logKey))
+
+	st := testService.RunGCForTest(720*time.Hour, 0, true)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if !objectInS3(t, testService, logKey) {
+		t.Errorf("build log %s was collected although its closure is live", logKey)
+	}
+
 	testRetrieveWithNixCopy(ctx, t, testService, storePath, nixEnv)
 }
 
@@ -736,10 +872,64 @@ func TestPinProtectsFromGC(t *testing.T) {
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{unpinnedStorePath}, nixEnv)
 	ok(t, err)
 
-	// Create a pin for the first path
+	pinnedHash, _, _ := strings.Cut(filepath.Base(pinnedStorePath), "-")
+	unpinnedHash, _, _ := strings.Cut(filepath.Base(unpinnedStorePath), "-")
+
 	c, err := client.NewClient(ctx, ts.URL, testAuthToken)
 	ok(t, err)
 
+	// A pin request in flight: the closure row is held FOR SHARE and the pin
+	// row written but not yet committed, as CreatePinHandler does around its
+	// S3 write. GC running now must neither wait on it nor fail on the pin's
+	// foreign key; it skips the closure and collects the rest.
+	pinTx, err := testService.Pool.Begin(ctx)
+	ok(t, err)
+
+	// Ends the transaction if the test fails while it is open: a GC blocked
+	// behind its lock would otherwise hold the pool, and the cleanup's Close
+	// with it, until the package times out.
+	defer func() { _ = pinTx.Rollback(context.WithoutCancel(ctx)) }()
+
+	_, err = pinTx.Exec(ctx, "SELECT updated_at FROM closures WHERE key = $1 FOR SHARE", pinnedHash+".narinfo")
+	ok(t, err)
+
+	_, err = pinTx.Exec(ctx,
+		"INSERT INTO pins (name, narinfo_key, store_path) VALUES ('myapp', $1, $2)", pinnedHash+".narinfo", pinnedStorePath)
+	ok(t, err)
+
+	gcDone := make(chan error, 1)
+
+	go func() {
+		_, err := c.RunGarbageCollection(ctx, "0s", "0s", true)
+		gcDone <- err
+	}()
+
+	select {
+	case err := <-gcDone:
+		ok(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("GC blocked behind the pin request's row lock")
+	}
+
+	ok(t, pinTx.Commit(ctx))
+
+	closureCount := func(hash string) int {
+		var n int
+
+		ok(t, testService.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM closures WHERE key = $1", hash+".narinfo").Scan(&n))
+
+		return n
+	}
+
+	if n := closureCount(pinnedHash); n != 1 {
+		t.Fatalf("closure being pinned was collected (count=%d)", n)
+	}
+
+	if n := closureCount(unpinnedHash); n != 0 {
+		t.Fatalf("unpinned closure survived GC that ran during the pin request (count=%d)", n)
+	}
+
+	// Create (update) the pin for the first path through the API.
 	err = c.CreatePin(ctx, "myapp", pinnedStorePath)
 	ok(t, err)
 
@@ -757,9 +947,6 @@ func TestPinProtectsFromGC(t *testing.T) {
 	if string(pinContent) != pinnedStorePath {
 		t.Errorf("Pin content mismatch: got %q, want %q", string(pinContent), pinnedStorePath)
 	}
-
-	pinnedHash, _, _ := strings.Cut(filepath.Base(pinnedStorePath), "-")
-	unpinnedHash, _, _ := strings.Cut(filepath.Base(unpinnedStorePath), "-")
 
 	// Run garbage collection with force mode (immediate deletion)
 	_, err = c.RunGarbageCollection(ctx, "0s", "0s", true)

@@ -170,10 +170,18 @@ func (s *Service) CleanupClosuresOlder(w http.ResponseWriter, r *http.Request) {
 }
 
 // runGarbageCollection executes the full GC sequence in a background goroutine,
-// updating the task snapshot after each phase. It uses context.Background() so
-// that client disconnects or reverse-proxy timeouts do not cancel the work.
+// updating the task snapshot after each phase. The context is detached from
+// the request so client disconnects or reverse-proxy timeouts do not cancel
+// the work, but tied to Streams so shutdown does: the run holds a pool
+// connection for the advisory lock, and Pool.Close would otherwise wait for
+// the whole run to finish. An interrupted sweep leaves tombstoned rows whose
+// objects are already gone from S3; the next run reaps them.
 func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Duration, force bool) {
 	ctx := context.Background()
+	if s.Streams != nil {
+		ctx = s.Streams
+	}
+
 	stats := &api.GCStats{}
 
 	start := time.Now()
@@ -277,16 +285,69 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	task.succeed(*stats)
 }
 
-// GCStatusHandler handles GET /api/gc/status.
-func (s *Service) GCStatusHandler(w http.ResponseWriter, _ *http.Request) {
+// GCStatusHandler handles GET /api/gc/status. Tasks live in the process that
+// started them; behind a load balancer a poll may land on a replica that
+// knows nothing of the run. Such a replica reports the run as in progress
+// while the GC advisory lock is held on the shared database.
+func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
 	status, ok := s.GCTasks.Get()
-	if !ok {
+	if ok {
+		writeJSONResponse(w, status)
+
+		return
+	}
+
+	held, err := gcLockHeld(r.Context(), s.Pool)
+	if err != nil {
+		// Not knowing is not "nothing is running": a client that saw
+		// another replica's run takes a 404 as its end.
+		slog.Error("failed to check GC advisory lock", "error", err)
+		http.Error(w, "could not check for a garbage collection on another replica", http.StatusServiceUnavailable)
+
+		return
+	}
+
+	if !held {
 		http.Error(w, "no garbage collection has run yet", http.StatusNotFound)
 
 		return
 	}
 
-	writeJSONResponse(w, status)
+	now := time.Now().UTC()
+
+	writeJSONResponse(w, api.GCTaskStatus{
+		State:     api.GCTaskStateRunning,
+		Phase:     api.GCTaskPhaseOtherReplica,
+		StartedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+// gcLockHeld reports whether any session holds the GC advisory lock on this
+// database. A 64-bit advisory lock key is split into pg_locks' classid (high
+// half) and objid (low half), with objsubid 1. Advisory locks are scoped to a
+// database while pg_locks lists the whole cluster, so the database is part
+// of the match.
+func gcLockHeld(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var held bool
+
+	key := uint64(gcAdvisoryLockKey)
+	classID, objID := int64(key>>32), int64(key&0xffffffff)
+
+	err := pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_locks
+			WHERE locktype = 'advisory' AND granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND objsubid = 1 AND classid = $1 AND objid = $2
+		)`,
+		classID, objID,
+	).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("query pg_locks: %w", err)
+	}
+
+	return held, nil
 }
 
 // vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.

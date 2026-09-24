@@ -35,11 +35,17 @@ func runStream(t *testing.T, push client.StreamPushFunc, parallel, batch int, fe
 func runStreamSigned(t *testing.T, push client.StreamPushFunc, sigs func(string) []string, parallel, batch int, feed func(w io.Writer)) []result {
 	t.Helper()
 
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-
 	s := client.NewStreamPusher(push, parallel, batch)
 	s.Signatures = sigs
+
+	return runPusher(t, s, feed)
+}
+
+func runPusher(t *testing.T, s *client.StreamPusher, feed func(w io.Writer)) []result {
+	t.Helper()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
 
 	done := make(chan error, 1)
 
@@ -123,51 +129,135 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 	}
 }
 
+// While the only push is busy, lines accumulate into one batch however they
+// arrive: all at once, or one at a time with the input momentarily empty in
+// between. Fixing the batch whenever the input was empty split lines that
+// trickle in during a long push into one push each.
 func TestStreamPushBatchesUnderLoad(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
+	// waitTaken reports whether Run took want next. The pusher's test hook
+	// makes the schedule explicit: sleeping between lines left it to the
+	// scheduler, and a loaded builder delivered the last line only after the
+	// first push had returned.
+	waitTaken := func(t *testing.T, taken <-chan string, want string) bool {
+		t.Helper()
 
-	var (
-		mu      sync.Mutex
-		batches [][]string
-	)
+		select {
+		case got := <-taken:
+			if got != want {
+				t.Errorf("took %s, want %s", got, want)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
-		mu.Lock()
+				return false
+			}
 
-		batches = append(batches, slices.Clone(paths))
-		first := len(batches) == 1
+			return true
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s was never taken: the batch was fixed while the push was busy", want)
 
-		mu.Unlock()
-
-		if first {
-			<-release
+			return false
 		}
-
-		return paths, nil
 	}
 
-	results := runStream(t, push, 1, 10, func(w io.Writer) {
-		_, _ = io.WriteString(w, "/nix/store/first\n")
-		time.Sleep(50 * time.Millisecond)
+	for _, tc := range []struct {
+		name string
+		feed func(t *testing.T, w io.Writer, taken <-chan string)
+	}{
+		{
+			name: "together",
+			feed: func(t *testing.T, w io.Writer, taken <-chan string) {
+				t.Helper()
 
-		_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
+				_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
 
-		time.Sleep(50 * time.Millisecond)
+				for _, p := range []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"} {
+					if !waitTaken(t, taken, p) {
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "one at a time",
+			feed: func(t *testing.T, w io.Writer, taken <-chan string) {
+				t.Helper()
 
-		close(release)
-	})
+				// Each line is written only once the previous one was
+				// taken, so Run finds the input empty in between.
+				for _, p := range []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"} {
+					_, _ = io.WriteString(w, p+"\n")
 
-	if len(results) != 4 {
-		t.Fatalf("got %d results, want 4", len(results))
-	}
+					if !waitTaken(t, taken, p) {
+						return
+					}
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	mu.Lock()
-	defer mu.Unlock()
+			started := make(chan struct{})
+			release := make(chan struct{})
 
-	if len(batches) != 2 || len(batches[1]) != 3 {
-		t.Errorf("batches = %v, want [first] then [x y z]", batches)
+			var (
+				mu      sync.Mutex
+				batches [][]string
+			)
+
+			push := func(_ context.Context, paths []string) ([]string, error) {
+				mu.Lock()
+
+				batches = append(batches, slices.Clone(paths))
+				first := len(batches) == 1
+
+				mu.Unlock()
+
+				if first {
+					close(started)
+					<-release
+				}
+
+				return paths, nil
+			}
+
+			taken := make(chan string, 4)
+
+			s := client.NewStreamPusher(push, 1, 10)
+			s.SetTestHookTaken(func(line string) { taken <- line })
+
+			results := runPusher(t, s, func(w io.Writer) {
+				defer close(release)
+
+				_, _ = io.WriteString(w, "/nix/store/first\n")
+
+				if !waitTaken(t, taken, "/nix/store/first") {
+					return
+				}
+
+				// The only push is busy from here on.
+				select {
+				case <-started:
+				case <-time.After(5 * time.Second):
+					t.Error("the first push never started")
+
+					return
+				}
+
+				tc.feed(t, w, taken)
+			})
+
+			if len(results) != 4 {
+				t.Fatalf("got %d results, want 4", len(results))
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if len(batches) != 2 || len(batches[1]) != 3 {
+				t.Errorf("batches = %v, want [first] then [x y z]", batches)
+			}
+		})
 	}
 }
 
@@ -204,15 +294,29 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 	}
 }
 
+// With the server down, each failed batch costs the batch call plus at most
+// streamIsolationProbes single-path probes before the rest is given up.
+//
+// How many batches the 20 lines form depends on scheduling: Run flushes
+// whenever stdin has nothing more ready, so under load the input may split
+// into several batches, or even singletons that are never probed. The
+// assertion therefore reconstructs the batches from the recorded calls
+// instead of assuming one.
 func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 	t.Parallel()
 
 	errDown := errors.New("connection refused")
 
-	var calls int
+	var (
+		mu    sync.Mutex
+		calls [][]string
+	)
 
-	push := func(_ context.Context, _ []string) ([]string, error) {
-		calls++
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		calls = append(calls, slices.Clone(paths))
 
 		return nil, errDown
 	}
@@ -236,8 +340,25 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 		}
 	}
 
-	if calls > 1+3 {
-		t.Errorf("push called %d times, want <= 4", calls)
+	// A call with several paths is a batch; the single-path calls that follow
+	// it and name one of its paths are its isolation probes. Paths are unique,
+	// so a singleton batch cannot be mistaken for a probe of another batch.
+	for i := 0; i < len(calls); i++ {
+		batch := calls[i]
+		if len(batch) == 1 {
+			continue
+		}
+
+		probes := 0
+
+		for i+1 < len(calls) && len(calls[i+1]) == 1 && slices.Contains(batch, calls[i+1][0]) {
+			probes++
+			i++
+		}
+
+		if want := min(len(batch), 3); probes != want {
+			t.Errorf("batch of %d paths was probed %d times, want %d", len(batch), probes, want)
+		}
 	}
 }
 
@@ -370,5 +491,242 @@ func TestClientSignaturesByStorePath(t *testing.T) {
 
 	if got := c.Signatures("/nix/store/h2-b"); got != nil {
 		t.Errorf("unsigned path: %v", got)
+	}
+
+	// The stream pusher reads each path's signatures exactly once, so it
+	// takes them: a driver pushing paths for days must not accumulate an
+	// entry per path.
+	if got := c.TakeSignatures("/nix/store/h1-a"); !slices.Equal(got, []string{"k:1"}) {
+		t.Errorf("take: %v", got)
+	}
+
+	if got := c.Signatures("/nix/store/h1-a"); got != nil {
+		t.Errorf("signatures kept after being taken: %v", got)
+	}
+
+	if got := c.TakeSignatures("/nix/store/never-signed"); got != nil {
+		t.Errorf("take of unknown path: %v", got)
+	}
+}
+
+// Cancelling the context must end Run even while the input stays open: a CI
+// driver that keeps the pipe up would otherwise make Ctrl-C a no-op, and with
+// the signal context still installed the second Ctrl-C too. Paths that were
+// read but not pushed are reported as failed so nothing is left dangling.
+//
+// Each case parks Run at one of its blocking points, with the only push slot
+// held by a push of /nix/store/a, and then cancels. The push in flight is
+// released only once the case's unsent lines have been reported, so it
+// cannot free the slot for a push that would start after the cancellation.
+func TestStreamPushStopsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	const busy = "/nix/store/a"
+
+	for _, tc := range []struct {
+		name string
+		// Blocking point Run is parked at when the context is cancelled.
+		batchSize int
+		lines     string
+		// The input ends after lines, so the last batch waits for a slot in
+		// the final flush rather than in the read loop.
+		closeInput bool
+		// Paths reported as failed without being pushed, and under which ID.
+		unsent map[string]uint64
+	}{
+		{
+			name:      "waiting for input",
+			batchSize: 10,
+		},
+		{
+			name:      "partial batch waiting for a slot",
+			batchSize: 10,
+			lines:     "/nix/store/b\n",
+			unsent:    map[string]uint64{"/nix/store/b": 0},
+		},
+		{
+			name:       "input closed, last batch waiting for a slot",
+			batchSize:  10,
+			lines:      "/nix/store/b\n/nix/store/c\n",
+			closeInput: true,
+			unsent:     map[string]uint64{"/nix/store/b": 0, "/nix/store/c": 0},
+		},
+		{
+			name:      "full batch waiting for a slot",
+			batchSize: 2,
+			lines:     "/nix/store/b\n/nix/store/c\n",
+			unsent:    map[string]uint64{"/nix/store/b": 0, "/nix/store/c": 0},
+		},
+		{
+			name:      "request line waiting for a slot",
+			batchSize: 10,
+			lines:     `{"id":7,"paths":["/nix/store/d","/nix/store/e"]}` + "\n",
+			unsent:    map[string]uint64{"/nix/store/d": 7, "/nix/store/e": 7},
+		},
+		{
+			// A full batch waits for the slot and four more lines sit in
+			// the input channel behind it, read but not yet taken.
+			name:      "lines read but not taken",
+			batchSize: 4,
+			lines:     "/nix/store/b\n/nix/store/c\n/nix/store/d\n/nix/store/e\n/nix/store/f\n/nix/store/g\n/nix/store/h\n/nix/store/i\n",
+			unsent: map[string]uint64{
+				"/nix/store/b": 0, "/nix/store/c": 0, "/nix/store/d": 0, "/nix/store/e": 0,
+				"/nix/store/f": 0, "/nix/store/g": 0, "/nix/store/h": 0, "/nix/store/i": 0,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inR, inW := io.Pipe()
+			outR, outW := io.Pipe()
+
+			var (
+				mu          sync.Mutex
+				pushed      [][]string
+				pushStarted = make(chan struct{})
+				release     = make(chan struct{})
+				releaseOnce sync.Once
+			)
+
+			releaseBusy := func() { releaseOnce.Do(func() { close(release) }) }
+
+			push := func(ctx context.Context, paths []string) ([]string, error) {
+				mu.Lock()
+				pushed = append(pushed, slices.Clone(paths))
+				first := len(pushed) == 1
+				mu.Unlock()
+
+				if !first {
+					return nil, ctx.Err()
+				}
+
+				close(pushStarted)
+				<-release
+
+				return nil, errors.New("interrupted")
+			}
+
+			s := client.NewStreamPusher(push, 1, tc.batchSize)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan error, 1)
+
+			go func() {
+				done <- s.Run(ctx, inR, outW)
+
+				_ = outW.Close()
+			}()
+
+			// If Run hangs, let everything unwind once the test has failed.
+			t.Cleanup(func() {
+				releaseBusy()
+				_ = inW.Close()
+			})
+
+			results := make(chan result, 64)
+
+			go func() {
+				defer close(results)
+
+				sc := bufio.NewScanner(outR)
+				for sc.Scan() {
+					var r result
+					if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+						t.Errorf("bad output line %q: %v", sc.Text(), err)
+
+						continue
+					}
+
+					results <- r
+				}
+			}()
+
+			got := make(map[string][]result)
+			await := func(paths []string) {
+				t.Helper()
+
+				deadline := time.After(5 * time.Second)
+
+				for _, p := range paths {
+					for len(got[p]) == 0 {
+						select {
+						case r, ok := <-results:
+							if !ok {
+								t.Fatalf("output closed before %s was reported", p)
+							}
+
+							got[r.Path] = append(got[r.Path], r)
+						case <-deadline:
+							t.Fatalf("%s not reported within 5s of the cancellation", p)
+						}
+					}
+				}
+			}
+
+			_, _ = io.WriteString(inW, busy+"\n")
+			<-pushStarted
+
+			if tc.lines != "" {
+				_, _ = io.WriteString(inW, tc.lines)
+			}
+
+			// Otherwise the pipe stays open: the driver is still running.
+			if tc.closeInput {
+				_ = inW.Close()
+			}
+
+			// Give the lines time to reach the batch.
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+
+			await(slices.Sorted(maps.Keys(tc.unsent)))
+			releaseBusy()
+			await([]string{busy})
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("Run returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run did not return after cancellation while stdin stayed open")
+			}
+
+			for r := range results {
+				got[r.Path] = append(got[r.Path], r)
+			}
+
+			want := maps.Clone(tc.unsent)
+			if want == nil {
+				want = map[string]uint64{}
+			}
+
+			want[busy] = 0
+
+			for p, rs := range got {
+				id, ok := want[p]
+
+				switch {
+				case !ok:
+					t.Errorf("%s: reported but never sent", p)
+				case len(rs) != 1:
+					t.Errorf("%s: reported %d times, want once", p, len(rs))
+				case rs[0].Status != "error" || rs[0].ID != id:
+					t.Errorf("%s: %+v, want an error under id %d", p, rs[0], id)
+				}
+			}
+
+			// Nothing is pushed after the cancellation: only the push that
+			// was already in flight ran.
+			mu.Lock()
+			defer mu.Unlock()
+
+			if len(pushed) != 1 {
+				t.Errorf("pushes %v, want only [%s]: nothing may be pushed after cancellation", pushed, busy)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,24 @@ const (
 	// Worst case: complete with 10,000 parts (S3 hard max) ≈ 700 kB. 12× headroom.
 	maxAPIRequestBody = 8 << 20
 )
+
+// pendingClosureBaseTimeout is the write budget of a pending-closure response
+// before the per-object allowance.
+const pendingClosureBaseTimeout = time.Minute
+
+// PendingClosureWriteTimeout returns the write deadline for a pending-closure
+// request naming n objects: one minute plus one S3 call per object at the
+// rate limiter's floor, so a push that is being throttled still gets its
+// response.
+func PendingClosureWriteTimeout(n int) time.Duration {
+	if n < 0 {
+		n = 0
+	}
+
+	perObject := time.Duration(float64(time.Second) / ratelimit.RateMin)
+
+	return pendingClosureBaseTimeout + time.Duration(n)*perObject
+}
 
 // decodeJSONBody decodes a size-limited JSON request body. It writes a
 // 413/400 response and returns false on error.
@@ -142,6 +161,16 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	objectsMap, ok := s.validateObjects(w, req.Objects)
 	if !ok {
 		return
+	}
+
+	// The global WriteTimeout is sized for small responses. This handler
+	// makes one S3 call per new NAR (and per present object with verify_s3)
+	// under the adaptive rate limiter, which after a single throttle drops
+	// to a few requests per second. Give the response a budget proportional
+	// to the work, or a large push has its rows and multipart uploads created
+	// and then its response cut off, and the client retries the whole thing.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(PendingClosureWriteTimeout(len(objectsMap)))); err != nil {
+		slog.Debug("Failed to extend write deadline", "error", err)
 	}
 
 	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, nil, objectsMap, req.VerifyS3)
@@ -342,23 +371,9 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// Complete multipart upload
 	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
 	if err != nil {
-		// The completion may have succeeded despite the error (lost response, or
-		// a retry hitting an already-finalized upload). Accept it if the object
-		// is now present.
-		exists, statErr := s.objectExistsInS3(r.Context(), req.ObjectKey)
-		if statErr != nil || !exists {
-			if s.handleS3Error(w, err, "complete multipart upload") {
-				return
-			}
-
-			slog.Error("Failed to complete multipart upload", "error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
-			http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", err), http.StatusInternalServerError)
-
+		if !s.acceptErroredCompletion(w, r, coreClient, req, err) {
 			return
 		}
-
-		slog.Warn("CompleteMultipartUpload errored but object exists; treating as success",
-			"error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
 	} else {
 		s.S3RateLimiter.RecordSuccess()
 	}
@@ -388,6 +403,48 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	slog.Info("Completed multipart upload", "object_key", req.ObjectKey, "upload_id", req.UploadID, "parts", len(req.Parts))
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// acceptErroredCompletion decides what a failed CompleteMultipartUpload
+// means. The completion may have succeeded despite the error (lost response,
+// or a retry hitting an already-finalized upload), so it is accepted if the
+// object is now present. It reports whether the handler may go on as if the
+// completion had succeeded; otherwise it has written the error response.
+func (s *Service) acceptErroredCompletion(
+	w http.ResponseWriter,
+	r *http.Request,
+	coreClient minio.Core,
+	req *completeMultipartRequest,
+	completeErr error,
+) bool {
+	exists, statErr := s.objectExistsInS3(r.Context(), req.ObjectKey)
+	if statErr != nil || !exists {
+		if s.handleS3Error(w, completeErr, "complete multipart upload") {
+			return false
+		}
+
+		slog.Error("Failed to complete multipart upload", "error", completeErr, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+		http.Error(w, fmt.Sprintf("failed to complete multipart upload: %v", completeErr), http.StatusInternalServerError)
+
+		return false
+	}
+
+	slog.Warn("CompleteMultipartUpload errored but object exists; treating as success",
+		"error", completeErr, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+
+	// The upload may still be open (the object could be a peer's). Its
+	// tracking row goes away once the handler goes on, so abort it now or
+	// nothing ever will, on a context the client going away does not cancel.
+	// If the abort fails, keep the row and fail the request: the client
+	// retries, and a client that gave up does not commit the closure, whose
+	// commit would cascade the row away with the upload still open.
+	if !s.abortMultipartUpload(context.WithoutCancel(r.Context()), coreClient, req.ObjectKey, req.UploadID) {
+		http.Error(w, "failed to abort superseded multipart upload", http.StatusServiceUnavailable)
+
+		return false
+	}
+
+	return true
 }
 
 // registerCompletedObject records an uploaded object in the objects table,
@@ -555,7 +612,8 @@ func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool,
 
 // abortRedundantMultipartUploads aborts multipart uploads other pending_closures
 // opened for objectKey, excluding keepUploadID. Best-effort: the winning upload
-// already succeeded and stragglers are also reaped by cleanupPendingClosures.
+// already succeeded, and an upload that could not be aborted keeps its row so
+// cleanupPendingClosures reaps it later.
 func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey, keepUploadID string) {
 	queries := pg.New(s.Pool)
 
@@ -569,13 +627,21 @@ func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey,
 		return
 	}
 
+	if s.testHookBeforeRedundantAbort != nil {
+		s.testHookBeforeRedundantAbort()
+	}
+
 	coreClient := minio.Core{Client: s.MinioClient}
 
 	for _, uploadID := range uploadIDs {
 		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); err != nil {
 			if minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
-				slog.Warn("Failed to abort redundant multipart upload",
+				// Keep the row: it is the only handle on the upload, and
+				// cleanupPendingClosures aborts it once the closure ages out.
+				slog.Warn("Failed to abort redundant multipart upload, keeping its row",
 					"object_key", objectKey, "upload_id", uploadID, "error", err)
+
+				continue
 			}
 		}
 

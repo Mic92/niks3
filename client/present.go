@@ -24,16 +24,26 @@ func (c *Client) Present(ctx context.Context, paths []string) (map[string]bool, 
 		byKey[key] = p
 	}
 
+	presentKeys, err := c.presentKeys(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	present := make(map[string]bool, len(presentKeys))
+	for _, key := range presentKeys {
+		present[byKey[key]] = true
+	}
+
+	return present, nil
+}
+
+// presentKeys returns which of the narinfo keys are cached closure roots.
+func (c *Client) presentKeys(ctx context.Context, keys []string) ([]string, error) {
 	var resp api.PresentResponse
 	if err := c.doJSONRequest(ctx, http.MethodPost, c.baseURL.JoinPath("api/objects/present").String(),
 		api.PresentRequest{Keys: keys}, &resp, http.StatusOK); err != nil {
 		return nil, fmt.Errorf("querying present paths: %w", err)
 	}
 
-	present := make(map[string]bool, len(resp.Present))
-	for _, key := range resp.Present {
-		present[byKey[key]] = true
-	}
-
-	return present, nil
+	return resp.Present, nil
 }

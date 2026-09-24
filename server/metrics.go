@@ -146,9 +146,25 @@ func (m *Metrics) Instrument(next http.Handler) http.Handler {
 			route = "unmatched"
 		}
 
-		m.httpRequests.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
-		m.httpDuration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+		method := methodLabel(r.Method)
+
+		m.httpRequests.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
+		m.httpDuration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
 	})
+}
+
+// methodLabel folds unknown request methods into one label value. Go's
+// server accepts any token as a method and the read proxy route is public,
+// so labelling with the raw method would let anyone create an unbounded
+// number of series.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodDelete, http.MethodOptions, http.MethodPatch:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // Handler serves the metrics in the Prometheus text format.

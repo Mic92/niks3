@@ -9,7 +9,8 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 )
 
-// PresentHandler answers which narinfo keys are cached. Hits are touched.
+// PresentHandler answers which narinfo keys are cached as closure roots and
+// refreshes their age, so a client can skip pushing them.
 func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -18,9 +19,11 @@ func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := pg.New(s.Pool)
-
-	present, err := q.GetPresentObjects(r.Context(), req.Keys)
+	// Presence and refresh are one statement: a client that is told a
+	// closure is present skips pushing it, so the answer must not outlive a
+	// concurrent GC delete, and a refresh that failed must not be reported
+	// as present either.
+	present, err := pg.New(s.Pool).TouchPresentClosures(r.Context(), req.Keys)
 	if err != nil {
 		slog.Error("present", "error", err)
 		http.Error(w, "present: "+err.Error(), http.StatusInternalServerError)
@@ -28,8 +31,8 @@ func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(present) > 0 {
-		_ = q.TouchClosures(r.Context(), present)
+	if present == nil {
+		present = []string{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

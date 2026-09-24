@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,7 +71,10 @@ func uploadPendingObjects(ctx context.Context, t *testing.T, service *server.Ser
 	for key, pendingObject := range resp.PendingObjects {
 		switch {
 		case pendingObject.Type == objectTypeNarinfo:
-			// Narinfo is handled server-side - collect metadata instead
+			// The client uploads the narinfo like any other small object;
+			// the metadata is what it would have had the server sign.
+			handlePresignedUpload(ctx, t, pendingObject.PresignedURL)
+
 			narinfoMetadata[key] = map[string]any{
 				"store_path":  "/nix/store/" + closureHash + "-test-package",
 				"url":         narKey,
@@ -415,12 +419,38 @@ func TestService_verifyS3Integrity(t *testing.T) {
 		t.Errorf("expected 0 pending objects without verify_s3, got %d", len(responseWithoutVerify.PendingObjects))
 	}
 
-	// Step 4: Try again WITH verify_s3=true - should detect missing object
+	// Step 4: Try again WITH verify_s3=true - should detect missing object.
+	// While verification waits on S3 the request must hold no pool
+	// connection, or a few verifying pushes of large closures occupy the
+	// whole pool and stall every other handler. The first stat request
+	// samples the pool as it goes out.
+	var heldDuringStat atomic.Int32
+
+	heldDuringStat.Store(-1)
+
+	good := service.MinioClient
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodHead {
+			heldDuringStat.CompareAndSwap(-1, service.Pool.Stat().AcquiredConns())
+		}
+
+		return next.RoundTrip(r)
+	})
+
 	responseWithVerify := createPendingClosure(t, service, map[string]any{
 		"closure":   narinfoKey,
 		"objects":   objects,
 		"verify_s3": true,
 	})
+
+	service.MinioClient = good
+
+	switch held := heldDuringStat.Load(); {
+	case held < 0:
+		t.Fatal("verify_s3 sent no stat request")
+	case held > 0:
+		t.Errorf("%d pool connection(s) held while verification waited on S3", held)
+	}
 
 	// Should detect the missing narinfo and return it as a pending object
 	if len(responseWithVerify.PendingObjects) != 1 {
@@ -430,6 +460,11 @@ func TestService_verifyS3Integrity(t *testing.T) {
 	if _, exists := responseWithVerify.PendingObjects[narinfoKey]; !exists {
 		t.Errorf("expected narinfo %s to be in pending objects", narinfoKey)
 	}
+
+	// The client re-uploads what verification offered and commits, which
+	// leaves the database and the bucket agreeing again.
+	commitPendingClosure(t, service, responseWithVerify.ID,
+		uploadPendingObjects(ctx, t, service, responseWithVerify, closureKey, narKey))
 }
 
 // TestCompleteMultipartUnregistered ensures complete refuses an upload that

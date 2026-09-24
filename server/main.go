@@ -140,6 +140,28 @@ func (s *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
+// validateOptions checks the constraints between and on parsed options.
+func validateOptions(opts *options) error {
+	if err := validateS3Concurrency(opts.S3Concurrency); err != nil {
+		return err
+	}
+
+	return validateReadRedirect(opts)
+}
+
+// validateS3Concurrency rejects a limit that could never admit an S3 call.
+// errgroup.SetLimit(0) blocks every Go forever, without regard to contexts:
+// pushes would hang, a GC run would hang holding its advisory-lock
+// connection, and pool.Close on shutdown would wait for it. "0 = unlimited"
+// is what the neighbouring --s3-rate-limit means, so the mistake is easy.
+func validateS3Concurrency(n int) error {
+	if n < 1 {
+		return fmt.Errorf("--s3-concurrency must be at least 1, got %d", n)
+	}
+
+	return nil
+}
+
 func validateReadRedirect(opts *options) error {
 	if opts.ReadRedirectTTL == 0 {
 		return nil
@@ -335,7 +357,7 @@ func parseArgs() (*options, error) {
 		return nil, errors.New("missing required flag: --api-token or --api-token-path")
 	}
 
-	if err := validateReadRedirect(&opts); err != nil {
+	if err := validateOptions(&opts); err != nil {
 		return nil, err
 	}
 

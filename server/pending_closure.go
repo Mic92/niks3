@@ -51,8 +51,7 @@ type PendingClosureResponse struct {
 type PendingClosure struct {
 	id             int64
 	startedAt      time.Time
-	pendingObjects []pg.InsertPendingObjectsParams
-	deletedObjects []string
+	pendingObjects []pg.InsertPendingObjectsParams // objects the client must upload
 }
 
 func rollbackOnError(ctx context.Context, tx *pgx.Tx, err *error, committed *bool) {
@@ -125,47 +124,6 @@ func (s *Service) checkS3ObjectsExist(ctx context.Context, objectKeys []string) 
 	return missingObjects, nil
 }
 
-func waitForDeletion(ctx context.Context, pool *pgxpool.Pool, inflightPaths []string) (map[string]bool, error) {
-	queries := pg.New(pool)
-
-	missingObjects := make(map[string]bool, len(inflightPaths))
-	for _, objectKey := range inflightPaths {
-		missingObjects[objectKey] = true
-	}
-
-	for len(inflightPaths) > 0 {
-		time.Sleep(time.Duration(1) * time.Second)
-
-		existingObjects, err := queries.GetExistingObjects(ctx, inflightPaths)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get existing objects: %w", err)
-		}
-
-		// reset inflightPaths
-		inflightPaths = inflightPaths[:0]
-
-		for _, existingObject := range existingObjects {
-			deletedAt := existingObject.DeletedAt
-			if !deletedAt.Valid {
-				// Object became active again (resurrected by another pending closure);
-				// do not block the flow.
-				slog.Debug("object became active during wait", "key", existingObject.Key)
-				delete(missingObjects, existingObject.Key)
-
-				continue
-			}
-
-			if deletedAt.Months == 0 && deletedAt.Days == 0 && deletedAt.Microseconds < 1000*1000*30 {
-				inflightPaths = append(inflightPaths, existingObject.Key)
-			} else {
-				delete(missingObjects, existingObject.Key)
-			}
-		}
-	}
-
-	return missingObjects, nil
-}
-
 func createPendingClosureInner(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -179,13 +137,91 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
+	if s.testHookBeforePendingInsert != nil {
+		s.testHookBeforePendingInsert()
+	}
+
+	// Every object of the closure gets a pending_objects row, whether or not
+	// it is present already. The row is what shields the object from GC while
+	// the push is in flight (MarkStaleObjects and GetObjectsReadyForDeletion
+	// skip pending keys) and what makes commit_pending_closure clear a
+	// tombstone the object picked up in the meantime.
+	//
+	// The rows are written before the existence check, not after: an object
+	// found present and then tombstoned and swept before its row existed
+	// would be committed live with nothing behind it in S3. With the rows in
+	// place first, anything the check then sees as live stays live until the
+	// closure commits or is cleaned up.
+	pendingClosure, allObjects, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap)
+	if err != nil {
+		return nil, err
+	}
+
+	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, verifyS3)
+	if err != nil {
+		s.dropPendingClosure(ctx, pendingClosure.ID)
+
+		return nil, err
+	}
+
+	return &PendingClosure{
+		id:             pendingClosure.ID,
+		startedAt:      pendingClosure.StartedAt.Time,
+		pendingObjects: uploadObjects,
+	}, nil
+}
+
+// dropPendingClosure removes a pending closure whose request failed. The
+// client gets no response and never commits it, and its rows would shield
+// objects from GC until cleanup. The multipart uploads it opened are aborted
+// first, since dropping the closure cascades their rows; if one cannot be,
+// the closure stays and cleanup retries through the row.
+func (s *Service) dropPendingClosure(ctx context.Context, id int64) {
+	ctx = context.WithoutCancel(ctx)
+	queries := pg.New(s.Pool)
+
+	uploads, err := queries.GetClosureMultipartUploads(ctx, id)
+	if err != nil {
+		slog.Warn("failed to list multipart uploads of failed pending closure, keeping it", "id", id, "error", err)
+
+		return
+	}
+
+	coreClient := minio.Core{Client: s.MinioClient}
+
+	for _, upload := range uploads {
+		err := coreClient.AbortMultipartUpload(ctx, s.Bucket, upload.ObjectKey, upload.UploadID)
+		if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
+			slog.Warn("failed to abort multipart upload of failed pending closure, keeping it",
+				"id", id, "key", upload.ObjectKey, "upload_id", upload.UploadID, "error", err)
+
+			return
+		}
+	}
+
+	if err := queries.DeletePendingClosure(ctx, id); err != nil {
+		slog.Warn("failed to drop pending closure after error", "id", id, "error", err)
+	}
+}
+
+// insertPendingClosure records the closure and a pending row for each of its
+// objects in one transaction.
+func insertPendingClosure(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	closureKey string,
+	roots []string,
+	objectsMap map[string]objectWithRefs,
+) (pg.PendingClosure, []pg.InsertPendingObjectsParams, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	committed := false
 
+	// rollbackOnError reads err, so every error below must be assigned to it
+	// (no := in nested scopes) or the transaction and its connection leak.
 	defer rollbackOnError(ctx, &tx, &err, &committed)
 
 	queries := pg.New(tx)
@@ -199,38 +235,86 @@ func createPendingClosureInner(
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert pending closure: %w", err)
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
-	keys := make([]string, 0, len(objectsMap))
-	for k := range objectsMap {
-		keys = append(keys, k)
+	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
+
+	for objectKey, obj := range objectsMap {
+		allObjects = append(allObjects, pg.InsertPendingObjectsParams{
+			PendingClosureID: pendingClosure.ID,
+			Key:              objectKey,
+			Refs:             obj.Refs,
+			Size:             optionalSize(obj.NarSize),
+		})
 	}
 
-	existingObjects, err := queries.GetExistingObjects(ctx, keys)
+	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	committed = true
+
+	return pendingClosure, allObjects, nil
+}
+
+// objectsToUpload returns the pending rows whose objects the client must
+// upload: those the database does not consider live and, with verifyS3, those
+// the database considers live but S3 does not have.
+func (s *Service) objectsToUpload(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	allObjects []pg.InsertPendingObjectsParams,
+	verifyS3 bool,
+) ([]pg.InsertPendingObjectsParams, error) {
+	keys := make([]string, 0, len(allObjects))
+	for _, row := range allObjects {
+		keys = append(keys, row.Key)
+	}
+
+	// The S3 round trips must not hold a pool connection, or a few verifying
+	// pushes starve every other handler; neither query needs a transaction.
+	existingObjects, err := pg.New(pool).GetExistingObjects(ctx, keys)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get existing objects: %w", err)
 	}
 
-	deletedObjects := make([]string, 0, len(existingObjects))
-	keysToVerifyInS3 := make([]string, 0, len(existingObjects))
-	// Keep track of "existing" objects before we delete them from the map
-	existingObjectsMap := make(map[string]objectWithRefs)
+	// Objects the database considers live. Tombstoned objects are excluded:
+	// GC may already have removed them from S3, so they are uploaded again.
+	present := make(map[string]bool, len(existingObjects))
+
+	var tombstoned []string
 
 	for _, existingObject := range existingObjects {
 		if existingObject.DeletedAt.Valid {
-			deletedObjects = append(deletedObjects, existingObject.Key)
+			tombstoned = append(tombstoned, existingObject.Key)
 		} else {
-			// Track keys that DB says exist (to verify in S3)
-			keysToVerifyInS3 = append(keysToVerifyInS3, existingObject.Key)
-			// Save the object info before deleting from map
-			existingObjectsMap[existingObject.Key] = objectsMap[existingObject.Key]
-			delete(objectsMap, existingObject.Key)
+			present[existingObject.Key] = true
+		}
+	}
+
+	// A sweep may be about to delete a tombstoned object from S3; an upload
+	// that lands before that delete would be lost to it while the closure
+	// commits the object as live. Wait for any sweep holding one of them.
+	// Once this returns, a sweep either saw this closure's pending rows and
+	// spared the key, or has finished deleting it.
+	if len(tombstoned) > 0 {
+		if err := pg.New(pool).LockTombstonedObjects(ctx, tombstoned); err != nil {
+			return nil, fmt.Errorf("failed to wait for the sweep: %w", err)
 		}
 	}
 
 	// Verify that objects the DB says exist actually exist in S3 (if requested)
-	if verifyS3 && len(keysToVerifyInS3) > 0 {
+	if verifyS3 && len(present) > 0 {
+		keysToVerifyInS3 := make([]string, 0, len(present))
+		for key := range present {
+			keysToVerifyInS3 = append(keysToVerifyInS3, key)
+		}
+
 		missingFromS3, err := s.checkS3ObjectsExist(ctx, keysToVerifyInS3)
 		if err != nil {
 			return nil, fmt.Errorf("failed to verify objects in S3: %w", err)
@@ -239,42 +323,26 @@ func createPendingClosureInner(
 		if len(missingFromS3) > 0 {
 			slog.Warn("Found objects in DB but missing from S3, will re-upload",
 				"count", len(missingFromS3))
-			// Add missing objects back to objectsMap so they get uploaded
+
 			for missingKey := range missingFromS3 {
-				if obj, ok := existingObjectsMap[missingKey]; ok {
-					objectsMap[missingKey] = obj
-				}
+				delete(present, missingKey)
 			}
 		}
 	}
 
-	pendingObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
-
-	for objectKey, obj := range objectsMap {
-		pendingObjects = append(pendingObjects, pg.InsertPendingObjectsParams{
-			PendingClosureID: pendingClosure.ID,
-			Key:              objectKey,
-			Refs:             obj.Refs,
-			Size:             optionalSize(obj.NarSize),
-		})
+	if s.testHookAfterPresenceCheck != nil {
+		s.testHookAfterPresenceCheck()
 	}
 
-	if _, err = queries.InsertPendingObjects(ctx, pendingObjects); err != nil {
-		return nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
+
+	for _, row := range allObjects {
+		if !present[row.Key] {
+			uploadObjects = append(uploadObjects, row)
+		}
 	}
 
-	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	committed = true
-
-	return &PendingClosure{
-		id:             pendingClosure.ID,
-		startedAt:      pendingClosure.StartedAt.Time,
-		pendingObjects: pendingObjects,
-		deletedObjects: deletedObjects,
-	}, nil
+	return uploadObjects, nil
 }
 
 // createPendingObjects generates presigned URLs or multipart upload info for pending objects.
@@ -397,41 +465,12 @@ func (s *Service) createPendingClosure(
 		return nil, err
 	}
 
-	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects)+len(pendingClosure.deletedObjects))
+	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects))
 
 	if err := s.createPendingObjects(ctx, pendingClosure.id, pendingClosure.pendingObjects, objectsMap, pendingObjects); err != nil {
+		s.dropPendingClosure(ctx, pendingClosure.id)
+
 		return nil, err
-	}
-
-	if len(pendingClosure.deletedObjects) > 0 {
-		slog.Info("Found objects not yet deleted. Waiting for deletion",
-			"pending_objects", len(pendingClosure.deletedObjects))
-
-		missingObjects, err := waitForDeletion(ctx, pool, pendingClosure.deletedObjects)
-		if err != nil {
-			return nil, err
-		}
-
-		pendingObjectsParams := make([]pg.InsertPendingObjectsParams, 0, len(missingObjects))
-		for objectKey := range missingObjects {
-			obj := objectsMap[objectKey]
-			pendingObjectsParams = append(pendingObjectsParams, pg.InsertPendingObjectsParams{
-				PendingClosureID: pendingClosure.id,
-				Key:              objectKey,
-				Refs:             obj.Refs,
-				Size:             optionalSize(obj.NarSize),
-			})
-		}
-
-		queries := pg.New(pool)
-
-		if _, err = queries.InsertPendingObjects(ctx, pendingObjectsParams); err != nil {
-			return nil, fmt.Errorf("failed to insert pending objects: %w", err)
-		}
-
-		if err := s.createPendingObjects(ctx, pendingClosure.id, pendingObjectsParams, objectsMap, pendingObjects); err != nil {
-			return nil, err
-		}
 	}
 
 	return &PendingClosureResponse{

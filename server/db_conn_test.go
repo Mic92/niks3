@@ -1,11 +1,16 @@
 package server_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5"
+	"github.com/pressly/goose/v3/lock"
 )
 
 func TestResolveDBConnectionString(t *testing.T) {
@@ -54,5 +59,85 @@ func TestResolveDBConnectionString(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A peer replica migrating the same database holds goose's session lock, and
+// a migration rewriting a large table can run for minutes. Either outlasts
+// the budget for reaching the database; Connect must wait for the schema
+// instead of failing startup, which would fail every restart the same way.
+func TestConnectWaitsForAPeerMigration(t *testing.T) {
+	t.Parallel()
+
+	connString := createTestDatabase(t)
+
+	peer, err := pgx.Connect(t.Context(), connString)
+	ok(t, err)
+
+	defer func() { _ = peer.Close(context.Background()) }()
+
+	_, err = peer.Exec(t.Context(), "SELECT pg_advisory_lock($1)", lock.DefaultLockID)
+	ok(t, err)
+
+	const connectBudget = time.Second
+
+	// The peer finishes after the budget has run out.
+	time.AfterFunc(2*connectBudget, func() { _ = peer.Close(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), connectBudget)
+	defer cancel()
+
+	pool, err := pg.Connect(ctx, connString)
+	if err != nil {
+		t.Fatalf("Connect gave up while a peer held the migration lock: %v", err)
+	}
+
+	defer pool.Close()
+
+	var tables int
+	ok(t, pool.QueryRow(t.Context(), "SELECT count(*) FROM pg_tables WHERE tablename = 'objects'").Scan(&tables))
+
+	if tables != 1 {
+		t.Fatalf("schema not migrated after Connect returned")
+	}
+}
+
+// Replicas that start together against one fresh database must not run the
+// same migrations at once. pg.Connect migrates through a goose provider that
+// holds a Postgres session lock for the run; the package-level goose
+// functions it replaced took no lock and kept their state in globals. Each
+// Connect gets the ten seconds runServer gives it.
+func TestConnectSerialisesConcurrentMigrations(t *testing.T) {
+	t.Parallel()
+
+	connString := createTestDatabase(t)
+
+	const replicas = 2
+
+	begin := make(chan struct{})
+	errs := make(chan error, replicas)
+
+	for range replicas {
+		go func() {
+			<-begin
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			pool, err := pg.Connect(ctx, connString)
+			if err == nil {
+				pool.Close()
+			}
+
+			errs <- err
+		}()
+	}
+
+	close(begin)
+
+	for range replicas {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Connect: %v", err)
+		}
 	}
 }

@@ -3,6 +3,8 @@ package hook
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"time"
@@ -63,7 +65,24 @@ func (w *Worker) QueueEmpty() bool {
 
 // Run processes the queue until ctx is cancelled, then makes one final pass
 // over everything still queued (see drain).
+//
+// Pushes do not run on ctx itself: cancelling a push in flight only to have
+// the drain start the same batch over from scratch wastes the work done so
+// far, and under systemd's stop timeout can mean the batch never completes.
+// Instead cancellation stops the loop after the current step, and
+// DrainTimeout, counted from the cancellation, bounds the in-flight push and
+// the drain together.
 func (w *Worker) Run(ctx context.Context) {
+	pushCtx, cancelPush := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelPush()
+
+	stopTimer := context.AfterFunc(ctx, func() {
+		if w.DrainTimeout > 0 {
+			time.AfterFunc(w.DrainTimeout, cancelPush)
+		}
+	})
+	defer stopTimer()
+
 	backoff := time.Duration(0)
 
 	var lastQueueLog time.Time
@@ -76,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			w.drain()
+			w.drain(pushCtx)
 
 			return
 		case <-time.After(wait):
@@ -85,7 +104,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		for {
 			if ctx.Err() != nil {
-				w.drain()
+				w.drain(pushCtx)
 
 				return
 			}
@@ -98,7 +117,7 @@ func (w *Worker) Run(ctx context.Context) {
 				lastQueueLog = time.Now()
 			}
 
-			batch, progress := w.step(ctx)
+			batch, progress := w.step(pushCtx)
 			if !progress {
 				backoff = nextBackoff(backoff)
 
@@ -121,17 +140,9 @@ func (w *Worker) Run(ctx context.Context) {
 // individual paths; retried paths sort behind untried ones, so little is lost.
 //
 // Unbounded by default since systemd enforces TimeoutStopSec; DrainTimeout is
-// for unsupervised runs. Either way an external SIGKILL remains the backstop.
-func (w *Worker) drain() {
-	ctx := context.Background()
-
-	if w.DrainTimeout > 0 {
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithTimeout(ctx, w.DrainTimeout)
-		defer cancel()
-	}
-
+// for unsupervised runs and ends ctx (see Run). Either way an external SIGKILL
+// remains the backstop.
+func (w *Worker) drain(ctx context.Context) {
 	stalled := 0
 
 	for stalled < isolationProbes && ctx.Err() == nil {
@@ -167,25 +178,42 @@ func (w *Worker) step(ctx context.Context) ([]string, bool) {
 		return nil, true
 	}
 
-	var existing, gced []string
+	var existing, gced, unreadable []string
 
 	for _, p := range paths {
-		if _, err := os.Stat(p); err != nil {
+		// Lstat: a store path may itself be a symlink, and its target need
+		// not exist for the path to be valid (or even for it to be a symlink
+		// into the store). Following it would drop such a path as collected.
+		_, err := os.Lstat(p)
+
+		switch {
+		case err == nil:
+			existing = append(existing, p)
+		case errors.Is(err, fs.ErrNotExist):
 			slog.Warn("Store path no longer exists (garbage collected?), removing from queue", "path", p)
 
 			gced = append(gced, p)
-		} else {
-			existing = append(existing, p)
+		default:
+			// Not proof the path is gone (EIO, EACCES, an unmounted store);
+			// dropping it would lose the upload. Try again later.
+			slog.Warn("Cannot stat store path, will retry later", "path", p, "error", err)
+
+			unreadable = append(unreadable, p)
 		}
 	}
 
-	w.remove(gced)
+	w.retry(unreadable)
 
-	if len(existing) == 0 {
-		return paths, true
+	// Progress means something left the queue. A failed removal is not
+	// progress: counting it as such would spin on the same batch with no
+	// backoff and keep the shutdown drain from ever giving up.
+	progress := len(gced) > 0 && w.remove(gced)
+
+	if len(existing) > 0 {
+		progress = w.upload(ctx, existing) || progress
 	}
 
-	return paths, w.upload(ctx, existing)
+	return paths, progress
 }
 
 // upload pushes a batch; uploaded paths (and their closure) are removed from
@@ -198,9 +226,9 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 
 	uploaded, err := w.push(ctx, batch)
 	if err == nil {
-		w.settle(batch, uploaded)
+		_, settled := w.settle(batch, uploaded)
 
-		return true
+		return settled
 	}
 
 	slog.Error("Upload failed", "error", err, "count", len(batch))
@@ -220,6 +248,13 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 	failures := 0
 
 	for i, p := range batch {
+		// Cancelled mid-isolation: the remaining probes would all fail at
+		// once and, retried, move their paths behind everything else for no
+		// fault of their own.
+		if ctx.Err() != nil {
+			return len(done) > 0
+		}
+
 		if _, ok := done[p]; ok {
 			continue
 		}
@@ -232,6 +267,12 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 
 		uploaded, err := w.push(ctx, []string{p})
 		if err != nil {
+			// Same rule as for the batch: a probe cut short by cancellation
+			// says nothing about its path.
+			if ctx.Err() != nil {
+				return len(done) > 0
+			}
+
 			slog.Error("Upload failed, will retry later", "error", err, "path", p)
 			w.retry([]string{p})
 
@@ -240,7 +281,12 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 			continue
 		}
 
-		for _, r := range w.settle([]string{p}, uploaded) {
+		settled, ok := w.settle([]string{p}, uploaded)
+		if !ok {
+			continue
+		}
+
+		for _, r := range settled {
 			done[r] = struct{}{}
 		}
 	}
@@ -249,23 +295,38 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 }
 
 // settle removes an uploaded batch and its closure from the queue and returns
-// what was removed. Removing the whole closure prunes dependencies that were
-// queued separately but went up as part of a parent.
-func (w *Worker) settle(batch, uploaded []string) []string {
-	toRemove := batch
-	if len(uploaded) > len(batch) {
-		toRemove = uploaded
+// what was removed and whether the removal succeeded. Removing the whole
+// closure prunes dependencies that were queued separately but went up as
+// part of a parent. The batch is always removed: push reports the closures
+// it uploaded, not the paths it found already cached, so a cached path
+// batched with a larger closure would otherwise stay queued for good.
+func (w *Worker) settle(batch, uploaded []string) ([]string, bool) {
+	seen := make(map[string]struct{}, len(batch)+len(uploaded))
+	toRemove := make([]string, 0, len(batch)+len(uploaded))
+
+	for _, paths := range [][]string{batch, uploaded} {
+		for _, p := range paths {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+
+			seen[p] = struct{}{}
+			toRemove = append(toRemove, p)
+		}
 	}
 
-	w.remove(toRemove)
-
-	return toRemove
+	return toRemove, w.remove(toRemove)
 }
 
-func (w *Worker) remove(paths []string) {
+// remove deletes paths from the queue and reports whether it succeeded.
+func (w *Worker) remove(paths []string) bool {
 	if err := w.queue.Remove(paths); err != nil {
 		slog.Error("Failed to remove paths from queue", "error", err, "count", len(paths))
+
+		return false
 	}
+
+	return true
 }
 
 func (w *Worker) retry(paths []string) {

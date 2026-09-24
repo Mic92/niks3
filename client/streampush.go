@@ -48,14 +48,19 @@ type StreamResult struct {
 // StreamPusher pushes store paths read line by line from a reader as they
 // arrive and writes one JSON StreamResult per input path, so a long-running
 // CI driver learns per path when it is cached. While all `parallel` pushes
-// are busy, incoming paths accumulate into one batch of up to `batchSize`.
-// A line starting with `{` is a StreamRequest and forms a batch of its own.
+// are busy, incoming paths accumulate into one batch of up to `batchSize`;
+// once a push slot is free, a batch goes out as soon as no further input is
+// ready. A line starting with `{` is a StreamRequest and forms a batch of
+// its own.
 type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
 	batchSize int
 	// Signatures, if set, fills StreamResult.Signatures for pushed paths.
 	Signatures func(path string) []string
+	// testHookTaken runs once Run has taken a line into its batch or
+	// submitted it as a request.
+	testHookTaken func(line string)
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -67,7 +72,7 @@ func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher
 		batchSize = DefaultStreamBatchSize
 	}
 
-	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize}
+	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize, testHookTaken: func(string) {}}
 }
 
 // Run returns after EOF on `in` once every path was reported on `out`.
@@ -108,9 +113,9 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	}
 
 	slots := make(chan struct{}, s.parallel)
-	submit := func(job func() []StreamResult) {
-		slots <- struct{}{}
 
+	// start runs job on a slot the caller already holds.
+	start := func(job func() []StreamResult) {
 		wg.Go(func() {
 			defer func() { <-slots }()
 
@@ -118,37 +123,157 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		})
 	}
 
+	// cancelledAfterSlot gives back a slot just taken if ctx is done by now.
+	// select chooses at random among ready cases, so a slot that came free
+	// while the run was being cancelled can win over ctx.Done.
+	cancelledAfterSlot := func() bool {
+		if ctx.Err() == nil {
+			return false
+		}
+
+		<-slots
+
+		return true
+	}
+
+	// submit waits for a slot, then runs job. It reports false, and runs
+	// nothing, once ctx is done.
+	submit := func(job func() []StreamResult) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case slots <- struct{}{}:
+		}
+
+		if cancelledAfterSlot() {
+			return false
+		}
+
+		start(job)
+
+		return true
+	}
+
+	// Lines read but never pushed because the run was cancelled.
+	var unsent []string
+
 	batch := make([]string, 0, s.batchSize)
+	takeBatch := func() []string {
+		b := batch
+		batch = make([]string, 0, s.batchSize)
+
+		return b
+	}
+
 	flush := func() {
 		if len(batch) > 0 {
-			b := batch
-			batch = make([]string, 0, s.batchSize)
+			b := takeBatch()
 
-			submit(func() []StreamResult { return s.upload(ctx, b) })
+			if !submit(func() []StreamResult { return s.upload(ctx, b) }) {
+				unsent = append(unsent, b...)
+			}
 		}
 	}
 
-	for {
-		line, ok := <-lines
-		if !ok {
-			break
-		}
+	take := func(line string) {
+		defer s.testHookTaken(line)
 
 		if strings.HasPrefix(line, "{") {
 			flush()
-			submit(func() []StreamResult { return s.uploadRequest(ctx, line) })
+
+			if !submit(func() []StreamResult { return s.uploadRequest(ctx, line) }) {
+				unsent = append(unsent, line)
+			}
+
+			return
+		}
+
+		batch = append(batch, line)
+		if len(batch) == s.batchSize {
+			flush()
+		}
+	}
+
+	// Cancellation ends the run even while the caller keeps `in` open: the
+	// in-flight pushes fail on their own, everything not yet pushed is
+	// reported as failed, and the reader goroutine is left parked in Scan
+	// (the process is on its way out).
+loop:
+	for {
+		if len(batch) == 0 {
+			select {
+			case <-ctx.Done():
+				break loop
+			case line, ok := <-lines:
+				if !ok {
+					break loop
+				}
+
+				take(line)
+			}
 
 			continue
 		}
 
-		batch = append(batch, line)
-		// Flush when full or when stdin has nothing more ready.
-		if len(batch) == s.batchSize || len(lines) == 0 {
-			flush()
+		// A partial batch. Input that is already waiting joins it first, so
+		// consecutive lines coalesce regardless of how the reader and this
+		// loop are scheduled.
+		select {
+		case <-ctx.Done():
+			break loop
+		case line, ok := <-lines:
+			if !ok {
+				break loop
+			}
+
+			take(line)
+
+			continue
+		default:
+		}
+
+		// Nothing more ready: send the batch as soon as a slot is free, and
+		// keep growing it with whatever arrives until then. Fixing the batch
+		// before a slot is free would split input that arrives while all
+		// pushes are busy into many small pushes.
+		select {
+		case <-ctx.Done():
+			break loop
+		case line, ok := <-lines:
+			if !ok {
+				break loop
+			}
+
+			take(line)
+		case slots <- struct{}{}:
+			if cancelledAfterSlot() {
+				break loop
+			}
+
+			b := takeBatch()
+
+			start(func() []StreamResult { return s.upload(ctx, b) })
 		}
 	}
 
-	flush()
+	// Unless cancelled, the input ended and the last batch goes out once a
+	// slot is free. Waiting for that slot is a blocking point like any other:
+	// a cancellation there leaves the batch unsent, for the branch below.
+	if ctx.Err() == nil {
+		flush()
+	}
+
+	if ctx.Err() != nil {
+		// Whatever was taken or already read but not pushed is not going to
+		// be; say so rather than leave the caller waiting for those lines.
+		unsent = append(unsent, takeBatch()...)
+		unsent = append(unsent, readyLines(lines)...)
+
+		report(s.failUnsent(unsent, ctx.Err()))
+		wg.Wait()
+
+		return ctx.Err() //nolint:wrapcheck // the caller's own cancellation
+	}
 
 	wg.Wait()
 
@@ -157,6 +282,33 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	}
 
 	return nil
+}
+
+// failUnsent reports lines that were read but never pushed. A request line
+// fails all its paths under its ID.
+func (s *StreamPusher) failUnsent(lines []string, err error) []StreamResult {
+	var results []StreamResult
+
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "{") {
+			results = append(results, s.result(0, line, streamStatusError, err.Error()))
+
+			continue
+		}
+
+		var req StreamRequest
+		if jsonErr := json.Unmarshal([]byte(line), &req); jsonErr != nil || len(req.Paths) == 0 {
+			results = append(results, StreamResult{Path: line, Status: streamStatusError, Message: "bad request line"})
+
+			continue
+		}
+
+		for _, p := range req.Paths {
+			results = append(results, s.result(req.ID, p, streamStatusError, err.Error()))
+		}
+	}
+
+	return results
 }
 
 func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult {
@@ -241,4 +393,22 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 	}
 
 	return results
+}
+
+// readyLines returns the lines already waiting on lines, without blocking.
+func readyLines(lines <-chan string) []string {
+	var ready []string
+
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return ready
+			}
+
+			ready = append(ready, line)
+		default:
+			return ready
+		}
+	}
 }

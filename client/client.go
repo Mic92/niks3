@@ -35,10 +35,13 @@ type Client struct {
 	Retry                   RetryConfig                    // Retry configuration for HTTP requests
 	storeDir                string                         // Cached Nix store directory (e.g., "/nix/store")
 	VerifyS3Integrity       bool                           // Enable S3 integrity checking when creating pending closures
+	GCPollInterval          time.Duration                  // How often RunGarbageCollection polls (0 = default)
 	DebugHTTP               bool                           // Enable HTTP request/response debug logging
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 	registrations           errgroup.Group
+	registrationTimeout     time.Duration  // 0: registrationTimeout; tests shorten it
+	partBuffers             partBufferPool // nil: the shared pool; tests substitute one to force buffer reuse
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
 	cacheConfigMu           sync.Mutex
@@ -157,6 +160,11 @@ func newTransport() *http.Transport {
 
 func newHTTPClient() *http.Client {
 	return &http.Client{Transport: newTransport()}
+}
+
+// StoreDir returns the Nix store directory the client resolved at creation.
+func (c *Client) StoreDir() string {
+	return c.storeDir
 }
 
 // SetDebugHTTP enables or disables HTTP request/response logging.

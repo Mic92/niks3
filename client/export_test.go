@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -89,4 +91,58 @@ func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *Multipa
 // RecordSignatures re-exports (*Client).recordSignatures for tests.
 func (c *Client) RecordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
 	c.recordSignatures(narinfos, signatures)
+}
+
+// UploadNARWithListing re-exports uploadNARWithListing for the external test package.
+func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj PendingObject, lsKey string, lsObj PendingObject, pathInfo *PathInfo) error {
+	return c.uploadNARWithListing(ctx, uploadTask{key: narKey, obj: narObj}, &uploadTask{key: lsKey, obj: lsObj}, pathInfo)
+}
+
+// lifoPartBuffers hands back the buffer returned most recently, so a test
+// can rely on a released part buffer being the next one taken; sync.Pool
+// makes no such promise (and under -race drops some Puts on purpose).
+type lifoPartBuffers struct {
+	mu   sync.Mutex
+	free []*[]byte
+}
+
+func (p *lifoPartBuffers) Get() any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if n := len(p.free); n > 0 {
+		buf := p.free[n-1]
+		p.free = p.free[:n-1]
+
+		return buf
+	}
+
+	buf := make([]byte, multipartPartSize)
+
+	return &buf
+}
+
+func (p *lifoPartBuffers) Put(x any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if buf, ok := x.(*[]byte); ok {
+		p.free = append(p.free, buf)
+	}
+}
+
+// SetTestHookTaken makes Run call f once it has taken line.
+func (s *StreamPusher) SetTestHookTaken(f func(line string)) {
+	s.testHookTaken = f
+}
+
+// SetRegistrationTimeout shortens the bound on one upload registration.
+func (c *Client) SetRegistrationTimeout(d time.Duration) {
+	c.registrationTimeout = d
+}
+
+// UseLIFOPartBuffers makes the client reuse a released part buffer for the
+// very next part.
+func (c *Client) UseLIFOPartBuffers() {
+	c.partBuffers = &lifoPartBuffers{}
 }

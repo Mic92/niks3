@@ -139,6 +139,22 @@ type Service struct {
 
 	GCTasks *GCTaskStore
 	Metrics *Metrics
+
+	// testHookBeforePendingInsert runs right before a pending closure is
+	// written; tests use it to interleave a GC run with a push.
+	testHookBeforePendingInsert func()
+	// testHookAfterPresenceCheck runs once a push has decided which of its
+	// objects are present, before it answers; tests run GC there to check
+	// that what was found present stays present.
+	testHookAfterPresenceCheck func()
+	// testHookBeforeProxyGet runs between the read proxy's Stat and its GET.
+	testHookBeforeProxyGet func()
+	// testHookBeforeRedundantAbort runs before a completed multipart upload
+	// aborts its peers' uploads.
+	testHookBeforeRedundantAbort func()
+	// testHookBeforeSweepDelete runs after the sweep selected a page and
+	// before it deletes the page from S3.
+	testHookBeforeSweepDelete func()
 }
 
 // Close closes the database connection pool.
@@ -331,8 +347,9 @@ func runServer(opts *options) error {
 		srv := &http.Server{
 			Addr:    addr,
 			Handler: service.Metrics.Instrument(handler),
-			// Bound slowloris on API endpoints. The read proxy extends its own
-			// write deadline per request for large NAR streams.
+			// Bound slowloris on API endpoints. The read proxy replaces the
+			// write deadline per request via ProxyWriteTimeout, sized for large
+			// NAR streams.
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/signing"
@@ -49,15 +50,25 @@ func createPush(t *testing.T, service *server.Service, roots []string, objects .
 	return resp
 }
 
-func completePush(t *testing.T, service *server.Service, id string, status int) {
+// completePush uploads what the push was offered, as the client does, and
+// completes it.
+func completePush(t *testing.T, service *server.Service, push server.PendingClosureResponse, status int) {
 	t.Helper()
+
+	for key, pendingObject := range push.PendingObjects {
+		if pendingObject.MultipartInfo != nil {
+			handleMultipartUpload(t.Context(), t, key, pendingObject, service)
+		} else {
+			handlePresignedUpload(t.Context(), t, pendingObject.PresignedURL)
+		}
+	}
 
 	check := checkStatusCode(status)
 	testRequest(t, &TestRequest{
 		method:        "POST",
-		path:          "/api/pushes/" + id + "/complete",
+		path:          "/api/pushes/" + push.ID + "/complete",
 		handler:       service.CompletePushHandler,
-		pathValues:    map[string]string{"id": id},
+		pathValues:    map[string]string{"id": push.ID},
 		checkResponse: &check,
 	})
 }
@@ -112,7 +123,7 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 
 	resp := createPush(t, service, []string{rootA + ".narinfo", rootB + ".narinfo"},
 		pkgObjects(base), pkgObjects(rootA, base), pkgObjects(rootB, base))
-	completePush(t, service, resp.ID, http.StatusNoContent)
+	completePush(t, service, resp, http.StatusNoContent)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = ANY($1)",
 		[]string{rootA + ".narinfo", rootB + ".narinfo"}); n != 2 {
@@ -128,9 +139,11 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 	}
 }
 
-// A key that was live when the push started is left out of the pending set.
-// If GC tombstones it before the commit, the commit must fail.
-func TestPush_CommitFailsWhenSkippedKeyWasCollected(t *testing.T) {
+// A key that was live when the push started is not offered for upload, but
+// the push still holds a pending row for it. A GC that runs before the commit,
+// even one that ages out the only closure reaching the key and sweeps with
+// force, must leave it alone, and the commit then succeeds.
+func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 	t.Parallel()
 
 	service := createTestService(t)
@@ -141,7 +154,7 @@ func TestPush_CommitFailsWhenSkippedKeyWasCollected(t *testing.T) {
 	second := strings.Repeat("c", 32)
 
 	one := createPush(t, service, []string{first + ".narinfo"}, pkgObjects(base), pkgObjects(first, base))
-	completePush(t, service, one.ID, http.StatusNoContent)
+	completePush(t, service, one, http.StatusNoContent)
 
 	two := createPush(t, service, []string{second + ".narinfo"}, pkgObjects(base), pkgObjects(second, base))
 
@@ -149,14 +162,24 @@ func TestPush_CommitFailsWhenSkippedKeyWasCollected(t *testing.T) {
 		t.Fatalf("second push pending objects = %d, want 2 (base is live)", len(two.PendingObjects))
 	}
 
-	_, err := service.Pool.Exec(t.Context(),
-		"UPDATE objects SET deleted_at = now(), first_deleted_at = now() WHERE key = $1", base+".narinfo")
-	ok(t, err)
+	time.Sleep(50 * time.Millisecond)
 
-	completePush(t, service, two.ID, http.StatusConflict)
+	// The first closure ages out; only the second push still reaches base.
+	st := service.RunGCForTest(0, 24*time.Hour, true)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
 
-	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", second+".narinfo"); n != 0 {
-		t.Errorf("closure row for the failed push exists")
+	for _, key := range []string{base + ".narinfo", narKeyFor(base)} {
+		if !objectIsLive(t, service, key) {
+			t.Errorf("%s was collected while a push held it", key)
+		}
+	}
+
+	completePush(t, service, two, http.StatusNoContent)
+
+	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", second+".narinfo"); n != 1 {
+		t.Errorf("closure rows for the second push = %d, want 1", n)
 	}
 }
 

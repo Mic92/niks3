@@ -45,6 +45,9 @@ func (t *gcTask) TestFail(stats api.GCStats, errMsg string) { t.fail(stats, errM
 func (t *gcTask) TestSetPhase(phase api.GCTaskPhase)        { t.setPhase(phase) }
 func (t *gcTask) TestUpdateStats(stats api.GCStats)         { t.updateStats(stats) }
 
+// MaxNarinfoSize exposes the read proxy's narinfo bound to tests.
+const MaxNarinfoSize = maxNarinfoSize
+
 // Test-only re-exports for proxy range parsing.
 
 type ByteRange = byteRange
@@ -75,6 +78,20 @@ func init() { //nolint:gochecknoinits // fast lead tests
 
 func LeadHeartbeat() time.Duration { return leadHeartbeat }
 
+func LeadPingTimeout() time.Duration { return leadPingTimeout() }
+
+// SetLeadHeartbeat changes the heartbeat until the returned func restores it.
+// Only for tests that do not run in parallel.
+func SetLeadHeartbeat(d time.Duration) func() {
+	old := leadHeartbeat
+	leadHeartbeat = d
+
+	return func() { leadHeartbeat = old }
+}
+
+// FarmLeadLockKey exposes the farm election's advisory lock key to tests.
+const FarmLeadLockKey = farmLeadLockKey
+
 // RestartedNow makes the lead handler behave as if the server just started.
 func RestartedNow(grace time.Duration) {
 	startedAt = time.Now()
@@ -90,3 +107,35 @@ func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, 
 		{server: &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}, ln: unix},
 	}, nil)
 }
+
+// SetTestHookBeforePendingInsert runs f right before a pending closure and
+// its objects are written, before the existence check.
+func (s *Service) SetTestHookBeforePendingInsert(f func()) {
+	s.testHookBeforePendingInsert = f
+}
+
+// SetTestHookAfterPresenceCheck runs f once a push has decided which of its
+// objects are present (after the S3 verification, if any), before it answers.
+func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
+	s.testHookAfterPresenceCheck = f
+}
+
+// SetTestHookBeforeProxyGet runs f between the read proxy's Stat and GET.
+func (s *Service) SetTestHookBeforeProxyGet(f func()) {
+	s.testHookBeforeProxyGet = f
+}
+
+// SetTestHookBeforeRedundantAbort runs f before a completed multipart upload
+// aborts the uploads its peers opened for the same key.
+func (s *Service) SetTestHookBeforeRedundantAbort(f func()) {
+	s.testHookBeforeRedundantAbort = f
+}
+
+// SetTestHookBeforeSweepDelete runs f after the sweep selected a page of
+// tombstoned objects and before it deletes them from S3.
+func (s *Service) SetTestHookBeforeSweepDelete(f func()) {
+	s.testHookBeforeSweepDelete = f
+}
+
+// ValidateS3Concurrency is an export of validateS3Concurrency for tests.
+func ValidateS3Concurrency(n int) error { return validateS3Concurrency(n) }

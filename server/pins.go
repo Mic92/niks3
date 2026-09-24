@@ -2,11 +2,10 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
@@ -55,9 +54,7 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := &createPinRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
 		return
 	}
 
@@ -74,9 +71,15 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run the existence check and upsert in one transaction with the closure
-	// row locked FOR SHARE, so concurrent GC cannot delete the closure in
-	// between (which would surface as an FK violation / 500).
+	// Run the existence check, the upsert and the S3 write in one
+	// transaction. The closure row is locked FOR SHARE, so concurrent GC
+	// cannot delete the closure in between (which would surface as an FK
+	// violation / 500). The pin row is written before the S3 object and
+	// committed after it: the upsert's row lock makes a second writer of the
+	// same name wait until this one has committed, so the last writer to
+	// commit is also the last to write S3, and a failed S3 write rolls the
+	// row back. Written the other way round, two writers could leave S3
+	// serving one closure while the database protects the other from GC.
 	tx, err := s.Pool.Begin(r.Context())
 	if err != nil {
 		slog.Error("Failed to begin transaction", "error", err)
@@ -99,21 +102,6 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write to S3 before committing so the pin is durable even if the DB
-	// write fails. If S3 succeeds but the commit fails, the next create
-	// overwrites the S3 object anyway, and the orphan S3 object is harmless.
-	pinKey := "pins/" + name
-
-	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
-		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
-	if err != nil {
-		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
-		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
-
 	err = queries.UpsertPin(r.Context(), pg.UpsertPinParams{
 		Name:       name,
 		NarinfoKey: narinfoKey,
@@ -122,6 +110,20 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("Failed to upsert pin", "name", name, "narinfo_key", narinfoKey, "error", err)
 		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// If the commit below fails after this write, S3 is ahead of the
+	// database until the pin is written again.
+	pinKey := "pins/" + name
+
+	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
+		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+	if err != nil {
+		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
+		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
@@ -188,18 +190,33 @@ func (s *Service) DeletePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queries := pg.New(s.Pool)
-
-	_, err := queries.GetPin(r.Context(), name)
+	// Delete the row and the S3 object in one transaction, and commit only
+	// once S3 is done. Consumers read the S3 object, and a public pin whose
+	// row is gone names a closure GC is free to collect; a later delete would
+	// find no row and never remove the object. The row delete comes first so
+	// its lock holds off a concurrent create of the same name until then.
+	tx, err := s.Pool.Begin(r.Context())
 	if err != nil {
+		slog.Error("Failed to begin transaction", "error", err)
+		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	committed := false
+
+	defer rollbackOnError(r.Context(), &tx, &err, &committed)
+
+	queries := pg.New(tx)
+
+	if _, err = queries.GetPin(r.Context(), name); err != nil {
 		slog.Error("Pin not found", "name", name, "error", err)
 		http.Error(w, "pin not found", http.StatusNotFound)
 
 		return
 	}
 
-	err = queries.DeletePin(r.Context(), name)
-	if err != nil {
+	if err = queries.DeletePin(r.Context(), name); err != nil {
 		slog.Error("Failed to delete pin from database", "name", name, "error", err)
 		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
 
@@ -208,11 +225,21 @@ func (s *Service) DeletePinHandler(w http.ResponseWriter, r *http.Request) {
 
 	pinKey := "pins/" + name
 
-	err = s.MinioClient.RemoveObject(r.Context(), s.Bucket, pinKey, minio.RemoveObjectOptions{})
-	if err != nil {
-		// Log but don't fail - the database is the source of truth
-		slog.Warn("Failed to delete pin from S3", "key", pinKey, "error", err)
+	if err = s.MinioClient.RemoveObject(r.Context(), s.Bucket, pinKey, minio.RemoveObjectOptions{}); err != nil {
+		slog.Error("Failed to delete pin from S3", "key", pinKey, "error", err)
+		http.Error(w, "failed to delete pin from S3: "+err.Error(), http.StatusInternalServerError)
+
+		return
 	}
+
+	if err = tx.Commit(r.Context()); err != nil {
+		slog.Error("Failed to commit pin deletion", "name", name, "error", err)
+		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	committed = true
 
 	slog.Info("Deleted pin", "name", name)
 	w.WriteHeader(http.StatusNoContent)
@@ -225,16 +252,20 @@ func formatPinTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// storePathRe matches an absolute store path: directory components free of
+// whitespace and control characters, then a nix32 hash and a name from Nix's
+// store path alphabet. The pin's S3 object is this string verbatim and
+// consumers substitute it into a command line, so it must be one path.
+var storePathRe = regexp.MustCompile(`^(?:/[^/\x00-\x20\x7f]+)+/([0-9a-df-np-sv-z]{32})-[a-zA-Z0-9+\-._?=]+$`)
+
 // storePathToNarinfoKey converts a store path like /nix/store/abc123-name to abc123.narinfo.
 func storePathToNarinfoKey(storePath string) (string, error) {
-	base := storePath[strings.LastIndexByte(storePath, '/')+1:]
-
-	hash, _, found := strings.Cut(base, "-")
-	if !found || hash == "" {
+	m := storePathRe.FindStringSubmatch(storePath)
+	if m == nil || path.Clean(storePath) != storePath {
 		return "", &invalidStorePathError{storePath}
 	}
 
-	return hash + ".narinfo", nil
+	return m[1] + ".narinfo", nil
 }
 
 type invalidStorePathError struct {

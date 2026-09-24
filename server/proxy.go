@@ -27,6 +27,13 @@ const (
 	// proxyTimeoutSlack absorbs TLS handshake, S3 first-byte latency, and
 	// TCP slow start. Dominates for small objects (narinfos, listings).
 	proxyTimeoutSlack = 5 * time.Minute
+
+	// maxNarinfoSize bounds a narinfo the proxy buffers and decompresses,
+	// both as stored and decompressed. Clients write narinfos through
+	// presigned URLs, so their size is not the server's to choose, and a few
+	// kilobytes of zstd expand to gigabytes. Real narinfos are a few hundred
+	// bytes; this leaves room for a couple hundred thousand references.
+	maxNarinfoSize = 16 << 20
 )
 
 // ProxyWriteTimeout returns the per-request write deadline for streaming an
@@ -134,7 +141,7 @@ func parseSingleRange(spec string, size int64) (*byteRange, error) {
 // that on every proxied narinfo request.
 var zstdDecoderPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
 	New: func() any {
-		decoder, err := zstd.NewReader(nil)
+		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxNarinfoSize))
 		if err != nil {
 			panic("failed to create zstd decoder: " + err.Error())
 		}
@@ -247,6 +254,12 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+
+	// The server's WriteTimeout is sized for API responses and has been
+	// running since the request was read, while after a throttle the waits
+	// below can outlast it. Give every response the budget of the smallest
+	// object; a NAR stream extends it by its size once that is known.
+	setProxyWriteDeadline(w, key, 0)
 
 	// Wait for rate limiter
 	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
@@ -371,7 +384,16 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		}
 	}
 
-	obj, err := s.MinioClient.GetObject(r.Context(), s.Bucket, key, getOpts)
+	if s.testHookBeforeProxyGet != nil {
+		s.testHookBeforeProxyGet()
+	}
+
+	// Core.GetObject issues the request now. minio.Client.GetObject is lazy
+	// and only sends it on the first Read, by which time the status and
+	// headers are written: an object GC removed after the Stat above would
+	// be answered 502 or with a truncated 200 instead of 404, and a throttle
+	// would never reach the rate limiter.
+	obj, _, _, err := minio.Core{Client: s.MinioClient}.GetObject(r.Context(), s.Bucket, key, getOpts)
 	if err != nil {
 		s.handleProxyS3Error(w, err, key)
 
@@ -394,12 +416,8 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	// Override the global short WriteTimeout: large NARs need a budget
-	// proportional to their size.
-	rc := http.NewResponseController(w)
-	if err := rc.SetWriteDeadline(time.Now().Add(ProxyWriteTimeout(objInfo.Size))); err != nil {
-		slog.Debug("Failed to extend write deadline", "key", key, "error", err)
-	}
+	// Large NARs need a budget proportional to their size.
+	setProxyWriteDeadline(w, key, objInfo.Size)
 
 	setProxyHeaders(w, &objInfo)
 	w.Header().Set("Accept-Ranges", "bytes")
@@ -420,16 +438,23 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 
 // serveDecompressedNarinfo reads a narinfo from S3 and writes the decompressed
 // content to the response. Narinfos are tiny (~500 bytes compressed) so
-// buffering the whole thing is fine.
+// buffering the whole thing is fine, up to maxNarinfoSize either way.
 //
 // Narinfos are stored zstd-compressed in S3 with Content-Encoding: zstd.
 // A transparent proxy (e.g. Cloudflare Tunnel) may decompress the data and
 // strip the Content-Encoding header before it reaches us. We only decompress
 // when the Content-Encoding header is still present.
-func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Object, info *minio.ObjectInfo) {
-	data, err := io.ReadAll(obj)
+func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader, info *minio.ObjectInfo) {
+	data, err := io.ReadAll(io.LimitReader(obj, maxNarinfoSize+1))
 	if err != nil {
 		slog.Error("Failed to read narinfo from S3", "error", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+
+		return
+	}
+
+	if len(data) > maxNarinfoSize {
+		slog.Error("Refusing narinfo larger than the limit", "key", info.Key, "limit", maxNarinfoSize)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 
 		return
@@ -475,7 +500,16 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj *minio.Obj
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(plain) //nolint:gosec // served as text/x-nix-narinfo, never rendered as HTML
+	_, _ = w.Write(plain)
+}
+
+// setProxyWriteDeadline replaces the server's short WriteTimeout with
+// ProxyWriteTimeout(size) from now.
+func setProxyWriteDeadline(w http.ResponseWriter, key string, size int64) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(ProxyWriteTimeout(size))); err != nil {
+		slog.Debug("Failed to extend write deadline", "key", key, "error", err)
+	}
 }
 
 // setProxyHeaders sets response headers from S3 object metadata.

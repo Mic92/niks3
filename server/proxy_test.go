@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server"
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
@@ -172,6 +174,20 @@ func TestReadProxyNarinfo(t *testing.T) {
 	if header.Get("Last-Modified") == "" {
 		t.Error("expected Last-Modified header")
 	}
+
+	// Clients write narinfos through presigned URLs, so their size is not
+	// the server's to choose, and a few kilobytes of zstd expand to
+	// gigabytes. Past the bound the proxy must refuse instead of buffering.
+	oversized := bytes.Repeat([]byte("References: x\n"), server.MaxNarinfoSize/14+1)
+
+	bomb := "3hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	putTestObject(ctx, t, service, bomb, zstdCompress(t, oversized),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+	proxyGet(t, ts, "/"+bomb, http.StatusBadGateway)
+
+	plain := "5hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	putTestObject(ctx, t, service, plain, oversized, minio.PutObjectOptions{ContentType: "application/x-nix-narinfo"})
+	proxyGet(t, ts, "/"+plain, http.StatusBadGateway)
 }
 
 // TestReadProxyNarinfoAlreadyDecompressed verifies that narinfos already
@@ -239,6 +255,61 @@ func TestReadProxy404(t *testing.T) {
 
 	// Valid path but object doesn't exist in S3
 	proxyGet(t, ts, "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", http.StatusNotFound)
+
+	// An object that GC removes between the proxy's Stat and its GET is a
+	// cache miss too, for narinfos (buffered) and NARs (streamed) alike. It
+	// must not turn into a 502 or a truncated 200.
+	ctx := t.Context()
+	narinfoKey := "4hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
+	narKey := "nar/" + strings.Repeat("h", 52) + ".nar.zst"
+
+	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/x\n")),
+		minio.PutObjectOptions{ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, narKey, bytes.Repeat([]byte("nar"), 1024), minio.PutObjectOptions{})
+
+	var deleteBeforeGet string
+
+	service.SetTestHookBeforeProxyGet(func() {
+		ok(t, service.MinioClient.RemoveObject(ctx, service.Bucket, deleteBeforeGet, minio.RemoveObjectOptions{}))
+	})
+
+	for _, key := range []string{narinfoKey, narKey} {
+		deleteBeforeGet = key
+		proxyGet(t, ts, "/"+key, http.StatusNotFound)
+	}
+
+	service.SetTestHookBeforeProxyGet(nil)
+
+	// A GET that S3 throttles after the Stat went through is a throttle too:
+	// 429 with Retry-After, and recorded by the adaptive limiter.
+	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/x\n")),
+		minio.PutObjectOptions{ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, narKey, bytes.Repeat([]byte("nar"), 1024), minio.PutObjectOptions{})
+
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Query().Has("location") {
+			return next.RoundTrip(r)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": {"application/xml"}},
+			Body: io.NopCloser(strings.NewReader(`<?xml version="1.0" encoding="UTF-8"?>` +
+				`<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message></Error>`)),
+			Request: r,
+		}, nil
+	})
+
+	for _, key := range []string{narinfoKey, narKey} {
+		header, _ := proxyGet(t, ts, "/"+key, http.StatusTooManyRequests)
+		if header.Get("Retry-After") == "" {
+			t.Errorf("GET %s: throttled without Retry-After", key)
+		}
+	}
+
+	if !service.S3RateLimiter.IsEnabled() {
+		t.Error("a throttled GET did not reach the adaptive rate limiter")
+	}
 }
 
 func TestReadProxyInvalidPath(t *testing.T) {
@@ -301,6 +372,71 @@ func TestReadProxyHead(t *testing.T) {
 	// but must report the correct Content-Type.
 	if ct := resp.Header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
 		t.Errorf("Content-Type = %q, want text/x-nix-narinfo", ct)
+	}
+}
+
+// The server's WriteTimeout is sized for API responses and starts when the
+// request has been read. After a throttle a proxy request can spend longer
+// than that queued in the S3 rate limiter, and its response must still be
+// written: for narinfos and HEAD requests as much as for NAR streams.
+func TestReadProxyOutlastsServerWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	narinfo := "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo"
+	putTestObject(ctx, t, service, narinfo, zstdCompress(t, []byte("StorePath: /nix/store/abc123-hello\n")),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+
+	nar := "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz"
+	putTestObject(ctx, t, service, nar, []byte("nar bytes"), minio.PutObjectOptions{})
+
+	// At its floor the limiter admits five calls a second, so once drained
+	// every S3 call of a request waits 200ms, twice the WriteTimeout below.
+	service.S3RateLimiter = ratelimit.NewAdaptiveRateLimiter(ratelimit.RateMin, "s3-test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{path...}", service.ReadProxyHandler)
+
+	ts := httptest.NewUnstartedServer(mux)
+	ts.Config.WriteTimeout = 100 * time.Millisecond
+	ts.Start()
+
+	defer ts.Close()
+
+	// A fresh connection per request, so the transport cannot retry a GET
+	// whose connection was closed under it.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	for _, tc := range []struct{ method, key string }{
+		{http.MethodGet, narinfo},
+		{http.MethodHead, narinfo},
+		{http.MethodGet, nar},
+		{http.MethodHead, nar},
+	} {
+		for range int(ratelimit.RateMin) {
+			ok(t, service.S3RateLimiter.Wait(ctx))
+		}
+
+		req, err := http.NewRequestWithContext(ctx, tc.method, ts.URL+"/"+tc.key, nil)
+		ok(t, err)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("%s %s: %v", tc.method, tc.key, err)
+
+			continue
+		}
+
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Errorf("%s %s: status %d, body error %v", tc.method, tc.key, resp.StatusCode, err)
+		}
 	}
 }
 
