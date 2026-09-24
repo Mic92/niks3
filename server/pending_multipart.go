@@ -117,31 +117,27 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 
 	s.S3RateLimiter.RecordSuccess()
 
-	// A cancelled ctx is the usual reason to abort, and the abort would fail on it.
-	abortCtx := context.WithoutCancel(ctx)
-
 	if err := pg.New(s.Pool).InsertMultipartUpload(createCtx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
 	}); err != nil {
-		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
+		// No row, so this is the only chance to abort it, and createCtx may
+		// be the deadline the insert ran out of.
+		s.abortMultipartUpload(context.WithoutCancel(ctx), coreClient, objectKey, uploadID)
 
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
 
-	// Nobody will use an upload whose request was cancelled meanwhile.
+	// From here on the row is the upload's handle: the caller drops the
+	// pending closure on any error and aborts the upload through it.
 	if err := ctx.Err(); err != nil {
-		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
-
 		return PendingObject{}, fmt.Errorf("creating multipart upload: %w", err)
 	}
 
 	// Generate presigned URLs for each part (starting from part 1)
 	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
 	if err != nil {
-		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
-
 		return PendingObject{}, err
 	}
 
