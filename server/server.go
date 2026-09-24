@@ -340,8 +340,9 @@ func runServer(opts *options) error {
 		srv := &http.Server{
 			Addr:    addr,
 			Handler: service.Metrics.Instrument(handler),
-			// Bound slowloris on API endpoints. The read proxy extends its own
-			// write deadline per request for large NAR streams.
+			// Bound slowloris on API endpoints. The read proxy replaces the
+			// write deadline per request via ProxyWriteTimeout, sized for large
+			// NAR streams.
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,

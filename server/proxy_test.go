@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server"
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
@@ -338,6 +339,71 @@ func TestReadProxyHead(t *testing.T) {
 	// but must report the correct Content-Type.
 	if ct := resp.Header.Get("Content-Type"); ct != "text/x-nix-narinfo" {
 		t.Errorf("Content-Type = %q, want text/x-nix-narinfo", ct)
+	}
+}
+
+// The server's WriteTimeout is sized for API responses and starts when the
+// request has been read. After a throttle a proxy request can spend longer
+// than that queued in the S3 rate limiter, and its response must still be
+// written: for narinfos and HEAD requests as much as for NAR streams.
+func TestReadProxyOutlastsServerWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	narinfo := "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo"
+	putTestObject(ctx, t, service, narinfo, zstdCompress(t, []byte("StorePath: /nix/store/abc123-hello\n")),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+
+	nar := "nar/1ngi2dxw1f7khrrjamzkkdai393lwcm8s78gvs1ag8k3n82w7bvp.nar.xz"
+	putTestObject(ctx, t, service, nar, []byte("nar bytes"), minio.PutObjectOptions{})
+
+	// At its floor the limiter admits five calls a second, so once drained
+	// every S3 call of a request waits 200ms, twice the WriteTimeout below.
+	service.S3RateLimiter = ratelimit.NewAdaptiveRateLimiter(ratelimit.RateMin, "s3-test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{path...}", service.ReadProxyHandler)
+
+	ts := httptest.NewUnstartedServer(mux)
+	ts.Config.WriteTimeout = 100 * time.Millisecond
+	ts.Start()
+
+	defer ts.Close()
+
+	// A fresh connection per request, so the transport cannot retry a GET
+	// whose connection was closed under it.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	for _, tc := range []struct{ method, key string }{
+		{http.MethodGet, narinfo},
+		{http.MethodHead, narinfo},
+		{http.MethodGet, nar},
+		{http.MethodHead, nar},
+	} {
+		for range int(ratelimit.RateMin) {
+			ok(t, service.S3RateLimiter.Wait(ctx))
+		}
+
+		req, err := http.NewRequestWithContext(ctx, tc.method, ts.URL+"/"+tc.key, nil)
+		ok(t, err)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("%s %s: %v", tc.method, tc.key, err)
+
+			continue
+		}
+
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Errorf("%s %s: status %d, body error %v", tc.method, tc.key, resp.StatusCode, err)
+		}
 	}
 }
 
