@@ -674,6 +674,20 @@ func TestClientWithDependencies(t *testing.T) {
 
 	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, testAuthToken, nixEnv)
 
+	// The build log is pushed with the closure and must live as long as it:
+	// a collection that keeps the closure must keep the log too.
+	var logKey string
+	ok(t, testService.Pool.QueryRow(ctx, "SELECT key FROM objects WHERE key LIKE 'log/%'").Scan(&logKey))
+
+	st := testService.RunGCForTest(720*time.Hour, 0, true)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if !objectInS3(t, testService, logKey) {
+		t.Errorf("build log %s was collected although its closure is live", logKey)
+	}
+
 	testRetrieveWithNixCopy(ctx, t, testService, storePath, nixEnv)
 }
 
