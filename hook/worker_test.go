@@ -658,9 +658,70 @@ func TestShutdownFinishesInFlightPush(t *testing.T) {
 
 // A batch whose removal from the queue fails is not progress: treating it as
 // such spun on the same batch with no backoff and kept the drain from giving
-// up. The drain must terminate on its own here rather than run until killed.
+// up. The drain must terminate on its own here rather than run until killed,
+// whichever way the paths would have left the queue: dropped as collected,
+// settled after the batch pushed, or settled one by one after the batch
+// failed and each probe succeeded.
 func TestWorkerRemoveFailureIsNotProgress(t *testing.T) {
 	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		files []string // existing store paths; none means one collected path
+		// push fails batches of more than one path when failBatches is set.
+		failBatches bool
+		// Pushes of three stalled rounds: the batch, plus a probe per path
+		// when it fails.
+		wantPushes int
+	}{
+		{name: "collected path", wantPushes: 0},
+		{name: "pushed batch", files: []string{"aaa", "bbb"}, wantPushes: 3},
+		{name: "isolated paths", files: []string{"aaa", "bbb"}, failBatches: true, wantPushes: 3 * 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			paths := []string{filepath.Join(t.TempDir(), "nonexistent")}
+			if tc.files != nil {
+				dir := t.TempDir()
+				paths = paths[:0]
+
+				for _, name := range tc.files {
+					paths = append(paths, writeTestFile(t, dir, name))
+				}
+			}
+
+			q := readOnlyQueue(t, paths)
+
+			var calls atomic.Int32
+
+			push := func(_ context.Context, batch []string) ([]string, error) {
+				calls.Add(1)
+
+				if tc.failBatches && len(batch) > 1 {
+					return nil, errUpload
+				}
+
+				return batch, nil
+			}
+
+			drainWorker(t, q, push, 10)
+
+			if n := calls.Load(); int(n) != tc.wantPushes {
+				t.Errorf("drain pushed %d times, want %d: three stalled rounds, then give up", n, tc.wantPushes)
+			}
+
+			if left := remaining(t, q); !slices.Equal(left, paths) {
+				t.Errorf("queue holds %v, want %v (its removal failed)", left, paths)
+			}
+		})
+	}
+}
+
+// readOnlyQueue returns a queue holding paths whose database is read-only:
+// reads work, removals fail. It skips the test when that cannot be arranged.
+func readOnlyQueue(t *testing.T, paths []string) *hook.Queue {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 
@@ -669,8 +730,7 @@ func TestWorkerRemoveFailureIsNotProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gcedPath := filepath.Join(t.TempDir(), "nonexistent")
-	if err := q.Enqueue([]string{gcedPath}); err != nil {
+	if err := q.Enqueue(paths); err != nil {
 		t.Fatal(err)
 	}
 
@@ -678,7 +738,6 @@ func TestWorkerRemoveFailureIsNotProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reopen read-only: reads work, the DELETE fails.
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if err := os.Chmod(dbPath+suffix, 0o444); err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
@@ -692,16 +751,11 @@ func TestWorkerRemoveFailureIsNotProgress(t *testing.T) {
 
 	t.Cleanup(func() { _ = q.Close() })
 
-	if err := q.Remove([]string{gcedPath}); err == nil {
+	if err := q.Remove(paths[:1]); err == nil {
 		t.Skip("queue is writable despite read-only file (running as root?)")
 	}
 
-	push, batches := recordingPush()
-	drainWorker(t, q, push, 10)
-
-	if n := len(batches()); n != 0 {
-		t.Errorf("nonexistent path was pushed %d times", n)
-	}
+	return q
 }
 
 // A stat error other than "not found" is not proof the path is gone, so the
