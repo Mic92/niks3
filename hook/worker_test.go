@@ -59,8 +59,16 @@ func recordingPush() (hook.PushFunc, func() [][]string) {
 func startWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int) func() {
 	t.Helper()
 
+	return startWorkerTimeout(t, q, push, batchSize, 0)
+}
+
+// startWorkerTimeout is startWorker with a DrainTimeout budget.
+func startWorkerTimeout(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int, drainTimeout time.Duration) func() {
+	t.Helper()
+
 	notify := make(chan struct{}, 1)
 	w := hook.NewWorker(q, push, batchSize, notify)
+	w.DrainTimeout = drainTimeout
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -466,92 +474,186 @@ func TestDrainTimeout(t *testing.T) {
 
 // The timeout can also strike between isolation probes. The probes not yet
 // made must not be counted as failures nor have their paths moved to the back
-// of the queue: the server, not the paths, ran out of time.
+// of the queue: the server, not the paths, ran out of time. That holds
+// whether the timeout cuts a probe short or strikes while a probe that then
+// succeeds is still running: no further probe may start.
 func TestDrainTimeoutDuringIsolation(t *testing.T) {
 	t.Parallel()
 
-	q := newTestQueue(t)
-	paths := enqueueFiles(t, q, "a", "b", "c", "d")
+	const timeout = 200 * time.Millisecond
 
-	var calls atomic.Int32
+	for _, tc := range []struct {
+		name string
+		// probe is the first single-path push.
+		probe func(ctx context.Context, batch []string) ([]string, error)
+		// left is which of a, b, c, d stay queued, in order.
+		left []int
+	}{
+		{
+			name: "probe cut short",
+			probe: func(ctx context.Context, _ []string) ([]string, error) {
+				<-ctx.Done()
 
-	push := func(ctx context.Context, batch []string) ([]string, error) {
-		calls.Add(1)
+				return nil, ctx.Err()
+			},
+			left: []int{0, 1, 2, 3},
+		},
+		{
+			name: "probe outlasts the deadline",
+			probe: func(_ context.Context, batch []string) ([]string, error) {
+				time.Sleep(timeout + 100*time.Millisecond)
 
-		if len(batch) > 1 {
-			return nil, errUpload // the batch itself fails at once
-		}
+				return batch, nil
+			},
+			left: []int{1, 2, 3},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		<-ctx.Done() // the first probe hangs until the timeout
+			q := newTestQueue(t)
+			paths := enqueueFiles(t, q, "a", "b", "c", "d")
 
-		return nil, ctx.Err()
-	}
+			var calls atomic.Int32
 
-	drainWorkerTimeout(t, q, push, 4, 200*time.Millisecond)
+			push := func(ctx context.Context, batch []string) ([]string, error) {
+				n := calls.Add(1)
 
-	if n := calls.Load(); n != 2 {
-		t.Errorf("expected the batch and one probe, got %d pushes", n)
-	}
+				switch {
+				case len(batch) > 1:
+					return nil, errUpload // the batch itself fails at once
+				case n == 2:
+					return tc.probe(ctx, batch)
+				case ctx.Err() != nil:
+					return nil, ctx.Err()
+				default:
+					return batch, nil
+				}
+			}
 
-	if left := remaining(t, q); !slices.Equal(left, paths) {
-		t.Errorf("expected queue order untouched %v, got %v", paths, left)
+			drainWorkerTimeout(t, q, push, 4, timeout)
+
+			if n := calls.Load(); n != 2 {
+				t.Errorf("expected the batch and one probe, got %d pushes", n)
+			}
+
+			want := make([]string, 0, len(tc.left))
+			for _, i := range tc.left {
+				want = append(want, paths[i])
+			}
+
+			if left := remaining(t, q); !slices.Equal(left, want) {
+				t.Errorf("expected queue %v, got %v", want, left)
+			}
+		})
 	}
 }
 
 // Shutdown must not abort a push that is in flight: the drain would only
 // start the same batch over from scratch, and under a stop timeout a large
-// closure then never completes.
+// closure then never completes. The drain timeout, counted from the
+// shutdown, still bounds a push that hangs.
 func TestShutdownFinishesInFlightPush(t *testing.T) {
 	t.Parallel()
 
-	q := newTestQueue(t)
-	enqueueFiles(t, q, "aaa", "bbb")
+	t.Run("completes", func(t *testing.T) {
+		t.Parallel()
 
-	var (
-		calls   atomic.Int32
-		started = make(chan struct{})
-		release = make(chan struct{})
-		aborted atomic.Bool
-	)
+		q := newTestQueue(t)
+		enqueueFiles(t, q, "aaa", "bbb")
 
-	push := func(ctx context.Context, paths []string) ([]string, error) {
-		if calls.Add(1) == 1 {
-			close(started)
+		var (
+			calls   atomic.Int32
+			started = make(chan struct{})
+			release = make(chan struct{})
+			aborted atomic.Bool
+		)
+
+		push := func(ctx context.Context, paths []string) ([]string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+			}
+
+			<-release
+
+			if ctx.Err() != nil {
+				aborted.Store(true)
+
+				return nil, ctx.Err()
+			}
+
+			return paths, nil
 		}
 
-		<-release
+		stop := startWorker(t, q, push, 10)
 
-		if ctx.Err() != nil {
-			aborted.Store(true)
+		<-started
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			close(release)
+		}()
+
+		stop() // cancels while the push is blocked, then waits for the drain
+
+		if aborted.Load() {
+			t.Error("shutdown cancelled the push in flight")
+		}
+
+		if n := calls.Load(); n != 1 {
+			t.Errorf("expected the in-flight push to complete once, got %d pushes", n)
+		}
+
+		if left := remaining(t, q); len(left) != 0 {
+			t.Errorf("expected empty queue after the push completed, got %v", left)
+		}
+	})
+
+	// A push that never returns on its own is cancelled DrainTimeout after
+	// the shutdown, not after a drain that cannot start until it returns.
+	t.Run("hung push bounded by the drain timeout", func(t *testing.T) {
+		t.Parallel()
+
+		q := newTestQueue(t)
+		paths := enqueueFiles(t, q, "aaa", "bbb")
+
+		var (
+			calls   atomic.Int32
+			started = make(chan struct{})
+		)
+
+		push := func(ctx context.Context, _ []string) ([]string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+			}
+
+			<-ctx.Done()
 
 			return nil, ctx.Err()
 		}
 
-		return paths, nil
-	}
+		const drainTimeout = 200 * time.Millisecond
 
-	stop := startWorker(t, q, push, 10)
+		stop := startWorkerTimeout(t, q, push, 10, drainTimeout)
 
-	<-started
+		<-started
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(release)
-	}()
+		begin := time.Now()
 
-	stop() // cancels while the push is blocked, then waits for the drain
+		stop() // fails the test if the worker is still running after 5s
 
-	if aborted.Load() {
-		t.Error("shutdown cancelled the push in flight")
-	}
+		if elapsed := time.Since(begin); elapsed < drainTimeout/2 {
+			t.Errorf("push in flight was cut off after %v, before the drain timeout", elapsed)
+		}
 
-	if n := calls.Load(); n != 1 {
-		t.Errorf("expected the in-flight push to complete once, got %d pushes", n)
-	}
+		if n := calls.Load(); n != 1 {
+			t.Errorf("expected only the push in flight, got %d pushes", n)
+		}
 
-	if left := remaining(t, q); len(left) != 0 {
-		t.Errorf("expected empty queue after the push completed, got %v", left)
-	}
+		if left := remaining(t, q); !slices.Equal(left, paths) {
+			t.Errorf("expected queue untouched %v, got %v", paths, left)
+		}
+	})
 }
 
 // A batch whose removal from the queue fails is not progress: treating it as
