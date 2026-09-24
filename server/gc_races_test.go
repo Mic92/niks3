@@ -364,71 +364,89 @@ func TestCreatePendingClosureVerifyS3FailureReleasesConnection(t *testing.T) {
 // before it decides so. Otherwise a GC run between the check and the row can
 // tombstone and, in force mode, sweep the object, and the closure then
 // commits it as live with nothing behind it in S3.
+//
+// GC runs at two points of the push. Before the pending rows are written it
+// sweeps the NAR, which must then be offered. After the push has decided the
+// NAR is present it must find the NAR shielded by its pending row. Only the
+// second point tells the two orders apart: with the check ahead of the rows,
+// GC before both steps still leaves the check seeing the sweep.
 func TestForceGCDuringPushOffersSweptObject(t *testing.T) {
 	t.Parallel()
 
-	service := createTestService(t)
-	defer service.Close()
+	for _, point := range []struct {
+		name string
+		set  func(*server.Service, func())
+	}{
+		{"before pending rows", (*server.Service).SetTestHookBeforePendingInsert},
+		{"after presence check", (*server.Service).SetTestHookAfterPresenceCheck},
+	} {
+		t.Run(point.name, func(t *testing.T) {
+			t.Parallel()
 
-	ctx := t.Context()
+			service := createTestService(t)
+			defer service.Close()
 
-	hash := strings.Repeat("f", 32)
-	narKey := "nar/" + strings.Repeat("g", 52) + ".nar.zst"
+			ctx := t.Context()
 
-	// The NAR is live in the database and in S3 but reachable from no
-	// closure (its closure was collected).
-	_, err := service.Pool.Exec(ctx, "INSERT INTO objects (key, refs) VALUES ($1, '{}')", narKey)
-	ok(t, err)
+			hash := strings.Repeat("f", 32)
+			narKey := "nar/" + strings.Repeat("g", 52) + ".nar.zst"
 
-	_, err = service.MinioClient.PutObject(ctx, service.Bucket, narKey, nil, 0, minio.PutObjectOptions{})
-	ok(t, err)
+			// The NAR is live in the database and in S3 but reachable from no
+			// closure (its closure was collected).
+			_, err := service.Pool.Exec(ctx, "INSERT INTO objects (key, refs) VALUES ($1, '{}')", narKey)
+			ok(t, err)
 
-	gcRuns := 0
+			_, err = service.MinioClient.PutObject(ctx, service.Bucket, narKey, nil, 0, minio.PutObjectOptions{})
+			ok(t, err)
 
-	service.SetTestHookBeforePendingInsert(func() {
-		gcRuns++
+			gcRuns := 0
 
-		st := service.RunGCForTest(0, 24*time.Hour, true)
-		if st.State != "succeeded" {
-			t.Errorf("GC failed: %s", st.Error)
-		}
-	})
+			point.set(service, func() {
+				gcRuns++
 
-	w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
+				st := service.RunGCForTest(0, 24*time.Hour, true)
+				if st.State != "succeeded" {
+					t.Errorf("GC failed: %s", st.Error)
+				}
+			})
 
-	if gcRuns != 1 {
-		t.Fatalf("GC hook ran %d times, want 1", gcRuns)
-	}
+			w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
 
-	var resp server.PendingClosureResponse
-	ok(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			if gcRuns != 1 {
+				t.Fatalf("GC hook ran %d times, want 1", gcRuns)
+			}
 
-	// Either the row survived the GC run, in which case the object must
-	// still be in S3, or the object was swept and must be offered.
-	if _, offered := resp.PendingObjects[narKey]; !offered {
-		if !objectInS3(t, service, narKey) {
-			t.Fatalf("%s was swept from S3 but reported present", narKey)
-		}
-	}
+			var resp server.PendingClosureResponse
+			ok(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	for key := range resp.PendingObjects {
-		_, err := service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
-		ok(t, err)
-	}
+			// Either the row survived the GC run, in which case the object must
+			// still be in S3, or the object was swept and must be offered.
+			if _, offered := resp.PendingObjects[narKey]; !offered {
+				if !objectInS3(t, service, narKey) {
+					t.Fatalf("%s was swept from S3 but reported present", narKey)
+				}
+			}
 
-	id, err := strconv.ParseInt(resp.ID, 10, 64)
-	ok(t, err)
-	ok(t, pg.New(service.Pool).CommitPendingClosure(ctx, id))
+			for key := range resp.PendingObjects {
+				_, err := service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
+				ok(t, err)
+			}
 
-	if !objectIsLive(t, service, narKey) {
-		t.Errorf("%s not live after commit", narKey)
-	}
+			id, err := strconv.ParseInt(resp.ID, 10, 64)
+			ok(t, err)
+			ok(t, pg.New(service.Pool).CommitPendingClosure(ctx, id))
 
-	if !objectInS3(t, service, narKey) {
-		t.Errorf("%s live in the database but missing from S3", narKey)
+			if !objectIsLive(t, service, narKey) {
+				t.Errorf("%s not live after commit", narKey)
+			}
+
+			if !objectInS3(t, service, narKey) {
+				t.Errorf("%s live in the database but missing from S3", narKey)
+			}
+		})
 	}
 }
 

@@ -143,6 +143,10 @@ type Service struct {
 	// testHookBeforePendingInsert runs right before a pending closure is
 	// written; tests use it to interleave a GC run with a push.
 	testHookBeforePendingInsert func()
+	// testHookAfterPresenceCheck runs once a push has decided which of its
+	// objects are present, before it answers; tests run GC there to check
+	// that what was found present stays present.
+	testHookAfterPresenceCheck func()
 	// testHookBeforeProxyGet runs between the read proxy's Stat and its GET.
 	testHookBeforeProxyGet func()
 	// testHookBeforeRedundantAbort runs before a completed multipart upload

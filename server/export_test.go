@@ -111,6 +111,12 @@ func (s *Service) SetTestHookBeforePendingInsert(f func()) {
 	s.testHookBeforePendingInsert = f
 }
 
+// SetTestHookAfterPresenceCheck runs f once a push has decided which of its
+// objects are present (after the S3 verification, if any), before it answers.
+func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
+	s.testHookAfterPresenceCheck = f
+}
+
 // SetTestHookBeforeProxyGet runs f between the read proxy's Stat and GET.
 func (s *Service) SetTestHookBeforeProxyGet(f func()) {
 	s.testHookBeforeProxyGet = f

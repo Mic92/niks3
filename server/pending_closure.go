@@ -286,6 +286,10 @@ func (s *Service) objectsToUpload(
 		}
 	}
 
+	if s.testHookAfterPresenceCheck != nil {
+		s.testHookAfterPresenceCheck()
+	}
+
 	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
 
 	for _, row := range allObjects {
