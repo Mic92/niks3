@@ -195,6 +195,37 @@ func (q *Queries) GetClosureForShare(ctx context.Context, key string) (pgtype.Ti
 	return updated_at, err
 }
 
+const getClosureMultipartUploads = `-- name: GetClosureMultipartUploads :many
+SELECT upload_id, object_key
+FROM multipart_uploads
+WHERE pending_closure_id = $1
+`
+
+type GetClosureMultipartUploadsRow struct {
+	UploadID  string `json:"upload_id"`
+	ObjectKey string `json:"object_key"`
+}
+
+func (q *Queries) GetClosureMultipartUploads(ctx context.Context, pendingClosureID int64) ([]GetClosureMultipartUploadsRow, error) {
+	rows, err := q.db.Query(ctx, getClosureMultipartUploads, pendingClosureID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetClosureMultipartUploadsRow
+	for rows.Next() {
+		var i GetClosureMultipartUploadsRow
+		if err := rows.Scan(&i.UploadID, &i.ObjectKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getClosureObjects = `-- name: GetClosureObjects :many
 WITH RECURSIVE closure_reach AS (
     -- Start with the provided closure key

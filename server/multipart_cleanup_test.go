@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -421,5 +422,89 @@ func TestPendingClosureFailureTracksEveryUpload(t *testing.T) {
 		if rows == 0 {
 			t.Errorf("multipart upload %s of %s is open in S3 with no row to find it by", upload.UploadID, upload.Key)
 		}
+	}
+
+	assertNoPendingClosure(t, service)
+}
+
+// assertNoPendingClosure fails the test if a pending closure is left behind.
+func assertNoPendingClosure(t *testing.T, service *server.Service) {
+	t.Helper()
+
+	var pending int
+	ok(t, service.Pool.QueryRow(t.Context(), "SELECT count(*) FROM pending_closures").Scan(&pending))
+
+	if pending != 0 {
+		t.Errorf("%d pending closure(s) left behind by the failed request", pending)
+	}
+}
+
+// refuseSecondCreateProxy forwards requests to S3 and refuses the second
+// multipart upload creation it sees.
+type refuseSecondCreateProxy struct {
+	target  *url.URL
+	creates atomic.Int32
+}
+
+func (p *refuseSecondCreateProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Query().Has("uploads") && p.creates.Add(1) == 2 {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+			`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+
+		return
+	}
+
+	httputil.NewSingleHostReverseProxy(p.target).ServeHTTP(w, r)
+}
+
+// A pending-closure request that fails after it opened some of its multipart
+// uploads never reaches the client, which will not commit the closure or
+// use the uploads. Both must go: the uploads aborted, the closure dropped.
+func TestPendingClosureFailureAbortsItsUploads(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	// One creation at a time, so the first upload is open and recorded
+	// when the second is refused.
+	service.S3Concurrency = 1
+
+	ctx := t.Context()
+
+	hash := strings.Repeat("w", 32)
+	narA := "nar/" + strings.Repeat("x", 52) + ".nar.zst"
+	narB := "nar/" + strings.Repeat("y", 52) + ".nar.zst"
+
+	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
+	ok(t, err)
+
+	proxyServer := httptest.NewServer(&refuseSecondCreateProxy{target: target})
+	defer proxyServer.Close()
+
+	proxyURL, err := url.Parse(proxyServer.URL)
+	ok(t, err)
+
+	direct := service.MinioClient
+	service.MinioClient = testRustfsServer.ClientWithEndpoint(t, proxyURL.Host)
+
+	w := postPendingClosureJSON(t, service, `{"closure":"`+hash+`.narinfo","objects":[`+
+		`{"key":"`+hash+`.narinfo","type":"narinfo","refs":["`+narA+`","`+narB+`"]},`+
+		`{"key":"`+narA+`","type":"nar","refs":[],"nar_size":104857600},`+
+		`{"key":"`+narB+`","type":"nar","refs":[],"nar_size":104857600}]}`)
+
+	service.MinioClient = direct
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("pending closure created although an upload could not be: %s", w.Body.String())
+	}
+
+	assertNoPendingClosure(t, service)
+
+	for upload := range direct.ListIncompleteUploads(ctx, service.Bucket, "nar/", true) {
+		ok(t, upload.Err)
+		t.Errorf("multipart upload %s of %s left open by the failed request", upload.UploadID, upload.Key)
 	}
 }

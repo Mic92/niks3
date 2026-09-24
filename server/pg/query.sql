@@ -189,6 +189,11 @@ FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
 WHERE pc.started_at < sqlc.arg(cutoff)::timestamp;
 
+-- name: GetClosureMultipartUploads :many
+SELECT upload_id, object_key
+FROM multipart_uploads
+WHERE pending_closure_id = $1;
+
 -- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
