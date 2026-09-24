@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +124,9 @@ func TestRedundantMultipartUpload(t *testing.T) {
 // TestCompleteMultipartUpload_ErrorButObjectExists verifies that a failing
 // CompleteMultipartUpload is treated as success when the object is already
 // present in S3, covering lost responses and retried completions that return
-// NoSuchUpload.
+// NoSuchUpload, but only once the errored upload is closed: while its abort
+// fails the request fails too and the upload keeps its row, and a client
+// that goes away mid-abort does not stop the abort.
 func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 	t.Parallel()
 
@@ -151,7 +156,7 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 	ok(t, err)
 
 	// Completing with a bogus part fails in S3, yet the object exists, so the
-	// handler must report success.
+	// handler must report success once it has closed the upload.
 	completeBody, err := json.Marshal(map[string]any{
 		"object_key": narKey,
 		"upload_id":  uploadID,
@@ -159,6 +164,66 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 	})
 	ok(t, err)
 
+	coreClient := minio.Core{Client: service.MinioClient}
+
+	// While S3 refuses the abort the upload stays open, so its row is the
+	// only handle on it: the request must fail, keeping the row, rather than
+	// let the client commit the closure and cascade the row away.
+	good := service.MinioClient
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			return nil, errors.New("injected: abort refused")
+		}
+
+		return next.RoundTrip(r)
+	})
+
+	unavailable := checkStatusCode(http.StatusServiceUnavailable)
+	testRequest(t, &TestRequest{
+		method:        "POST",
+		path:          "/api/multipart/complete",
+		body:          completeBody,
+		handler:       service.CompleteMultipartUploadHandler,
+		checkResponse: &unavailable,
+	})
+
+	service.MinioClient = good
+
+	var kept int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&kept))
+
+	if kept != 1 {
+		t.Fatalf("multipart upload row dropped although its abort failed (rows=%d)", kept)
+	}
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10); err != nil {
+		t.Fatalf("upload closed although its abort was refused: %v", err)
+	}
+
+	// The client's retry gives up while the handler is aborting the upload.
+	// The abort must go through all the same: the client going away is no
+	// reason to leave the upload open.
+	reqCtx, cancelReq := context.WithCancel(ctx)
+	defer cancelReq()
+
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			cancelReq()
+		}
+
+		return next.RoundTrip(r)
+	})
+
+	service.CompleteMultipartUploadHandler(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/api/multipart/complete", bytes.NewReader(completeBody)))
+
+	service.MinioClient = good
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10); err == nil {
+		t.Fatal("upload left open because the request was cancelled while aborting it")
+	}
+
+	// The client's next retry finds the upload closed and drops its row.
 	success := checkStatusCode(http.StatusNoContent)
 	testRequest(t, &TestRequest{
 		method:        "POST",
@@ -176,7 +241,6 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 		t.Errorf("multipart upload row still present after completion (rows=%d)", rows)
 	}
 
-	coreClient := minio.Core{Client: service.MinioClient}
 	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10); err == nil {
 		t.Error("errored multipart upload left open after its row was dropped")
 	}

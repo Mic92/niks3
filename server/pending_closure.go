@@ -181,10 +181,8 @@ func (s *Service) dropPendingClosure(ctx context.Context, id int64) {
 	coreClient := minio.Core{Client: s.MinioClient}
 
 	for _, upload := range uploads {
-		err := coreClient.AbortMultipartUpload(ctx, s.Bucket, upload.ObjectKey, upload.UploadID)
-		if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
-			slog.Warn("failed to abort multipart upload of failed pending closure, keeping it",
-				"id", id, "key", upload.ObjectKey, "upload_id", upload.UploadID, "error", err)
+		if !s.abortMultipartUpload(ctx, coreClient, upload.ObjectKey, upload.UploadID) {
+			slog.Warn("keeping failed pending closure for cleanup to retry the abort", "id", id)
 
 			return
 		}
