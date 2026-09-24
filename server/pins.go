@@ -2,11 +2,10 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/Mic92/niks3/server/pg"
@@ -55,9 +54,7 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := &createPinRequest{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		http.Error(w, "failed to decode request: "+err.Error(), http.StatusBadRequest)
-
+	if !decodeJSONBody(w, r, maxAPIRequestBody, req) {
 		return
 	}
 
@@ -255,16 +252,20 @@ func formatPinTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// storePathRe matches an absolute store path: directory components free of
+// whitespace and control characters, then a nix32 hash and a name from Nix's
+// store path alphabet. The pin's S3 object is this string verbatim and
+// consumers substitute it into a command line, so it must be one path.
+var storePathRe = regexp.MustCompile(`^(?:/[^/\x00-\x20\x7f]+)+/([0-9a-df-np-sv-z]{32})-[a-zA-Z0-9+\-._?=]+$`)
+
 // storePathToNarinfoKey converts a store path like /nix/store/abc123-name to abc123.narinfo.
 func storePathToNarinfoKey(storePath string) (string, error) {
-	base := storePath[strings.LastIndexByte(storePath, '/')+1:]
-
-	hash, _, found := strings.Cut(base, "-")
-	if !found || hash == "" {
+	m := storePathRe.FindStringSubmatch(storePath)
+	if m == nil || path.Clean(storePath) != storePath {
 		return "", &invalidStorePathError{storePath}
 	}
 
-	return hash + ".narinfo", nil
+	return m[1] + ".narinfo", nil
 }
 
 type invalidStorePathError struct {
