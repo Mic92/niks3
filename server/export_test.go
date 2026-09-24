@@ -75,6 +75,17 @@ func init() { //nolint:gochecknoinits // fast lead tests
 
 func LeadHeartbeat() time.Duration { return leadHeartbeat }
 
+func LeadPingTimeout() time.Duration { return leadPingTimeout() }
+
+// SetLeadHeartbeat changes the heartbeat until the returned func restores it.
+// Only for tests that do not run in parallel.
+func SetLeadHeartbeat(d time.Duration) func() {
+	old := leadHeartbeat
+	leadHeartbeat = d
+
+	return func() { leadHeartbeat = old }
+}
+
 // RestartedNow makes the lead handler behave as if the server just started.
 func RestartedNow(grace time.Duration) {
 	startedAt = time.Now()
