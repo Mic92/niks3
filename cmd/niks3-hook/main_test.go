@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -158,5 +159,120 @@ func TestServeSecondSignalEndsDrain(t *testing.T) {
 		exited <- nil // for the cleanup
 	case <-time.After(5 * time.Second):
 		t.Fatal("a second SIGTERM did not end the drain")
+	}
+}
+
+// A send accepted just before shutdown is acknowledged only once its paths
+// are queued, so the final drain must start after Serve has returned and
+// push them. Starting the drain with the listener close let it find the
+// queue empty and finish first, and the process exited with an acknowledged
+// path left behind.
+func TestServeThenDrainPushesSendAcceptedBeforeShutdown(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	queue, err := hook.OpenQueue(filepath.Join(dir, "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = queue.Close() })
+
+	storePath := filepath.Join(dir, "aaa-hello")
+	if err := os.WriteFile(storePath, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		mu     sync.Mutex
+		pushed []string
+	)
+
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		pushed = append(pushed, paths...)
+
+		return paths, nil
+	}
+
+	notify := make(chan struct{}, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	// The send's paths are committed to the queue only after shutdown has
+	// begun, as with a send accepted just before the listener closed.
+	queueFunc := func(paths []string) error {
+		close(entered)
+		<-release
+
+		if err := queue.Enqueue(paths); err != nil {
+			return err //nolint:wrapcheck // test
+		}
+
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+
+		return nil
+	}
+
+	socketPath := filepath.Join(dir, "hook.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(t.Context(), "unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := hook.NewServer(ln, queueFunc)
+	worker := hook.NewWorker(queue, push, 10, notify)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		serveThenDrain(ctx, srv, worker)
+	}()
+
+	sent := make(chan error, 1)
+
+	go func() { sent <- hook.SendPaths(socketPath, []string{storePath}) }()
+
+	<-entered
+	cancel()
+
+	// A drain started by the cancellation finds the queue empty and is
+	// done well within this; the fixed drain waits for Serve instead.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveThenDrain did not return after shutdown")
+	}
+
+	if err := <-sent; err != nil {
+		t.Fatalf("send was not acknowledged: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !slices.Contains(pushed, storePath) {
+		t.Errorf("acknowledged path was not pushed on shutdown (pushed %v)", pushed)
+	}
+
+	if count, err := queue.Count(); err != nil || count != 0 {
+		t.Errorf("queue holds %d paths after shutdown (err %v), want 0", count, err)
 	}
 }
