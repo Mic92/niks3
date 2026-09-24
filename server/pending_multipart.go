@@ -147,13 +147,17 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	}, nil
 }
 
-// abortMultipartUpload aborts an upload we cannot hand out. Failures are logged.
-// An upload that no longer exists is fine.
-func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) {
+// abortMultipartUpload aborts an upload we cannot hand out and reports whether
+// it is gone. Failures are logged. An upload that no longer exists is fine.
+func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) bool {
 	err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
 	if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
 		slog.Warn("Failed to abort multipart upload", "key", objectKey, "upload_id", uploadID, "error", err)
+
+		return false
 	}
+
+	return true
 }
 
 // generatePartURLs generates presigned URLs for multipart upload parts.
