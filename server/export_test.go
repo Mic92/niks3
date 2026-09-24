@@ -45,6 +45,9 @@ func (t *gcTask) TestFail(stats api.GCStats, errMsg string) { t.fail(stats, errM
 func (t *gcTask) TestSetPhase(phase api.GCTaskPhase)        { t.setPhase(phase) }
 func (t *gcTask) TestUpdateStats(stats api.GCStats)         { t.updateStats(stats) }
 
+// MaxNarinfoSize exposes the read proxy's narinfo bound to tests.
+const MaxNarinfoSize = maxNarinfoSize
+
 // Test-only re-exports for proxy range parsing.
 
 type ByteRange = byteRange
