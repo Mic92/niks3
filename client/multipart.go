@@ -254,19 +254,25 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 			buffer, release := getPartBuffer(partSize)
 
+			// ReadFull reports the end of the stream as io.EOF or, after a
+			// short last part, io.ErrUnexpectedEOF, and only when r itself
+			// returned io.EOF, so compare by identity. A producer's error that
+			// merely wraps one of them (the NAR dump finding a store file
+			// shorter than its size) is a failure: completing on it would
+			// register a truncated NAR.
 			n, err := io.ReadFull(r, buffer)
 			if n == 0 {
 				release()
 				<-slots
 
-				if errors.Is(err, io.EOF) {
+				if err == io.EOF {
 					return nil
 				}
 
 				return fmt.Errorf("reading part %d: %w", partNumber, err)
 			}
 
-			last := errors.Is(err, io.ErrUnexpectedEOF)
+			last := err == io.ErrUnexpectedEOF
 			if err != nil && !last {
 				release()
 				<-slots
