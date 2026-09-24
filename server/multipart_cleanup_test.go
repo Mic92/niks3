@@ -1,7 +1,14 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +113,168 @@ func TestMultipartCleanup(t *testing.T) {
 	}
 }
 
+// A multipart upload is opened in S3 before it is recorded. When the request
+// is cancelled in between (a sibling in the errgroup failing does the same),
+// the insert fails and the upload must be aborted on a context that survives
+// the cancellation: without a row nothing can ever find it again.
+func TestMultipartUploadAbortedWhenCancelledBeforeRecorded(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	reqCtx, cancelReq := context.WithCancel(t.Context())
+	defer cancelReq()
+
+	var aborts atomic.Int32
+
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			aborts.Add(1)
+		}
+
+		resp, err := next.RoundTrip(r)
+		if err != nil || r.Method != http.MethodPost || !r.URL.Query().Has("uploads") {
+			return resp, err //nolint:wrapcheck // transparent
+		}
+
+		// S3 has opened the upload. Hand minio the complete answer, then
+		// cancel the request before the server records the upload.
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if err != nil {
+			return nil, err //nolint:wrapcheck // transparent
+		}
+
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+
+		cancelReq()
+
+		return resp, nil
+	})
+
+	hash := strings.Repeat("d", 32)
+	narKey := narKeyFor(hash)
+
+	w := httptest.NewRecorder()
+	service.CreatePendingClosureHandler(w, httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/api/pending_closures",
+		strings.NewReader(`{"closure":"`+hash+`.narinfo","objects":[`+
+			`{"key":"`+hash+`.narinfo","type":"narinfo","refs":["`+narKey+`"]},`+
+			`{"key":"`+narKey+`","type":"nar","refs":[],"nar_size":104857600}]}`)))
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("request succeeded although it was cancelled: %s", w.Body.String())
+	}
+
+	if n := aborts.Load(); n != 1 {
+		t.Errorf("%d abort request(s) reached S3, want 1", n)
+	}
+
+	for upload := range testRustfsServer.Client(t).ListIncompleteUploads(t.Context(), service.Bucket, narKey, true) {
+		ok(t, upload.Err)
+		t.Errorf("multipart upload %s left open in S3 with no row to find it by", upload.UploadID)
+	}
+}
+
+// Cleanup lists the uploads to abort and deletes the closures against one
+// cutoff. With a cutoff per query, a closure that ages past it while the
+// aborts run is cascaded out of the database with its upload still open.
+func TestPendingCleanupUsesOneCutoff(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	push := func(hash string) (string, string) {
+		t.Helper()
+
+		narKey := narKeyFor(hash)
+		resp := createPendingClosure(t, service, map[string]any{
+			"closure": hash + ".narinfo",
+			"objects": []map[string]any{
+				{"key": hash + ".narinfo", "type": "narinfo", "refs": []string{narKey}},
+				{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
+			},
+		})
+
+		return narKey, resp.PendingObjects[narKey].MultipartInfo.UploadID
+	}
+
+	oldHash, youngHash := strings.Repeat("k", 32), strings.Repeat("m", 32)
+	oldNar, oldUpload := push(oldHash)
+	youngNar, youngUpload := push(youngHash)
+
+	// The old closure is well past the one-hour cutoff; the young one
+	// crosses it four seconds from now, while the old upload's abort is
+	// still running.
+	const abortDelay = 6 * time.Second
+
+	_, err := service.Pool.Exec(ctx, `UPDATE pending_closures SET started_at = CASE key
+		WHEN $1 THEN timezone('UTC', now()) - interval '2 hours'
+		ELSE timezone('UTC', now()) - interval '1 hour' + interval '4 seconds' END`, oldHash+".narinfo")
+	ok(t, err)
+
+	good := service.MinioClient
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			select {
+			case <-time.After(abortDelay):
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+
+		return next.RoundTrip(r)
+	})
+
+	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	w := httptest.NewRecorder()
+	service.CleanupPendingClosuresHandler(w,
+		httptest.NewRequestWithContext(cleanupCtx, http.MethodDelete, "/api/pending_closures?older-than=1h", nil))
+	httpOkDepth(t, w)
+
+	service.MinioClient = good
+
+	uploadRows := func(uploadID string) int {
+		var n int
+		ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&n))
+
+		return n
+	}
+
+	coreClient := minio.Core{Client: service.MinioClient}
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, oldNar, oldUpload, 0, 10); err == nil {
+		t.Error("the old closure's upload was not aborted")
+	}
+
+	if n := uploadRows(oldUpload); n != 0 {
+		t.Errorf("the old closure's upload row survived its abort (rows=%d)", n)
+	}
+
+	// The young closure was not selected for abort, so it must not have
+	// been deleted either.
+	if n := uploadRows(youngUpload); n != 1 {
+		t.Fatalf("the young closure's upload row was dropped although its upload was never aborted (rows=%d)", n)
+	}
+
+	// Once it has aged out for real, cleanup reaps it like any other.
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/api/pending_closures?older-than=0s",
+		handler: service.CleanupPendingClosuresHandler,
+	})
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, youngNar, youngUpload, 0, 10); err == nil {
+		t.Error("the young closure's upload was not aborted by the later cleanup")
+	}
+}
+
 // brokenS3Client returns a client whose every request fails: it points at a
 // closed port.
 func brokenS3Client(t *testing.T) *minio.Client {
@@ -115,4 +284,35 @@ func brokenS3Client(t *testing.T) *minio.Client {
 	ok(t, err)
 
 	return bad
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// interceptedS3Client returns a client for the test S3 whose requests go
+// through intercept, which may observe, delay or fail them before or after
+// handing them to next. Retries are off so a failure injected once is final.
+func interceptedS3Client(
+	t *testing.T,
+	intercept func(r *http.Request, next http.RoundTripper) (*http.Response, error),
+) *minio.Client {
+	t.Helper()
+
+	next, isTransport := http.DefaultTransport.(*http.Transport)
+	if !isTransport {
+		t.Fatal("http.DefaultTransport is not an *http.Transport")
+	}
+
+	next = next.Clone()
+
+	c, err := minio.New(fmt.Sprintf("localhost:%d", testRustfsServer.port), &minio.Options{
+		Creds:      testRustfsServer.Creds(),
+		Transport:  roundTripFunc(func(r *http.Request) (*http.Response, error) { return intercept(r, next) }),
+		MaxRetries: 1,
+	})
+	ok(t, err)
+
+	return c
 }
