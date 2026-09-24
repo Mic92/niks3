@@ -24,6 +24,11 @@ var embedMigrations embed.FS
 // no lock, so two replicas starting against one database could run the same
 // migration at once. The provider holds a Postgres session-level advisory
 // lock for the duration.
+//
+// ctx bounds reaching the database, not migrating it: a migration that
+// rewrites a large table, or waiting for a peer's run to release the lock,
+// can take longer than any connect timeout, and failing it would fail every
+// restart the same way. The lock wait is bounded by goose's own retry limit.
 func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 	slog.Debug("connecting to database", "connection_string", connString)
 
@@ -32,7 +37,13 @@ func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}
 
-	if err := migrate(ctx, pool); err != nil {
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+
+		return nil, fmt.Errorf("unable to connect to database: %w", err)
+	}
+
+	if err := migrate(context.WithoutCancel(ctx), pool); err != nil {
 		pool.Close()
 
 		return nil, err

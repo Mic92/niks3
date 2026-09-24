@@ -21,27 +21,33 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-func createTestService(tb testing.TB) *server.Service {
+// createTestDatabase creates an empty database and returns its connection
+// string.
+func createTestDatabase(tb testing.TB) string {
 	tb.Helper()
 
 	if testPostgresServer == nil {
 		tb.Fatal("postgres server not started")
 	}
 
-	if testRustfsServer == nil {
-		tb.Fatal("rustfs server not started")
-	}
-
-	// create database for test
 	dbName := "db" + strconv.Itoa(int(testDBCount.Add(1)))
 	//nolint:gosec
 	command := exec.CommandContext(tb.Context(), "createdb", "-h", testPostgresServer.tempDir, "-U", "postgres", dbName)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
-	err := command.Run()
-	ok(tb, err)
+	ok(tb, command.Run())
 
-	connectionString := fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
+	return fmt.Sprintf("postgres://?dbname=%s&user=postgres&host=%s", dbName, testPostgresServer.tempDir)
+}
+
+func createTestService(tb testing.TB) *server.Service {
+	tb.Helper()
+
+	if testRustfsServer == nil {
+		tb.Fatal("rustfs server not started")
+	}
+
+	connectionString := createTestDatabase(tb)
 
 	ctx, cancel := context.WithTimeout(tb.Context(), 10*time.Second)
 	defer cancel()
