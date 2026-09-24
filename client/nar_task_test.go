@@ -20,60 +20,92 @@ import (
 // When a peer's completion aborts our multipart upload of a NAR, the listing
 // still has to be uploaded: the peer pushed the same NAR but possibly a
 // different store path, and the listing is keyed by store path. The abort
-// also cuts the NAR dump short before it produces the listing.
+// also cuts the NAR dump short before it produces the listing, unless the
+// NAR is small enough to be dumped whole before the first part goes out. And
+// a listing upload that did start and failed is still an error.
 func TestSupersededNARStillUploadsListing(t *testing.T) {
 	t.Parallel()
 
-	var listingUploads atomic.Int32
+	for _, tc := range []struct {
+		name string
+		// Size of the store path's one file; random, so it does not compress.
+		size          int
+		listingStatus int
+		wantErr       bool
+	}{
+		{name: "small NAR", size: 11, listingStatus: http.StatusOK},
+		// Several parts' worth: the dump is still running when the first
+		// part is refused, and the abort ends it before the listing.
+		{name: "dump cut short", size: 64 << 20, listingStatus: http.StatusOK},
+		{name: "listing upload fails", size: 11, listingStatus: http.StatusForbidden, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/part/"):
-			// The presigned part upload: a peer already aborted it.
-			http.Error(w, "no such upload", http.StatusNotFound)
-		case r.Method == http.MethodPut && r.URL.Path == "/listing":
-			listingUploads.Add(1)
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/objects/"):
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/uploads/complete":
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			http.Error(w, "unexpected request "+r.Method+" "+r.URL.Path, http.StatusBadRequest)
-		}
-	}))
-	defer srv.Close()
+			var listingUploads atomic.Int32
 
-	c, err := client.NewTestClientForServer(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/part/"):
+					// The presigned part upload: a peer already aborted it.
+					http.Error(w, "no such upload", http.StatusNotFound)
+				case r.Method == http.MethodPut && r.URL.Path == "/listing":
+					listingUploads.Add(1)
+					w.WriteHeader(tc.listingStatus)
+				case r.Method == http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/objects/"):
+					w.WriteHeader(http.StatusNoContent)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/uploads/complete":
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.Error(w, "unexpected request "+r.Method+" "+r.URL.Path, http.StatusBadRequest)
+				}
+			}))
+			defer srv.Close()
 
-	storePath := filepath.Join(t.TempDir(), "abc-hello")
-	if err := os.MkdirAll(storePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
+			c, err := client.NewTestClientForServer(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if err := os.WriteFile(filepath.Join(storePath, "hello"), []byte("hello world"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+			storePath := filepath.Join(t.TempDir(), "abc-hello")
+			if err := os.MkdirAll(storePath, 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	narObj := client.PendingObject{
-		Type:          "nar",
-		MultipartInfo: &client.MultipartUploadInfo{UploadID: "upload-1", PartURLs: []string{srv.URL + "/part/1"}},
-	}
-	lsObj := client.PendingObject{Type: "listing", PresignedURL: srv.URL + "/listing"}
+			content := make([]byte, tc.size)
+			_, _ = rand.Read(content)
 
-	err = c.UploadNARWithListing(context.Background(), "nar/abc.nar.zst", narObj, "abc.ls", lsObj,
-		&client.PathInfo{Path: storePath, NarSize: 1 << 30})
-	if err != nil {
-		t.Fatalf("superseded upload must succeed, got %v", err)
-	}
+			if err := os.WriteFile(filepath.Join(storePath, "hello"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	c.WaitRegistrations()
+			partURLs := make([]string, 16)
+			for i := range partURLs {
+				partURLs[i] = fmt.Sprintf("%s/part/%d", srv.URL, i+1)
+			}
 
-	if n := listingUploads.Load(); n != 1 {
-		t.Fatalf("listing uploaded %d times, want 1", n)
+			narObj := client.PendingObject{
+				Type:          "nar",
+				MultipartInfo: &client.MultipartUploadInfo{UploadID: "upload-1", PartURLs: partURLs},
+			}
+			lsObj := client.PendingObject{Type: "listing", PresignedURL: srv.URL + "/listing"}
+
+			err = c.UploadNARWithListing(context.Background(), "nar/abc.nar.zst", narObj, "abc.ls", lsObj,
+				&client.PathInfo{Path: storePath, NarSize: 1 << 30})
+
+			c.WaitRegistrations()
+
+			switch {
+			case tc.wantErr && err == nil:
+				t.Fatal("superseded upload whose listing failed reported success")
+			case !tc.wantErr && err != nil:
+				t.Fatalf("superseded upload must succeed, got %v", err)
+			}
+
+			if n := listingUploads.Load(); n != 1 {
+				t.Fatalf("listing uploaded %d times, want 1", n)
+			}
+		})
 	}
 }
 
