@@ -173,9 +173,9 @@ WHERE closures.key IN (
 );
 
 -- name: DeleteTombstonedObjects :exec
--- Drop rows of objects the sweep removed from S3. Conditional on the
--- tombstone so a row a concurrent push resurrected after re-uploading the
--- object survives.
+-- Drop rows of objects the sweep removed from S3. The sweep holds these rows
+-- locked since selecting them, so none can have been resurrected; the
+-- tombstone condition keeps a live row safe from any other caller.
 DELETE FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL;
 
@@ -254,6 +254,9 @@ WHERE objects.key = stale_objects.key;
 -- Keys pending in an in-flight closure are skipped: the closure protects them
 -- until it commits (clearing the tombstone) or is cleaned up. Keyset-paginated
 -- on key so a caller can walk the set while rows are being deleted underneath.
+-- The rows are locked for the caller's transaction, which the sweep holds
+-- until their S3 delete is done; see LockTombstonedObjects. A row someone
+-- else holds is left for the next run.
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
@@ -266,7 +269,30 @@ WHERE first_deleted_at IS NOT NULL
       WHERE po.key = objects.key
   )
 ORDER BY key
-LIMIT sqlc.arg(limit_count);
+LIMIT sqlc.arg(limit_count)
+FOR UPDATE SKIP LOCKED;
+
+-- name: GetKeysNotPending :many
+-- The keys no pending closure has pending, on a snapshot taken now. The
+-- sweep asks again once it holds a page's rows: a push whose pending rows
+-- committed after GetObjectsReadyForDeletion's snapshot, and that took its
+-- share lock before the sweep's lock, is visible here.
+SELECT key FROM objects
+WHERE key = any(sqlc.arg(keys)::varchar [])
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pending_objects AS po
+      WHERE po.key = objects.key
+  );
+
+-- name: LockTombstonedObjects :exec
+-- A push about to offer tombstoned objects for upload waits here for a sweep
+-- holding any of them. The sweep holds its rows FOR UPDATE from selecting
+-- them until their S3 delete is done, so the push's upload cannot land
+-- before that delete and be lost to it.
+SELECT key FROM objects
+WHERE key = any(sqlc.arg(keys)::varchar [])
+FOR KEY SHARE;
 
 -- name: GetClosureForShare :one
 -- Lock the closure row so concurrent GC cannot delete it between the

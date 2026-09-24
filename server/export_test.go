@@ -131,5 +131,11 @@ func (s *Service) SetTestHookBeforeRedundantAbort(f func()) {
 	s.testHookBeforeRedundantAbort = f
 }
 
+// SetTestHookBeforeSweepDelete runs f after the sweep selected a page of
+// tombstoned objects and before it deletes them from S3.
+func (s *Service) SetTestHookBeforeSweepDelete(f func()) {
+	s.testHookBeforeSweepDelete = f
+}
+
 // ValidateS3Concurrency is an export of validateS3Concurrency for tests.
 func ValidateS3Concurrency(n int) error { return validateS3Concurrency(n) }

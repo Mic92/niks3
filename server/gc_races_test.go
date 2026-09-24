@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -487,5 +488,110 @@ func TestSweepRowDeleteSparesResurrectedObject(t *testing.T) {
 
 	if !objectIsLive(t, service, resurrected) {
 		t.Errorf("resurrected row %s was deleted by the sweep", resurrected)
+	}
+}
+
+// pushOneClosure runs a push of closureBody(hash, narKey) as the client does:
+// create the pending closure, upload and register what it is offered, commit.
+// It reports failures as an error so it can run on its own goroutine.
+func pushOneClosure(t *testing.T, service *server.Service, hash, narKey string) error {
+	t.Helper()
+
+	ctx := t.Context()
+
+	w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
+	if w.Code != http.StatusOK {
+		return fmt.Errorf("create pending closure: %d %s", w.Code, w.Body.String())
+	}
+
+	var resp server.PendingClosureResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		return fmt.Errorf("decode pending closure: %w", err)
+	}
+
+	q := pg.New(service.Pool)
+
+	for key := range resp.PendingObjects {
+		if _, err := service.MinioClient.PutObject(ctx, service.Bucket, key, strings.NewReader("new"), 3, minio.PutObjectOptions{}); err != nil {
+			return fmt.Errorf("upload %s: %w", key, err)
+		}
+
+		if err := q.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{Key: key, Refs: []string{}}); err != nil {
+			return fmt.Errorf("register %s: %w", key, err)
+		}
+	}
+
+	id, err := strconv.ParseInt(resp.ID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse closure id: %w", err)
+	}
+
+	if err := q.CommitPendingClosure(ctx, id); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
+}
+
+// A push that re-uploads a tombstoned object between the sweep selecting it
+// and deleting it from S3 must not lose the upload: either the sweep spares
+// the key, or the push is told to upload only once the delete is done.
+func TestSweepSparesObjectReuploadedMidSweep(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	hash := strings.Repeat("p", 32)
+	narKey := "nar/" + strings.Repeat("q", 52) + ".nar.zst"
+
+	// An orphan tombstoned two days ago, past the grace period, still in S3.
+	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+		VALUES ($1, '{}', timezone('UTC', now()) - interval '2 days', timezone('UTC', now()) - interval '2 days')`, narKey)
+	ok(t, err)
+
+	_, err = service.MinioClient.PutObject(ctx, service.Bucket, narKey, strings.NewReader("old"), 3, minio.PutObjectOptions{})
+	ok(t, err)
+
+	pushed := make(chan error, 1)
+	hookRuns := 0
+
+	// The push runs while the sweep is between selecting the page and
+	// deleting it from S3. It is given a second to finish; a push that is
+	// held back until the sweep is done is let run to its end afterwards.
+	service.SetTestHookBeforeSweepDelete(func() {
+		hookRuns++
+		if hookRuns > 1 {
+			return
+		}
+
+		go func() { pushed <- pushOneClosure(t, service, hash, narKey) }()
+
+		select {
+		case err := <-pushed:
+			pushed <- err
+		case <-time.After(time.Second):
+		}
+	})
+
+	st := service.RunGCForTest(24*time.Hour, 24*time.Hour, false)
+	if st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if hookRuns == 0 {
+		t.Fatal("the sweep never selected the tombstoned object")
+	}
+
+	ok(t, <-pushed)
+
+	if !objectIsLive(t, service, narKey) {
+		t.Errorf("%s not live after its closure committed", narKey)
+	}
+
+	if !objectInS3(t, service, narKey) {
+		t.Errorf("%s live in the database but deleted from S3 by the sweep", narKey)
 	}
 }

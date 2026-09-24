@@ -160,9 +160,9 @@ DELETE FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NOT NULL
 `
 
-// Drop rows of objects the sweep removed from S3. Conditional on the
-// tombstone so a row a concurrent push resurrected after re-uploading the
-// object survives.
+// Drop rows of objects the sweep removed from S3. The sweep holds these rows
+// locked since selecting them, so none can have been resurrected; the
+// tombstone condition keeps a live row safe from any other caller.
 func (q *Queries) DeleteTombstonedObjects(ctx context.Context, dollar_1 []string) error {
 	_, err := q.db.Exec(ctx, deleteTombstonedObjects, dollar_1)
 	return err
@@ -271,6 +271,40 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 	return items, nil
 }
 
+const getKeysNotPending = `-- name: GetKeysNotPending :many
+SELECT key FROM objects
+WHERE key = any($1::varchar [])
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pending_objects AS po
+      WHERE po.key = objects.key
+  )
+`
+
+// The keys no pending closure has pending, on a snapshot taken now. The
+// sweep asks again once it holds a page's rows: a push whose pending rows
+// committed after GetObjectsReadyForDeletion's snapshot, and that took its
+// share lock before the sweep's lock, is visible here.
+func (q *Queries) GetKeysNotPending(ctx context.Context, keys []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getKeysNotPending, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMultipartUpload = `-- name: GetMultipartUpload :one
 SELECT pending_closure_id, object_key, upload_id
 FROM multipart_uploads
@@ -319,6 +353,7 @@ WHERE first_deleted_at IS NOT NULL
   )
 ORDER BY key
 LIMIT $3
+FOR UPDATE SKIP LOCKED
 `
 
 type GetObjectsReadyForDeletionParams struct {
@@ -331,6 +366,9 @@ type GetObjectsReadyForDeletionParams struct {
 // Keys pending in an in-flight closure are skipped: the closure protects them
 // until it commits (clearing the tombstone) or is cleaned up. Keyset-paginated
 // on key so a caller can walk the set while rows are being deleted underneath.
+// The rows are locked for the caller's transaction, which the sweep holds
+// until their S3 delete is done; see LockTombstonedObjects. A row someone
+// else holds is left for the next run.
 func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.AfterKey, arg.LimitCount)
 	if err != nil {
@@ -623,6 +661,21 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockTombstonedObjects = `-- name: LockTombstonedObjects :exec
+SELECT key FROM objects
+WHERE key = any($1::varchar [])
+FOR KEY SHARE
+`
+
+// A push about to offer tombstoned objects for upload waits here for a sweep
+// holding any of them. The sweep holds its rows FOR UPDATE from selecting
+// them until their S3 delete is done, so the push's upload cannot land
+// before that delete and be lost to it.
+func (q *Queries) LockTombstonedObjects(ctx context.Context, keys []string) error {
+	_, err := q.db.Exec(ctx, lockTombstonedObjects, keys)
+	return err
 }
 
 const markStaleObjects = `-- name: MarkStaleObjects :execrows

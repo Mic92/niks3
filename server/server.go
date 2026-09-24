@@ -152,6 +152,9 @@ type Service struct {
 	// testHookBeforeRedundantAbort runs before a completed multipart upload
 	// aborts its peers' uploads.
 	testHookBeforeRedundantAbort func()
+	// testHookBeforeSweepDelete runs after the sweep selected a page and
+	// before it deletes the page from S3.
+	testHookBeforeSweepDelete func()
 }
 
 // Close closes the database connection pool.

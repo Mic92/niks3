@@ -258,9 +258,24 @@ func (s *Service) objectsToUpload(
 	// GC may already have removed them from S3, so they are uploaded again.
 	present := make(map[string]bool, len(existingObjects))
 
+	var tombstoned []string
+
 	for _, existingObject := range existingObjects {
-		if !existingObject.DeletedAt.Valid {
+		if existingObject.DeletedAt.Valid {
+			tombstoned = append(tombstoned, existingObject.Key)
+		} else {
 			present[existingObject.Key] = true
+		}
+	}
+
+	// A sweep may be about to delete a tombstoned object from S3; an upload
+	// that lands before that delete would be lost to it while the closure
+	// commits the object as live. Wait for any sweep holding one of them.
+	// Once this returns, a sweep either saw this closure's pending rows and
+	// spared the key, or has finished deleting it.
+	if len(tombstoned) > 0 {
+		if err := pg.New(pool).LockTombstonedObjects(ctx, tombstoned); err != nil {
+			return nil, fmt.Errorf("failed to wait for the sweep: %w", err)
 		}
 	}
 

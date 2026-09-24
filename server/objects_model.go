@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -27,24 +28,93 @@ type sweepBatchResult struct {
 	batchErrors []error
 }
 
-// removeS3Batch deletes one page of keys from S3 and reconciles the database:
-// rows of deleted (or already absent) objects are removed, rows whose S3
-// delete failed keep their tombstone so the next sweep retries them. A failure
-// does not mean the object is still there: when the multi-object delete fails
-// as a request (a 5xx or a connection lost after S3 acted on it) minio reports
-// every key of the page with that error.
+// sweepPage deletes one page of tombstoned objects past the grace period,
+// starting after afterKey. It returns the last key it selected, "" once
+// nothing is left, and the outcome of the page.
 //
-// The page is handed to S3 in a single request right after it was selected,
-// so the window in which a concurrent push can re-upload one of these keys
-// before it is deleted is the latency of that request rather than the time
-// the key would spend buffered behind a thousand others.
-func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *ObjectCleanupStats, onProgress func(ObjectCleanupStats)) sweepBatchResult {
+// The page is one transaction that holds its rows FOR UPDATE from selecting
+// them until their S3 delete is done and the rows are gone. A push about to
+// offer one of these keys for upload waits for that lock
+// (LockTombstonedObjects), so its upload lands after the delete instead of
+// being lost to it. A push whose pending rows committed after the page's
+// snapshot, and whose lock came and went before the sweep's, is caught by
+// asking pending_objects again once the rows are held: such a key is left
+// alone, its closure protects it.
+func (s *Service) sweepPage(
+	ctx context.Context,
+	gracePeriod int32,
+	afterKey string,
+	stats *ObjectCleanupStats,
+	onProgress func(ObjectCleanupStats),
+) (string, sweepBatchResult, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return "", sweepBatchResult{}, fmt.Errorf("failed to begin sweep transaction: %w", err)
+	}
+
+	defer func() {
+		// A no-op once the page committed.
+		if err := tx.Rollback(context.WithoutCancel(ctx)); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			slog.Error("failed to roll back sweep transaction", "error", err)
+		}
+	}()
+
+	queries := pg.New(tx)
+
+	keys, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
+		GracePeriodSeconds: gracePeriod,
+		AfterKey:           afterKey,
+		LimitCount:         DeletionBatchSize,
+	})
+	if err != nil {
+		return "", sweepBatchResult{}, fmt.Errorf("failed to get objects ready for deletion: %w", err)
+	}
+
+	if len(keys) == 0 {
+		return "", sweepBatchResult{}, nil
+	}
+
+	unpending, err := queries.GetKeysNotPending(ctx, keys)
+	if err != nil {
+		return "", sweepBatchResult{}, fmt.Errorf("failed to recheck pending objects: %w", err)
+	}
+
+	var res sweepBatchResult
+	if len(unpending) > 0 {
+		res = s.removeS3Batch(ctx, queries, unpending, stats, onProgress)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", res, fmt.Errorf("failed to commit sweep page: %w", err)
+	}
+
+	return keys[len(keys)-1], res, nil
+}
+
+// removeS3Batch deletes one page of keys from S3 and reconciles the database
+// through queries, the page's transaction: rows of deleted (or already
+// absent) objects are removed, rows whose S3 delete failed keep their
+// tombstone so the next sweep retries them. A failure does not mean the
+// object is still there: when the multi-object delete fails as a request (a
+// 5xx or a connection lost after S3 acted on it) minio reports every key of
+// the page with that error.
+func (s *Service) removeS3Batch(
+	ctx context.Context,
+	queries *pg.Queries,
+	keys []string,
+	stats *ObjectCleanupStats,
+	onProgress func(ObjectCleanupStats),
+) sweepBatchResult {
 	objectCh := make(chan minio.ObjectInfo, len(keys))
 	for _, key := range keys {
 		objectCh <- minio.ObjectInfo{Key: key}
 	}
 
 	close(objectCh)
+
+	if s.testHookBeforeSweepDelete != nil {
+		s.testHookBeforeSweepDelete()
+	}
 
 	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
 	deletedKeys := make([]string, 0, len(keys))
@@ -77,9 +147,7 @@ func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *Objec
 	}
 
 	if len(deletedKeys) > 0 {
-		// Conditional on the tombstone: a push that re-uploaded and registered
-		// one of these keys after the S3 delete owns the row now.
-		if err := pg.New(s.Pool).DeleteTombstonedObjects(ctx, deletedKeys); err != nil {
+		if err := queries.DeleteTombstonedObjects(ctx, deletedKeys); err != nil {
 			slog.Error("failed to delete object rows", "error", err, "count", len(deletedKeys))
 			result.batchErrors = append(result.batchErrors, fmt.Errorf("delete %d object rows: %w", len(deletedKeys), err))
 		}
@@ -92,10 +160,10 @@ func (s *Service) removeS3Batch(ctx context.Context, keys []string, stats *Objec
 // When onProgress is non-nil it is called after every individual
 // mark/delete/fail so callers can expose live counters.
 //
-// Deletion runs page by page: select up to DeletionBatchSize tombstoned keys
-// that are past the grace period and not pending in any closure, delete them
-// from S3, reconcile the database, repeat. Pagination is keyset on the key
-// because the rows are deleted underneath the scan.
+// Deletion runs page by page (sweepPage): select up to DeletionBatchSize
+// tombstoned keys that are past the grace period and not pending in any
+// closure, delete them from S3, reconcile the database, repeat. Pagination is
+// keyset on the key because the rows are deleted underneath the scan.
 func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32, onProgress func(ObjectCleanupStats)) (*ObjectCleanupStats, error) {
 	queries := pg.New(s.Pool)
 	stats := &ObjectCleanupStats{}
@@ -120,24 +188,19 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32, o
 			return stats, err //nolint:wrapcheck // context error is the result
 		}
 
-		keys, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
-			GracePeriodSeconds: gracePeriod,
-			AfterKey:           afterKey,
-			LimitCount:         DeletionBatchSize,
-		})
+		lastKey, res, err := s.sweepPage(ctx, gracePeriod, afterKey, stats, onProgress)
+		s3Errs = append(s3Errs, res.s3Errors...)
+		batchErrs = append(batchErrs, res.batchErrors...)
+
 		if err != nil {
-			return stats, fmt.Errorf("failed to get objects ready for deletion: %w", err)
+			return stats, err
 		}
 
-		if len(keys) == 0 {
+		if lastKey == "" {
 			break
 		}
 
-		afterKey = keys[len(keys)-1]
-
-		res := s.removeS3Batch(ctx, keys, stats, onProgress)
-		s3Errs = append(s3Errs, res.s3Errors...)
-		batchErrs = append(batchErrs, res.batchErrors...)
+		afterKey = lastKey
 	}
 
 	// Prioritize batch errors (database operations) over S3 errors
