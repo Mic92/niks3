@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -371,6 +372,59 @@ nextClosure:
 	return kept, prunedInfos, skipped
 }
 
+// handledPaths returns the paths of pathInfos a push has dealt with for good:
+// those in kept, whose closures go up, and those whose own closure holds a
+// path larger than maxNarSize, which can never go up. A dependency of a
+// skipped closure that fits the limit is neither: a caller that has it queued
+// on its own must still push it.
+func handledPaths(pathInfos, kept map[string]*PathInfo, maxNarSize uint64) []string {
+	handled := make([]string, 0, len(pathInfos))
+
+	// Memoised per path; a path being visited counts as fitting, which only
+	// matters for self-references.
+	const (
+		visiting = iota + 1
+		fits
+		tooLarge
+	)
+
+	state := make(map[string]int, len(pathInfos))
+
+	var unuploadable func(path string) bool
+
+	unuploadable = func(path string) bool {
+		switch state[path] {
+		case visiting, fits:
+			return false
+		case tooLarge:
+			return true
+		}
+
+		info, ok := pathInfos[path]
+		if !ok {
+			return false
+		}
+
+		state[path] = visiting
+		result := info.NarSize > maxNarSize || slices.ContainsFunc(info.References, unuploadable)
+
+		state[path] = fits
+		if result {
+			state[path] = tooLarge
+		}
+
+		return result
+	}
+
+	for path := range pathInfos {
+		if _, ok := kept[path]; ok || (maxNarSize > 0 && unuploadable(path)) {
+			handled = append(handled, path)
+		}
+	}
+
+	return handled
+}
+
 // createPending registers the closures with the server and returns the route
 // to sign and complete them on, plus the pending objects keyed by pending ID.
 // The server only signs narinfos that are pending for that specific ID, so
@@ -557,7 +611,8 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 
 // PushPaths uploads store paths and their closures to the server.
 // It returns the full list of store paths that were part of the uploaded
-// closures (including transitive dependencies), which callers can use to
+// closures (including transitive dependencies), and of those skipped for
+// size the paths that can never be uploaded, which callers can use to
 // prune queues of dependency paths that no longer need separate uploads.
 func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error) {
 	startTime := time.Now()
@@ -606,14 +661,6 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
-	// Collect all closure paths to return to the caller. This includes paths
-	// from closures skipped by the size filter below, so callers (e.g. the
-	// hook queue) treat them as handled instead of retrying forever.
-	closurePaths := make([]string, 0, len(pathInfos))
-	for storePath := range pathInfos {
-		closurePaths = append(closurePaths, storePath)
-	}
-
 	// Skip closures containing paths larger than the server's max NAR size.
 	var maxNarSize uint64
 
@@ -623,10 +670,15 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 		maxNarSize = cfg.MaxNarSize
 	}
 
+	allInfos := pathInfos
+
 	var skipped skippedUploads
 
 	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
 	c.ReportSkippedUploads(ctx, skipped.Paths, skipped.NarBytes)
+
+	// Returned to the caller, which (the hook queue) treats these as done.
+	closurePaths := handledPaths(allInfos, pathInfos, maxNarSize)
 
 	if len(resolvedPaths) == 0 {
 		slog.Warn("All closures skipped by server max NAR size, nothing to upload")
