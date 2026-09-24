@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -418,12 +419,38 @@ func TestService_verifyS3Integrity(t *testing.T) {
 		t.Errorf("expected 0 pending objects without verify_s3, got %d", len(responseWithoutVerify.PendingObjects))
 	}
 
-	// Step 4: Try again WITH verify_s3=true - should detect missing object
+	// Step 4: Try again WITH verify_s3=true - should detect missing object.
+	// While verification waits on S3 the request must hold no pool
+	// connection, or a few verifying pushes of large closures occupy the
+	// whole pool and stall every other handler. The first stat request
+	// samples the pool as it goes out.
+	var heldDuringStat atomic.Int32
+
+	heldDuringStat.Store(-1)
+
+	good := service.MinioClient
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodHead {
+			heldDuringStat.CompareAndSwap(-1, service.Pool.Stat().AcquiredConns())
+		}
+
+		return next.RoundTrip(r)
+	})
+
 	responseWithVerify := createPendingClosure(t, service, map[string]any{
 		"closure":   narinfoKey,
 		"objects":   objects,
 		"verify_s3": true,
 	})
+
+	service.MinioClient = good
+
+	switch held := heldDuringStat.Load(); {
+	case held < 0:
+		t.Fatal("verify_s3 sent no stat request")
+	case held > 0:
+		t.Errorf("%d pool connection(s) held while verification waited on S3", held)
+	}
 
 	// Should detect the missing narinfo and return it as a pending object
 	if len(responseWithVerify.PendingObjects) != 1 {
