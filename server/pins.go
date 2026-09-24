@@ -74,9 +74,15 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run the existence check and upsert in one transaction with the closure
-	// row locked FOR SHARE, so concurrent GC cannot delete the closure in
-	// between (which would surface as an FK violation / 500).
+	// Run the existence check, the upsert and the S3 write in one
+	// transaction. The closure row is locked FOR SHARE, so concurrent GC
+	// cannot delete the closure in between (which would surface as an FK
+	// violation / 500). The pin row is written before the S3 object and
+	// committed after it: the upsert's row lock makes a second writer of the
+	// same name wait until this one has committed, so the last writer to
+	// commit is also the last to write S3, and a failed S3 write rolls the
+	// row back. Written the other way round, two writers could leave S3
+	// serving one closure while the database protects the other from GC.
 	tx, err := s.Pool.Begin(r.Context())
 	if err != nil {
 		slog.Error("Failed to begin transaction", "error", err)
@@ -99,21 +105,6 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write to S3 before committing so the pin is durable even if the DB
-	// write fails. If S3 succeeds but the commit fails, the next create
-	// overwrites the S3 object anyway, and the orphan S3 object is harmless.
-	pinKey := "pins/" + name
-
-	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
-		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
-	if err != nil {
-		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
-		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
-
-		return
-	}
-
 	err = queries.UpsertPin(r.Context(), pg.UpsertPinParams{
 		Name:       name,
 		NarinfoKey: narinfoKey,
@@ -122,6 +113,20 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("Failed to upsert pin", "name", name, "narinfo_key", narinfoKey, "error", err)
 		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// If the commit below fails after this write, S3 is ahead of the
+	// database until the pin is written again.
+	pinKey := "pins/" + name
+
+	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
+		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
+		minio.PutObjectOptions{ContentType: "text/plain"})
+	if err != nil {
+		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
+		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}
