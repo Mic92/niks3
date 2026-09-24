@@ -230,6 +230,13 @@ loop:
 		}
 	}
 
+	// Unless cancelled, the input ended and the last batch goes out once a
+	// slot is free. Waiting for that slot is a blocking point like any other:
+	// a cancellation there leaves the batch unsent, for the branch below.
+	if ctx.Err() == nil {
+		flush()
+	}
+
 	if ctx.Err() != nil {
 		// Whatever was taken or already read but not pushed is not going to
 		// be; say so rather than leave the caller waiting for those lines.
@@ -254,8 +261,6 @@ loop:
 
 		return ctx.Err() //nolint:wrapcheck // the caller's own cancellation
 	}
-
-	flush()
 
 	wg.Wait()
 

@@ -424,97 +424,128 @@ func TestClientSignaturesByStorePath(t *testing.T) {
 // driver that keeps the pipe up would otherwise make Ctrl-C a no-op, and with
 // the signal context still installed the second Ctrl-C too. Paths that were
 // read but not pushed are reported as failed so nothing is left dangling.
+//
+// The same holds once the input has ended: the last partial batch then waits
+// for a slot in the final flush, and a cancellation there must neither drop
+// its paths without a result nor let Run report success.
 func TestStreamPushStopsOnCancel(t *testing.T) {
 	t.Parallel()
 
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
+	for _, tc := range []struct {
+		name       string
+		rest       string // written once the first push holds the only slot
+		closeInput bool
+		want       []string
+	}{
+		{
+			name: "input kept open",
+			rest: "/nix/store/b\n/nix/store/c\n{\"id\":7,\"paths\":[\"/nix/store/d\"]}\n",
+			want: []string{"/nix/store/a", "/nix/store/b", "/nix/store/c", "/nix/store/d"},
+		},
+		{
+			name:       "input closed",
+			rest:       "/nix/store/b\n/nix/store/c\n",
+			closeInput: true,
+			want:       []string{"/nix/store/a", "/nix/store/b", "/nix/store/c"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	pushStarted := make(chan struct{})
+			inR, inW := io.Pipe()
+			outR, outW := io.Pipe()
 
-	var pushes atomic.Int32
+			pushStarted := make(chan struct{})
 
-	push := func(ctx context.Context, _ []string) ([]string, error) {
-		if pushes.Add(1) == 1 {
-			close(pushStarted)
-		}
+			var pushes atomic.Int32
 
-		<-ctx.Done()
+			push := func(ctx context.Context, _ []string) ([]string, error) {
+				if pushes.Add(1) == 1 {
+					close(pushStarted)
+				}
 
-		return nil, ctx.Err()
-	}
+				<-ctx.Done()
 
-	// One slot: the first line's push takes it, the later lines pile up in a
-	// batch that never gets a slot.
-	s := client.NewStreamPusher(push, 1, 10)
+				return nil, ctx.Err()
+			}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+			// One slot: the first line's push takes it, the later lines pile
+			// up in a batch that never gets a slot.
+			s := client.NewStreamPusher(push, 1, 10)
 
-	done := make(chan error, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-	go func() {
-		done <- s.Run(ctx, inR, outW)
+			done := make(chan error, 1)
 
-		_ = outW.Close()
-	}()
+			go func() {
+				done <- s.Run(ctx, inR, outW)
 
-	go func() {
-		_, _ = io.WriteString(inW, "/nix/store/a\n")
-		<-pushStarted
-		_, _ = io.WriteString(inW, "/nix/store/b\n/nix/store/c\n{\"id\":7,\"paths\":[\"/nix/store/d\"]}\n")
-		// The pipe stays open: the driver is still running.
-	}()
+				_ = outW.Close()
+			}()
 
-	<-pushStarted
+			go func() {
+				_, _ = io.WriteString(inW, "/nix/store/a\n")
+				<-pushStarted
+				_, _ = io.WriteString(inW, tc.rest)
 
-	// Give the later lines time to be read into the batch.
-	time.Sleep(50 * time.Millisecond)
-	cancel()
+				// Otherwise the pipe stays open: the driver is still running.
+				if tc.closeInput {
+					_ = inW.Close()
+				}
+			}()
 
-	results := make(map[string]result)
+			<-pushStarted
 
-	sc := bufio.NewScanner(outR)
-	for sc.Scan() {
-		var r result
-		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			t.Fatalf("bad output line %q: %v", sc.Text(), err)
-		}
+			// Give the later lines time to be read into the batch.
+			time.Sleep(50 * time.Millisecond)
+			cancel()
 
-		results[r.Path] = r
-	}
+			results := make(map[string]result)
 
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Run returned %v, want context.Canceled", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after cancellation while stdin stayed open")
-	}
+			sc := bufio.NewScanner(outR)
+			for sc.Scan() {
+				var r result
+				if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+					t.Fatalf("bad output line %q: %v", sc.Text(), err)
+				}
 
-	_ = inW.Close()
+				results[r.Path] = r
+			}
 
-	for _, p := range []string{"/nix/store/a", "/nix/store/b", "/nix/store/c", "/nix/store/d"} {
-		r, ok := results[p]
-		if !ok {
-			t.Errorf("%s: no result reported", p)
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("Run returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run did not return after cancellation")
+			}
 
-			continue
-		}
+			_ = inW.Close()
 
-		if r.Status != "error" {
-			t.Errorf("%s: status %s, want error", p, r.Status)
-		}
-	}
+			for _, p := range tc.want {
+				r, ok := results[p]
+				if !ok {
+					t.Errorf("%s: no result reported", p)
 
-	if r := results["/nix/store/d"]; r.ID != 7 {
-		t.Errorf("request line's path reported under id %d, want 7", r.ID)
-	}
+					continue
+				}
 
-	// Nothing is pushed after cancellation: the queued batch and request
-	// must not take the slot the failed push released.
-	if n := pushes.Load(); n != 1 {
-		t.Errorf("%d pushes, want 1: nothing may be pushed after cancellation", n)
+				if r.Status != "error" {
+					t.Errorf("%s: status %s, want error", p, r.Status)
+				}
+			}
+
+			if r, ok := results["/nix/store/d"]; ok && r.ID != 7 {
+				t.Errorf("request line's path reported under id %d, want 7", r.ID)
+			}
+
+			// Nothing is pushed after cancellation: the queued batch and
+			// request must not take the slot the failed push released.
+			if n := pushes.Load(); n != 1 {
+				t.Errorf("%d pushes, want 1: nothing may be pushed after cancellation", n)
+			}
+		})
 	}
 }
