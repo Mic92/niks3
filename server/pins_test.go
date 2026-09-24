@@ -179,3 +179,46 @@ func TestConcurrentPinUpdatesAgree(t *testing.T) {
 		t.Errorf("pin app protects %q in the database but S3 serves %q", db, s3)
 	}
 }
+
+// A pin whose S3 object could not be removed must keep its row: the object
+// stays public, and without the row its closure is no longer a GC root.
+func TestDeletePinKeepsRowWhenS3Fails(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	hash := strings.Repeat("c", 32)
+	storePath := "/nix/store/" + hash + "-app"
+
+	insertClosureRow(t, service, hash)
+
+	if w := createPin(t.Context(), service, "app", storePath); w.Code != http.StatusNoContent {
+		t.Fatalf("create pin: %d %s", w.Code, w.Body.String())
+	}
+
+	good := service.MinioClient
+	service.MinioClient = brokenS3Client(t)
+
+	w := callPinHandler(t.Context(), service.DeletePinHandler, http.MethodDelete, "app", "")
+
+	service.MinioClient = good
+
+	if w.Code == http.StatusNoContent {
+		t.Errorf("delete answered 204 although S3 could not be reached")
+	}
+
+	db, s3 := pinInBothStores(t, service, "app")
+	if db != s3 {
+		t.Errorf("pin app protects %q in the database but S3 serves %q", db, s3)
+	}
+
+	// With S3 back the delete goes through in both stores.
+	if w := callPinHandler(t.Context(), service.DeletePinHandler, http.MethodDelete, "app", ""); w.Code != http.StatusNoContent {
+		t.Fatalf("delete pin: %d %s", w.Code, w.Body.String())
+	}
+
+	if db, s3 := pinInBothStores(t, service, "app"); db != "" || s3 != "" {
+		t.Errorf("pin app left behind: database %q, S3 %q", db, s3)
+	}
+}
