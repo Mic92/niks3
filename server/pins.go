@@ -193,18 +193,33 @@ func (s *Service) DeletePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queries := pg.New(s.Pool)
-
-	_, err := queries.GetPin(r.Context(), name)
+	// Delete the row and the S3 object in one transaction, and commit only
+	// once S3 is done. Consumers read the S3 object, and a public pin whose
+	// row is gone names a closure GC is free to collect; a later delete would
+	// find no row and never remove the object. The row delete comes first so
+	// its lock holds off a concurrent create of the same name until then.
+	tx, err := s.Pool.Begin(r.Context())
 	if err != nil {
+		slog.Error("Failed to begin transaction", "error", err)
+		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	committed := false
+
+	defer rollbackOnError(r.Context(), &tx, &err, &committed)
+
+	queries := pg.New(tx)
+
+	if _, err = queries.GetPin(r.Context(), name); err != nil {
 		slog.Error("Pin not found", "name", name, "error", err)
 		http.Error(w, "pin not found", http.StatusNotFound)
 
 		return
 	}
 
-	err = queries.DeletePin(r.Context(), name)
-	if err != nil {
+	if err = queries.DeletePin(r.Context(), name); err != nil {
 		slog.Error("Failed to delete pin from database", "name", name, "error", err)
 		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
 
@@ -213,11 +228,21 @@ func (s *Service) DeletePinHandler(w http.ResponseWriter, r *http.Request) {
 
 	pinKey := "pins/" + name
 
-	err = s.MinioClient.RemoveObject(r.Context(), s.Bucket, pinKey, minio.RemoveObjectOptions{})
-	if err != nil {
-		// Log but don't fail - the database is the source of truth
-		slog.Warn("Failed to delete pin from S3", "key", pinKey, "error", err)
+	if err = s.MinioClient.RemoveObject(r.Context(), s.Bucket, pinKey, minio.RemoveObjectOptions{}); err != nil {
+		slog.Error("Failed to delete pin from S3", "key", pinKey, "error", err)
+		http.Error(w, "failed to delete pin from S3: "+err.Error(), http.StatusInternalServerError)
+
+		return
 	}
+
+	if err = tx.Commit(r.Context()); err != nil {
+		slog.Error("Failed to commit pin deletion", "name", name, "error", err)
+		http.Error(w, "failed to delete pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	committed = true
 
 	slog.Info("Deleted pin", "name", name)
 	w.WriteHeader(http.StatusNoContent)
