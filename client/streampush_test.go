@@ -123,51 +123,80 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 	}
 }
 
+// While the only push is busy, lines accumulate into one batch however they
+// arrive: all at once, or one at a time with the input momentarily empty in
+// between. Fixing the batch whenever the input was empty split lines that
+// trickle in during a long push into one push each.
 func TestStreamPushBatchesUnderLoad(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
+	for _, tc := range []struct {
+		name string
+		feed func(w io.Writer)
+	}{
+		{
+			name: "together",
+			feed: func(w io.Writer) {
+				_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
+			},
+		},
+		{
+			name: "one at a time",
+			feed: func(w io.Writer) {
+				for _, p := range []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"} {
+					_, _ = io.WriteString(w, p+"\n")
+					time.Sleep(20 * time.Millisecond)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	var (
-		mu      sync.Mutex
-		batches [][]string
-	)
+			release := make(chan struct{})
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
-		mu.Lock()
+			var (
+				mu      sync.Mutex
+				batches [][]string
+			)
 
-		batches = append(batches, slices.Clone(paths))
-		first := len(batches) == 1
+			push := func(_ context.Context, paths []string) ([]string, error) {
+				mu.Lock()
 
-		mu.Unlock()
+				batches = append(batches, slices.Clone(paths))
+				first := len(batches) == 1
 
-		if first {
-			<-release
-		}
+				mu.Unlock()
 
-		return paths, nil
-	}
+				if first {
+					<-release
+				}
 
-	results := runStream(t, push, 1, 10, func(w io.Writer) {
-		_, _ = io.WriteString(w, "/nix/store/first\n")
-		time.Sleep(50 * time.Millisecond)
+				return paths, nil
+			}
 
-		_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
+			results := runStream(t, push, 1, 10, func(w io.Writer) {
+				_, _ = io.WriteString(w, "/nix/store/first\n")
+				time.Sleep(50 * time.Millisecond)
 
-		time.Sleep(50 * time.Millisecond)
+				tc.feed(w)
 
-		close(release)
-	})
+				time.Sleep(50 * time.Millisecond)
 
-	if len(results) != 4 {
-		t.Fatalf("got %d results, want 4", len(results))
-	}
+				close(release)
+			})
 
-	mu.Lock()
-	defer mu.Unlock()
+			if len(results) != 4 {
+				t.Fatalf("got %d results, want 4", len(results))
+			}
 
-	if len(batches) != 2 || len(batches[1]) != 3 {
-		t.Errorf("batches = %v, want [first] then [x y z]", batches)
+			mu.Lock()
+			defer mu.Unlock()
+
+			if len(batches) != 2 || len(batches[1]) != 3 {
+				t.Errorf("batches = %v, want [first] then [x y z]", batches)
+			}
+		})
 	}
 }
 
