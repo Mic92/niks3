@@ -173,21 +173,38 @@ func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
 		_ = srv.Serve(ctx)
 	}()
 
+	const hash = "0123456789abcdfghijklmnpqrsvwxyz"
+
 	for _, p := range []string{
 		"/etc/shadow",
 		"/nix/store",
 		"/nix/store/",
 		"/nix/store/../../etc/shadow",
-		"/nix/store/aaa/bin/sh",
-		"nix/store/aaa",
-		"/nix/storeX/aaa",
+		"/nix/store/" + hash + "-hello/bin/sh",
+		"nix/store/" + hash + "-hello",
+		"/nix/storeX/" + hash + "-hello",
+		// Directly below the store but not store paths. Each exists or
+		// fails Lstat with something other than "not found", so the
+		// worker would keep it queued and retry it for good.
+		"/nix/store/.links",
+		"/nix/store/aaa-hello",
+		"/nix/store/" + hash,
+		"/nix/store/" + hash + "-",
+		"/nix/store/" + strings.Replace(hash, "a", "e", 1) + "-hello",
+		"/nix/store/" + hash + "-hel\x00lo",
+		"/nix/store/" + hash + "-hel/lo",
+		"/nix/store/" + hash + "-" + strings.Repeat("x", 212),
 	} {
 		if err := hook.SendPaths(socketPath, []string{p}); err == nil {
 			t.Errorf("%q was accepted as a store path", p)
 		}
 	}
 
-	if err := hook.SendPaths(socketPath, []string{"/nix/store/aaa-hello", "/nix/store/bbb-world"}); err != nil {
+	if err := hook.SendPaths(socketPath, []string{
+		"/nix/store/" + hash + "-hello-2.12.1",
+		"/nix/store/" + strings.Repeat("0", 32) + "-world.drv",
+		"/nix/store/" + strings.Repeat("z", 32) + "-" + strings.Repeat("A+-._?=", 30) + "x",
+	}); err != nil {
 		t.Errorf("store paths refused: %v", err)
 	}
 
