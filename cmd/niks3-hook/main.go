@@ -241,21 +241,6 @@ func runServe() error {
 	// Start the upload worker.
 	worker := hook.NewWorker(queue, c.PushPaths, *batchSize, workerNotify)
 	worker.DrainTimeout = *drainTimeout
-	workerDone := make(chan struct{})
-
-	// Not derived from ctx: the worker's final drain must start only after
-	// Serve has returned, i.e. after every accepted connection has enqueued
-	// its paths. Cancelling both at once let the drain find an empty queue
-	// and finish while a send accepted just before the listener closed was
-	// still committing, leaving an acknowledged path behind on exit.
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()
-
-	go func() {
-		defer close(workerDone)
-
-		worker.Run(workerCtx)
-	}()
 
 	// Start the socket server.
 	srv := hook.NewServer(ln, queueFunc)
@@ -297,14 +282,36 @@ func runServe() error {
 		}()
 	}
 
+	serveThenDrain(ctx, srv, worker)
+
+	slog.Info("niks3-hook serve stopped")
+
+	return nil
+}
+
+// serveThenDrain runs the worker, serves the socket until ctx is cancelled,
+// and then waits for the worker's final drain.
+func serveThenDrain(ctx context.Context, srv *hook.Server, worker *hook.Worker) {
+	workerDone := make(chan struct{})
+
+	// Not derived from ctx: the worker's final drain must start only after
+	// Serve has returned, i.e. after every accepted connection has enqueued
+	// its paths. Cancelling both at once let the drain find an empty queue
+	// and finish while a send accepted just before the listener closed was
+	// still committing, leaving an acknowledged path behind on exit.
+	workerCtx, workerCancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer workerCancel()
+
+	go func() {
+		defer close(workerDone)
+
+		worker.Run(workerCtx)
+	}()
+
 	// Serve blocks until context is cancelled.
 	_ = srv.Serve(ctx)
 
 	// Wait for worker to finish draining.
 	workerCancel()
 	<-workerDone
-
-	slog.Info("niks3-hook serve stopped")
-
-	return nil
 }
