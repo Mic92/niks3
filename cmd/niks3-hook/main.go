@@ -173,9 +173,14 @@ func runServe() error {
 		slog.Info("Resuming with pending paths from previous run", "pending", count)
 	}
 
-	// Set up signal handling.
+	// Set up signal handling. Once the first signal has started the shutdown
+	// the handler is released, so that a second one ends the process: the
+	// drain waits for the push in flight, without a bound unless
+	// --drain-timeout is set, and the queue on disk loses nothing if cut short.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	context.AfterFunc(ctx, stop)
 
 	// Create the niks3 client.
 	c, err := cmdutil.NewClient(ctx, *cf.ServerURL, ts, tf, *cf.Debug)
