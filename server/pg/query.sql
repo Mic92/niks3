@@ -142,10 +142,6 @@ DELETE FROM closures
 WHERE closures.updated_at < $1
   AND closures.key NOT IN (SELECT narinfo_key FROM pins);
 
--- name: MarkObjectsAsActive :exec
-UPDATE objects SET deleted_at = NULL
-WHERE key = any($1::varchar []);
-
 -- name: DeleteObjects :exec
 DELETE FROM objects
 WHERE key = any($1::varchar []);

@@ -112,30 +112,12 @@ func handleDeletedObject(ctx context.Context, objectName string, deletedKeys []s
 	return deletedKeys, nil
 }
 
-// handleFailedObject processes a failed deletion and flushes batch if needed.
-func handleFailedObject(ctx context.Context, objectName string, resultErr error, failedKeys []string, queries *pg.Queries) ([]string, []error, error) {
-	s3Errors := []error{fmt.Errorf("failed to remove object %q: %w", objectName, resultErr)}
-	slog.Error("failed to remove object", "object", objectName, "error", resultErr)
-	failedKeys = append(failedKeys, objectName)
-
-	if len(failedKeys) >= DeletionBatchSize {
-		var err error
-
-		failedKeys, err = flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive)
-
-		return failedKeys, s3Errors, err
-	}
-
-	return failedKeys, s3Errors, nil
-}
-
 func (s *Service) removeS3Objects(ctx context.Context,
 	objectCh <-chan minio.ObjectInfo,
 	stats *ObjectCleanupStats,
 	onProgress func(ObjectCleanupStats),
 ) ([]error, []error) {
 	opts := minio.RemoveObjectsOptions{GovernanceBypass: false}
-	failedKeys := make([]string, 0, DeletionBatchSize)
 	deletedKeys := make([]string, 0, DeletionBatchSize)
 
 	queries := pg.New(s.Pool)
@@ -158,17 +140,9 @@ func (s *Service) removeS3Objects(ctx context.Context,
 		}
 
 		if result.Err != nil && minio.ToErrorResponse(result.Err).Code != minio.NoSuchKey {
-			var (
-				newS3Errors []error
-				err         error
-			)
+			slog.Error("failed to remove object", "object", result.ObjectName, "error", result.Err)
 
-			failedKeys, newS3Errors, err = handleFailedObject(ctx, result.ObjectName, result.Err, failedKeys, queries)
-
-			s3Errors = append(s3Errors, newS3Errors...)
-			if err != nil {
-				batchErrors = append(batchErrors, err)
-			}
+			s3Errors = append(s3Errors, fmt.Errorf("failed to remove object %q: %w", result.ObjectName, result.Err))
 
 			stats.FailedCount++
 			notifyProgress()
@@ -187,11 +161,6 @@ func (s *Service) removeS3Objects(ctx context.Context,
 
 		stats.DeletedCount++
 		notifyProgress()
-	}
-
-	// Flush remaining batches
-	if _, err := flushBatch(ctx, failedKeys, queries.MarkObjectsAsActive); err != nil {
-		batchErrors = append(batchErrors, err)
 	}
 
 	if _, err := flushBatch(ctx, deletedKeys, queries.DeleteObjects); err != nil {

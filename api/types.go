@@ -16,7 +16,7 @@ type GCStats struct {
 	// ObjectsDeletedAfterGracePeriod is the number of objects actually removed from S3 and database after the grace period
 	ObjectsDeletedAfterGracePeriod int `json:"objects_deleted_after_grace_period"`
 
-	// ObjectsFailedToDelete is the number of objects that couldn't be deleted from S3 and were marked active again
+	// ObjectsFailedToDelete is the number of objects that couldn't be deleted from S3 and stay tombstoned for the next run
 	ObjectsFailedToDelete int `json:"objects_failed_to_delete"`
 }
 

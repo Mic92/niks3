@@ -2,8 +2,11 @@ package server_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -342,5 +345,62 @@ func TestCreatePendingClosureVerifyS3FailureReleasesConnection(t *testing.T) {
 
 	if after := service.Pool.Stat().AcquiredConns(); after > before {
 		t.Errorf("%d pool connection(s) still acquired after the failed request", after-before)
+	}
+}
+
+// A failed S3 delete must leave the tombstone: reviving the row would leave a
+// live object behind that S3 may already have lost.
+func TestFailedS3DeleteKeepsTombstone(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	hash := strings.Repeat("d", 32)
+	narKey := "nar/" + strings.Repeat("d", 52) + ".nar.zst"
+
+	w := postPendingClosureJSON(t, service, closureBody(hash, narKey))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	for _, key := range []string{hash + ".narinfo", narKey} {
+		_, err := service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
+		ok(t, err)
+	}
+
+	var id int64
+	ok(t, service.Pool.QueryRow(ctx, "SELECT id FROM pending_closures WHERE key=$1", hash+".narinfo").Scan(&id))
+	ok(t, pg.New(service.Pool).CommitPendingClosure(ctx, id))
+
+	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
+	ok(t, err)
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Query().Has("delete") {
+			http.Error(w, "<Error><Code>AccessDenied</Code></Error>", http.StatusForbidden)
+
+			return
+		}
+
+		httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+
+	proxyURL, err := url.Parse(proxy.URL)
+	ok(t, err)
+
+	service.MinioClient = testRustfsServer.ClientWithEndpoint(t, proxyURL.Host)
+
+	time.Sleep(50 * time.Millisecond)
+
+	st := service.RunGCForTest(0, 24*time.Hour, true)
+	if st.Stats.ObjectsFailedToDelete == 0 {
+		t.Fatalf("S3 delete did not fail: %+v", st.Stats)
+	}
+
+	if objectIsLive(t, service, narKey) {
+		t.Errorf("%s is live again after its S3 delete failed", narKey)
 	}
 }
