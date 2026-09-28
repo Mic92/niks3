@@ -13,18 +13,17 @@ BEGIN
         RAISE EXCEPTION 'Push does not exist: id=%', push_id;
     END IF;
 
+    WITH own AS MATERIALIZED (
+        SELECT key, refs FROM pending_objects WHERE pending_closure_id = push_id
+    )
     SELECT d.key INTO missing
     FROM (
         SELECT unnest(push_roots) AS key
         UNION
-        SELECT unnest(refs) FROM pending_objects WHERE pending_closure_id = push_id
+        SELECT unnest(refs) FROM own
     ) AS d
     WHERE NOT EXISTS (SELECT 1 FROM objects o WHERE o.key = d.key AND o.deleted_at IS NULL)
-      AND NOT EXISTS (
-          SELECT 1 FROM pending_objects p
-          WHERE p.pending_closure_id = push_id AND p.key = d.key
-          OFFSET 0 -- generic plans guess 20 pending rows and pick a quadratic loop
-      )
+      AND NOT EXISTS (SELECT 1 FROM own WHERE own.key = d.key)
     LIMIT 1;
 
     IF missing IS NOT NULL THEN
