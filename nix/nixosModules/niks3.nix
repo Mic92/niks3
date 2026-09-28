@@ -552,6 +552,16 @@ in
         '';
       };
 
+      clientMaxBodySize = lib.mkOption {
+        type = lib.types.str;
+        default = "128m";
+        description = ''
+          Sets client_max_body_size. Push requests list every object in the
+          closure, so large closures exceed nginx's 10m default. Matches the
+          server's own limit.
+        '';
+      };
+
       enableACME = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -867,6 +877,7 @@ in
             proxy_connect_timeout ${cfg.nginx.proxyTimeout};
             proxy_send_timeout ${cfg.nginx.proxyTimeout};
             proxy_read_timeout ${cfg.nginx.proxyTimeout};
+            client_max_body_size ${cfg.nginx.clientMaxBodySize};
           ''
           + lib.optionalString cfg.nginx.mtls.enable ''
             # niks3 trusts these headers iff --mtls-proxy-header is set.

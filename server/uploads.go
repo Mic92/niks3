@@ -21,7 +21,8 @@ const (
 	// MaxClosureRequestBody bounds POST /api/pending_closures.
 	// Measured ~190 B/object; 128 MB ≈ 670k objects, ~10× the largest
 	// observed CI bulk upload. Memory guard, not a quota — S3Concurrency
-	// and S3RateLimit bound the actual amplification cost.
+	// and S3RateLimit bound the actual amplification cost. Keep in sync
+	// with nginx.clientMaxBodySize in the NixOS module.
 	MaxClosureRequestBody = 128 << 20
 
 	// maxAPIRequestBody bounds small JSON endpoints (complete, request-parts).
