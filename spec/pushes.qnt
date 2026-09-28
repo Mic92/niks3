@@ -1,22 +1,34 @@
 // -*- mode: Bluespec; -*-
-// POST /api/pushes racing with garbage collection.
-// A key has a DB row (objects table), an S3 object and at most one pending
-// owner (pending_objects). Objects are abstract keys with a fixed ref graph.
-// The clock is coarse: PENDING_AGE is how long a push may stay pending,
-// GRACE how long a tombstone lives before the purge deletes it.
+// Pushes, uploads and GC racing on the objects table, pending_objects and S3.
+// Every step is one transaction or one S3 call; GC steps interleave with pushes.
+// Modelled server: every closure object gets a pending row, the sweep skips
+// pending keys, row-locks what it picked and keeps the tombstone when the S3
+// delete fails. COMMIT_CHECK selects commit_push (new API) over
+// commit_pending_closure (old API).
 
-module pushes {
+module gc_pushes {
+
+  const COMMIT_CHECK: bool
 
   type Row = NoRow | Live | Tomb
-  type Obj = { row: Row, since: int, s3: bool, pend: str }
-  type Phase = Idle | Created | Done | Expired
-  type Client = { phase: Phase, alive: bool, roots: Set[str], at: int }
+  type Obj = { row: Row, first: int, refs: Set[str] }
+  type Phase = Idle | Creating | Created | Done | Expired
+  type Push = {
+    phase: Phase, alive: bool, roots: Set[str], at: int,
+    offered: Set[str],   // keys the server told the client to upload
+    uploaded: Set[str],  // keys the client has PUT to S3
+  }
+  type GcPhase = GIdle | GCleanup | GClosures | GMark | GSweep
+  type Gc = {
+    phase: GcPhase, grace: int,
+    picked: Set[str],    // returned by GetObjectsReadyForDeletion, S3 delete pending
+    s3gone: Set[str],    // deleted from S3, DB delete pending
+  }
 
   pure val CLIENTS: Set[str] = Set("c1", "c2")
   pure val KEYS: Set[str] = Set("a", "b", "c", "d")
-  pure val MAXT: int = 5
+  pure val MAXT: int = 6
   pure val PENDING_AGE: int = 2
-  pure val GRACE: int = 2
 
   pure val REFS: str -> Set[str] = Map(
     "a" -> Set(),
@@ -25,191 +37,253 @@ module pushes {
     "d" -> Set("b", "c"),
   )
 
-  var objs: str -> Obj
-  var clients: str -> Client
-  var closureRoots: Set[str]   // rows of `closures`
+  var rows: str -> Obj
+  var s3: Set[str]
+  var pend: str -> Set[str]
+  var pushes: str -> Push
+  var closureRoots: Set[str]
+  var gc: Gc
   var now: int
-  var puts: str -> int         // S3 uploads per key
-  var purges: str -> int       // S3 deletes per key
 
-  // Reflexive-transitive closure of REFS, written out so no fold is needed.
-  pure val REACH: str -> Set[str] = Map(
-    "a" -> Set("a"),
-    "b" -> Set("a", "b"),
-    "c" -> Set("a", "c"),
-    "d" -> Set("a", "b", "c", "d"),
-  )
-  pure def closureOf(s: Set[str]): Set[str] = KEYS.filter(k => s.exists(r => REACH.get(r).contains(k)))
+  // reflexive-transitive closure; KEYS.size() rounds reach the fixpoint of a DAG
+  pure def expand(seed: Set[str], refsOf: str -> Set[str]): Set[str] =
+    0.to(KEYS.size()).fold(seed, (acc, _) => acc.union(acc.map(k => refsOf.get(k)).flatten()))
 
-  pure val noObj: Obj = { row: NoRow, since: 0, s3: false, pend: "" }
+  pure def closureOf(roots: Set[str]): Set[str] = expand(roots, REFS)
+
+  pure val noObj: Obj = { row: NoRow, first: -1, refs: Set() }
+  pure val newPush: Push = { phase: Idle, alive: true, roots: Set(), at: 0, offered: Set(), uploaded: Set() }
+  pure val idleGc: Gc = { phase: GIdle, grace: 0, picked: Set(), s3gone: Set() }
+
+  val pendingKeys: Set[str] = CLIENTS.map(c => pend.get(c)).flatten()
+
+  // rows the sweep holds locked; writers wait, i.e. their action is disabled
+  val locked: Set[str] = gc.picked.union(gc.s3gone)
 
   action init = all {
-    objs' = KEYS.mapBy(_ => noObj),
-    clients' = CLIENTS.mapBy(_ => { phase: Idle, alive: true, roots: Set(), at: 0 }),
+    rows' = KEYS.mapBy(_ => noObj),
+    s3' = Set(),
+    pend' = CLIENTS.mapBy(_ => Set()),
+    pushes' = CLIENTS.mapBy(_ => newPush),
     closureRoots' = Set(),
+    gc' = idleGc,
     now' = 0,
-    puts' = KEYS.mapBy(_ => 0),
-    purges' = KEYS.mapBy(_ => 0),
   }
 
   action tick = all {
     now < MAXT,
     now' = now + 1,
-    objs' = objs, clients' = clients, closureRoots' = closureRoots, puts' = puts, purges' = purges,
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, gc' = gc,
   }
 
-  // A pending owner that crashed or expired no longer holds its key.
-  def ownerGone(k: str): bool =
-    objs.get(k).pend == "" or clients.get(objs.get(k).pend).phase != Created or not(clients.get(objs.get(k).pend).alive)
-
-  // One transaction: register the push and claim every key under the roots
-  // that is not a live row. Keys another client is still uploading stay theirs.
-  action create(c: str, roots: Set[str]): bool = all {
-    clients.get(c).phase == Idle,
-    clients.get(c).alive,
-    roots != Set(),
-    clients' = clients.set(c, { phase: Created, alive: true, roots: roots, at: now }),
-    objs' = objs.keys().mapBy(k => {
-      val o = objs.get(k)
-      if (closureOf(roots).contains(k) and o.row != Live and ownerGone(k)) { ...o, pend: c } else o
-    }),
-    closureRoots' = closureRoots, now' = now, puts' = puts, purges' = purges,
+  // read half of createPendingClosureInner; started_at is taken here
+  action createBegin(c: str, roots: Set[str], verifyS3: bool): bool = {
+    val cl = closureOf(roots)
+    val present = cl.filter(k => rows.get(k).row == Live and (not(verifyS3) or s3.contains(k)))
+    all {
+      pushes.get(c).phase != Creating,
+      pushes.get(c).phase != Created,
+      pushes.get(c).alive,
+      roots != Set(),
+      pushes' = pushes.set(c, { phase: Creating, alive: true, roots: roots, at: now,
+                                offered: cl.exclude(present), uploaded: Set() }),
+      rows' = rows, s3' = s3, pend' = pend, closureRoots' = closureRoots, gc' = gc, now' = now,
+    }
   }
 
+  // InsertPendingObjects and commit of the create transaction
+  action createFinish(c: str): bool = all {
+    pushes.get(c).phase == Creating,
+    pushes.get(c).alive,
+    // claims live rows too, so locks them
+    not(closureOf(pushes.get(c).roots).exists(k => locked.contains(k))),
+    pend' = pend.set(c, closureOf(pushes.get(c).roots)),
+    pushes' = pushes.set(c, { ...pushes.get(c), phase: Created }),
+    rows' = rows, s3' = s3, closureRoots' = closureRoots, gc' = gc, now' = now,
+  }
+
+  // the presigned URL outlives the push's cleanup
   action upload(c: str, k: str): bool = all {
-    clients.get(c).alive,
-    clients.get(c).phase == Created,
-    objs.get(k).pend == c,
-    not(objs.get(k).s3),
-    objs' = objs.set(k, { ...objs.get(k), s3: true }),
-    puts' = puts.set(k, puts.get(k) + 1),
-    clients' = clients, closureRoots' = closureRoots, now' = now, purges' = purges,
+    pushes.get(c).alive,
+    pushes.get(c).phase == Created or pushes.get(c).phase == Expired,
+    pushes.get(c).offered.contains(k),
+    not(pushes.get(c).uploaded.contains(k)),
+    s3' = s3.union(Set(k)),
+    pushes' = pushes.set(c, { ...pushes.get(c), uploaded: pushes.get(c).uploaded.union(Set(k)) }),
+    rows' = rows, pend' = pend, closureRoots' = closureRoots, gc' = gc, now' = now,
   }
 
-  // Everything under the roots is a live row or uploaded by this push. The
-  // check runs in the commit transaction, so a key that was live at create
-  // time and got collected since makes the commit fail.
+  // RegisterCompletedObject; best effort, refs only if a pending row is left
+  action register(c: str, k: str): bool = all {
+    pushes.get(c).uploaded.contains(k),
+    s3.contains(k),
+    not(locked.contains(k)),
+    rows' = rows.set(k, {
+      row: Live, first: -1,
+      refs: rows.get(k).refs.union(if (pendingKeys.contains(k)) REFS.get(k) else Set()),
+    }),
+    s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, gc' = gc, now' = now,
+  }
+
+  // commit_push: what the push names is live or pending; S3 is not consulted
+  def commitMissing(c: str): bool = {
+    val own = pend.get(c)
+    val declared = pushes.get(c).roots.union(own.map(k => REFS.get(k)).flatten())
+    declared.exists(k => rows.get(k).row != Live and not(own.contains(k)))
+  }
+
   action commit(c: str): bool = all {
-    clients.get(c).phase == Created,
-    clients.get(c).alive,
-    closureOf(clients.get(c).roots).forall(k =>
-      objs.get(k).row == Live or (objs.get(k).pend == c and objs.get(k).s3)),
-    objs' = objs.keys().mapBy(k =>
-      if (objs.get(k).pend == c) { row: Live, since: 0, s3: objs.get(k).s3, pend: "" } else objs.get(k)),
-    closureRoots' = closureRoots.union(clients.get(c).roots),
-    clients' = clients.set(c, { ...clients.get(c), phase: Done }),
-    now' = now, puts' = puts, purges' = purges,
+    pushes.get(c).phase == Created,
+    pushes.get(c).alive,
+    pushes.get(c).offered.subseteq(pushes.get(c).uploaded),
+    not(COMMIT_CHECK and commitMissing(c)),
+    not(pend.get(c).exists(k => locked.contains(k))),
+    rows' = KEYS.mapBy(k =>
+      if (pend.get(c).contains(k)) { row: Live, first: -1, refs: rows.get(k).refs.union(REFS.get(k)) }
+      else rows.get(k)),
+    pend' = pend.set(c, Set()),
+    pushes' = pushes.set(c, { ...pushes.get(c), phase: Done }),
+    closureRoots' = closureRoots.union(pushes.get(c).roots),
+    s3' = s3, gc' = gc, now' = now,
   }
 
   action crash(c: str): bool = all {
-    clients.get(c).alive,
-    clients' = clients.set(c, { ...clients.get(c), alive: false }),
-    objs' = objs, closureRoots' = closureRoots, now' = now, puts' = puts, purges' = purges,
+    pushes.get(c).alive,
+    pushes' = pushes.set(c, { ...pushes.get(c), alive: false }),
+    rows' = rows, s3' = s3, pend' = pend, closureRoots' = closureRoots, gc' = gc, now' = now,
   }
 
-  // CleanupPendingClosures: pending rows of an old push become tombstones
-  // unless the object already has a row.
-  action cleanupPending(c: str): bool = all {
-    clients.get(c).phase == Created,
-    now - clients.get(c).at >= PENDING_AGE,
-    clients' = clients.set(c, { ...clients.get(c), phase: Expired }),
-    objs' = objs.keys().mapBy(k => {
-      val o = objs.get(k)
-      if (o.pend == c) { row: if (o.row == NoRow) Tomb else o.row, since: if (o.row == NoRow) now else o.since, s3: o.s3, pend: "" }
-      else o
-    }),
-    closureRoots' = closureRoots, now' = now, puts' = puts, purges' = purges,
+  // CleanupPendingClosures; tombstones are dated at the cutoff, so sweepable at once
+  def oldPushes: Set[str] =
+    CLIENTS.filter(c => pushes.get(c).phase == Created and now - pushes.get(c).at >= PENDING_AGE)
+
+  action cleanup(nextGc: Gc): bool = all {
+    rows' = KEYS.mapBy(k =>
+      if (rows.get(k).row == NoRow and oldPushes.exists(c => pend.get(c).contains(k)))
+        { row: Tomb, first: now - PENDING_AGE, refs: REFS.get(k) }
+      else rows.get(k)),
+    pend' = CLIENTS.mapBy(c => if (oldPushes.contains(c)) Set() else pend.get(c)),
+    pushes' = CLIENTS.mapBy(c =>
+      if (oldPushes.contains(c)) { ...pushes.get(c), phase: Expired } else pushes.get(c)),
+    s3' = s3, closureRoots' = closureRoots, gc' = nextGc, now' = now,
   }
 
-  // cleanupClosureOlderThan
-  action dropClosure(r: str): bool = all {
-    closureRoots.contains(r),
-    closureRoots' = closureRoots.exclude(Set(r)),
-    objs' = objs, clients' = clients, now' = now, puts' = puts, purges' = purges,
+  // cleanup outside a GC run
+  action cleanupStandalone: bool = all { oldPushes != Set(), cleanup(gc) }
+
+  action gcStart(force: bool): bool = all {
+    gc.phase == GIdle,
+    gc' = { ...idleGc, phase: GCleanup, grace: if (force) 0 else PENDING_AGE },
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
   }
 
-  // Every GC run starts with CleanupPendingClosures, so mark and purge only
-  // happen once no push is older than PENDING_AGE.
-  val pendingCleaned: bool =
-    CLIENTS.forall(c => clients.get(c).phase != Created or now - clients.get(c).at < PENDING_AGE)
+  action gcCleanup: bool = all { gc.phase == GCleanup, cleanup({ ...gc, phase: GClosures }) }
 
-  // MarkStaleObjects: not reachable from a closure and no pending row
-  action markStale(k: str): bool = all {
-    pendingCleaned,
-    objs.get(k).row == Live,
-    not(closureOf(closureRoots).contains(k)),
-    objs.get(k).pend == "",
-    objs' = objs.set(k, { ...objs.get(k), row: Tomb, since: now }),
-    clients' = clients, closureRoots' = closureRoots, now' = now, puts' = puts, purges' = purges,
+  // cleanupClosureOlderThan (pins ignored)
+  action gcClosures(dropped: Set[str]): bool = all {
+    gc.phase == GClosures,
+    dropped.subseteq(closureRoots),
+    closureRoots' = closureRoots.exclude(dropped),
+    gc' = { ...gc, phase: GMark },
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, now' = now,
   }
 
-  // GetObjectsReadyForDeletion + RemoveObjects + DeleteObjects
-  action purge(k: str): bool = all {
-    pendingCleaned,
-    objs.get(k).row == Tomb,
-    now - objs.get(k).since >= GRACE,
-    objs' = objs.set(k, { ...objs.get(k), row: NoRow, s3: false }),
-    purges' = purges.set(k, purges.get(k) + 1),
-    clients' = clients, closureRoots' = closureRoots, now' = now, puts' = puts,
+  // MarkStaleObjects, one statement; reachability walks tombstones too
+  action gcMark: bool = {
+    val reach = expand(closureRoots.filter(k => rows.get(k).row != NoRow), KEYS.mapBy(k => rows.get(k).refs))
+    all {
+      gc.phase == GMark,
+      rows' = KEYS.mapBy(k =>
+        if (rows.get(k).row == Live and not(reach.contains(k)) and not(pendingKeys.contains(k)))
+          { ...rows.get(k), row: Tomb, first: if (rows.get(k).first >= 0) rows.get(k).first else now }
+        else rows.get(k)),
+      gc' = { ...gc, phase: GSweep },
+      s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
+    }
+  }
+
+  // GetObjectsReadyForDeletion
+  action sweepPick(k: str): bool = all {
+    gc.phase == GSweep,
+    rows.get(k).row == Tomb,
+    rows.get(k).first >= 0,
+    now - rows.get(k).first >= gc.grace,
+    not(pendingKeys.contains(k)),
+    not(locked.contains(k)),
+    gc' = { ...gc, picked: gc.picked.union(Set(k)) },
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
+  }
+
+  // RemoveObjectsWithResult; NoSuchKey is success, failure keeps the tombstone
+  action sweepS3(k: str, ok: bool): bool = all {
+    gc.picked.contains(k),
+    if (ok) all {
+      s3' = s3.exclude(Set(k)),
+      gc' = { ...gc, picked: gc.picked.exclude(Set(k)), s3gone: gc.s3gone.union(Set(k)) },
+    } else all {
+      s3' = s3,
+      gc' = { ...gc, picked: gc.picked.exclude(Set(k)) },
+    },
+    rows' = rows, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
+  }
+
+  // DeleteObjects, by key regardless of the row's state
+  action sweepDb(k: str): bool = all {
+    gc.s3gone.contains(k),
+    rows' = rows.set(k, noObj),
+    gc' = { ...gc, s3gone: gc.s3gone.exclude(Set(k)) },
+    s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
+  }
+
+  action gcFinish: bool = all {
+    gc.phase == GSweep,
+    gc.picked == Set(), gc.s3gone == Set(),
+    gc' = idleGc,
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
+  }
+
+  // process death or cancelled context: work lists are lost, locks released
+  action gcAbort: bool = all {
+    gc.phase != GIdle,
+    gc' = idleGc,
+    rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
   }
 
   action step = any {
     tick,
-    nondet c = CLIENTS.oneOf() nondet roots = KEYS.powerset().oneOf() create(c, roots),
+    nondet c = CLIENTS.oneOf() nondet roots = KEYS.powerset().oneOf() nondet v = Set(true, false).oneOf()
+      createBegin(c, roots, v),
+    nondet c = CLIENTS.oneOf() createFinish(c),
     nondet c = CLIENTS.oneOf() nondet k = KEYS.oneOf() upload(c, k),
+    nondet c = CLIENTS.oneOf() nondet k = KEYS.oneOf() register(c, k),
     nondet c = CLIENTS.oneOf() commit(c),
     nondet c = CLIENTS.oneOf() crash(c),
-    nondet c = CLIENTS.oneOf() cleanupPending(c),
-    nondet r = KEYS.oneOf() dropClosure(r),
-    nondet k = KEYS.oneOf() markStale(k),
-    nondet k = KEYS.oneOf() purge(k),
+    cleanupStandalone,
+    nondet f = Set(true, false).oneOf() gcStart(f),
+    gcCleanup,
+    nondet d = closureRoots.powerset().oneOf() gcClosures(d),
+    gcMark,
+    nondet k = KEYS.oneOf() sweepPick(k),
+    nondet k = KEYS.oneOf() nondet ok = Set(true, false).oneOf() sweepS3(k, ok),
+    nondet k = KEYS.oneOf() sweepDb(k),
+    gcFinish,
+    gcAbort,
   }
 
-  // every closure row has all its objects in the DB and in S3
   val closureComplete: bool =
-    closureOf(closureRoots).forall(k => objs.get(k).row == Live and objs.get(k).s3)
+    closureOf(closureRoots).forall(k => rows.get(k).row == Live and s3.contains(k))
 
-  val noDuplicateUploads: bool =
-    KEYS.forall(k => puts.get(k) <= 1 + purges.get(k))
+  val liveBacked: bool = KEYS.forall(k => rows.get(k).row != Live or s3.contains(k))
 
-  val safe: bool = closureComplete and noDuplicateUploads
+  val safe: bool = closureComplete and liveBacked
+}
 
-  // Inductive strengthening of `safe`. The clock plays no part: the commit
-  // re-check alone keeps closures complete.
-  // Membership form: Apalache needs every variable constrained by `in` to
-  // start the inductive step from an arbitrary state.
-  pure val ROWS: Set[Row] = Set(NoRow, Live, Tomb)
-  pure val TIMES: Set[int] = 0.to(MAXT)
-  pure val PENDS: Set[str] = CLIENTS.union(Set(""))
-  pure val OBJS: Set[Obj] =
-    ROWS.map(r => TIMES.map(t => Set(true, false).map(b => PENDS.map(p => { row: r, since: t, s3: b, pend: p }))))
-        .flatten().flatten().flatten()
-  pure val PHASES: Set[Phase] = Set(Idle, Created, Done, Expired)
-  pure val CLS: Set[Client] =
-    PHASES.map(ph => Set(true, false).map(al => KEYS.powerset().map(r => TIMES.map(t =>
-      { phase: ph, alive: al, roots: r, at: t }))))
-      .flatten().flatten().flatten()
+// POST /api/pushes
+module new_api {
+  import gc_pushes(COMMIT_CHECK = true).*
+}
 
-  val typeOk: bool = all {
-    objs.in(KEYS.setOfMaps(OBJS)),
-    clients.in(CLIENTS.setOfMaps(CLS)),
-    closureRoots.in(KEYS.powerset()),
-    puts.in(KEYS.setOfMaps(Nat)),
-    purges.in(KEYS.setOfMaps(Nat)),
-    now.in(TIMES),
-  }
-
-  // a pending key belongs to a running push and lies under its roots
-  val pendOk: bool = KEYS.forall(k => {
-    val p = objs.get(k).pend
-    p == "" or (clients.get(p).phase == Created and closureOf(clients.get(p).roots).contains(k))
-  })
-
-  val liveHasS3: bool = KEYS.forall(k => objs.get(k).row != Live or objs.get(k).s3)
-
-  // puts and purges pair up: an upload needs s3 to be false, a purge clears it
-  val putsBound: bool =
-    KEYS.forall(k => puts.get(k) <= purges.get(k) + (if (objs.get(k).s3) 1 else 0))
-
-  val inv: bool = typeOk and pendOk and liveHasS3 and putsBound and closureComplete
+// POST /api/pending_closures
+module old_api {
+  import gc_pushes(COMMIT_CHECK = false).*
 }
