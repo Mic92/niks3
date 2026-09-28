@@ -13,27 +13,17 @@ BEGIN
         RAISE EXCEPTION 'Push does not exist: id=%', push_id;
     END IF;
 
-    -- Objects the push left out because they were live when it started may
-    -- have been collected since. Everything under the roots must be a live
-    -- row or one of the push's own pending objects.
-    WITH RECURSIVE reach AS (
+    SELECT d.key INTO missing
+    FROM (
         SELECT unnest(push_roots) AS key
         UNION
-        SELECT unnest(o.refs)
-        FROM reach r
-        CROSS JOIN LATERAL (
-            SELECT refs FROM objects WHERE key = r.key AND deleted_at IS NULL
-            UNION ALL
-            SELECT refs FROM pending_objects
-            WHERE pending_closure_id = push_id AND key = r.key
-        ) o
-    )
-    SELECT r.key INTO missing
-    FROM reach r
-    WHERE NOT EXISTS (SELECT 1 FROM objects o WHERE o.key = r.key AND o.deleted_at IS NULL)
+        SELECT unnest(refs) FROM pending_objects WHERE pending_closure_id = push_id
+    ) AS d
+    WHERE NOT EXISTS (SELECT 1 FROM objects o WHERE o.key = d.key AND o.deleted_at IS NULL)
       AND NOT EXISTS (
           SELECT 1 FROM pending_objects p
-          WHERE p.pending_closure_id = push_id AND p.key = r.key
+          WHERE p.pending_closure_id = push_id AND p.key = d.key
+          OFFSET 0 -- generic plans guess 20 pending rows and pick a quadratic loop
       )
     LIMIT 1;
 

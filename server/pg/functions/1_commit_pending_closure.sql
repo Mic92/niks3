@@ -38,7 +38,11 @@ BEGIN
         size = COALESCE(objects.size, EXCLUDED.size),
         -- Resurrect previously tombstoned objects
         deleted_at = NULL,
-        first_deleted_at = NULL;
+        first_deleted_at = NULL
+    -- most rows are live already; the conflict still locks them
+    WHERE objects.deleted_at IS NOT NULL
+        OR NOT (objects.refs @> EXCLUDED.refs)
+        OR (objects.size IS NULL AND EXCLUDED.size IS NOT NULL);
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;

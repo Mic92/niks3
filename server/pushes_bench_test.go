@@ -94,3 +94,44 @@ func BenchmarkCommitPush(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkCommitPushShielded is BenchmarkCommitPush with a pending row per object.
+func BenchmarkCommitPushShielded(b *testing.B) {
+	for _, unrelated := range []int{1_000, 20_000, 95_000} {
+		b.Run(fmt.Sprintf("cache=%d", unrelated*2), func(b *testing.B) {
+			service, root := seedCache(b, unrelated)
+
+			defer service.Close()
+
+			b.ResetTimer()
+
+			for range b.N {
+				b.StopTimer()
+
+				var id int64
+
+				ok(b, service.Pool.QueryRow(b.Context(),
+					`INSERT INTO pending_closures (key, started_at, roots)
+					 VALUES ($1::varchar, $2, ARRAY[$1::varchar]) RETURNING id`, root, time.Now().UTC()).Scan(&id))
+
+				lines := strings.Split(strings.TrimSpace(nixosClosure), "\n")
+				keys := make([]string, 0, 2*len(lines))
+
+				for _, line := range lines {
+					hash := strings.Fields(line)[0]
+					keys = append(keys, hash+".narinfo", narKeyFor(hash))
+				}
+
+				_, err := service.Pool.Exec(b.Context(),
+					`INSERT INTO pending_objects (pending_closure_id, key, refs, size)
+					 SELECT $1, key, refs, size FROM objects WHERE key = any($2::varchar[])`, id, keys)
+				ok(b, err)
+
+				b.StartTimer()
+
+				_, err = service.Pool.Exec(b.Context(), "SELECT commit_push($1)", id)
+				ok(b, err)
+			}
+		})
+	}
+}
