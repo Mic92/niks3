@@ -360,6 +360,9 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 
 		slog.Warn("CompleteMultipartUpload errored but object exists; treating as success",
 			"error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID)
+
+		// The upload may still be open and its row goes away below.
+		s.abortMultipartUpload(r.Context(), coreClient, req.ObjectKey, req.UploadID)
 	} else {
 		s.S3RateLimiter.RecordSuccess()
 	}

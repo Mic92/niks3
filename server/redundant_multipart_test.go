@@ -167,4 +167,17 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 		handler:       service.CompleteMultipartUploadHandler,
 		checkResponse: &success,
 	})
+
+	// The row is gone, so the upload must have been aborted.
+	var rows int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&rows))
+
+	if rows != 0 {
+		t.Errorf("multipart upload row still present after completion (rows=%d)", rows)
+	}
+
+	coreClient := minio.Core{Client: service.MinioClient}
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, uploadID, 0, 10); err == nil {
+		t.Error("errored multipart upload left open after its row was dropped")
+	}
 }
