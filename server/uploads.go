@@ -556,7 +556,7 @@ func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool,
 
 // abortRedundantMultipartUploads aborts multipart uploads other pending_closures
 // opened for objectKey, excluding keepUploadID. Best-effort: the winning upload
-// already succeeded and stragglers are also reaped by cleanupPendingClosures.
+// already succeeded, and a failed abort keeps its row for cleanupPendingClosures.
 func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey, keepUploadID string) {
 	queries := pg.New(s.Pool)
 
@@ -570,13 +570,20 @@ func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey,
 		return
 	}
 
+	if s.testHookBeforeRedundantAbort != nil {
+		s.testHookBeforeRedundantAbort()
+	}
+
 	coreClient := minio.Core{Client: s.MinioClient}
 
 	for _, uploadID := range uploadIDs {
 		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); err != nil {
 			if minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
-				slog.Warn("Failed to abort redundant multipart upload",
+				// Keep the row so cleanupPendingClosures can retry.
+				slog.Warn("Failed to abort redundant multipart upload, keeping its row",
 					"object_key", objectKey, "upload_id", uploadID, "error", err)
+
+				continue
 			}
 		}
 

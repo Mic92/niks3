@@ -107,3 +107,8 @@ func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
 func (s *Service) SetTestHookAfterSweepSelect(f func()) {
 	s.testHookAfterSweepSelect = f
 }
+
+// SetTestHookBeforeRedundantAbort runs f before peers' uploads are aborted.
+func (s *Service) SetTestHookBeforeRedundantAbort(f func()) {
+	s.testHookBeforeRedundantAbort = f
+}
