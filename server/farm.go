@@ -21,6 +21,13 @@ var (
 	startedAt      = time.Now()
 )
 
+// leadPingTimeoutFloor keeps a busy database from failing a healthy ping.
+const leadPingTimeoutFloor = time.Second
+
+// leadPingTimeout bounds the leader's ping. A silently dead connection would
+// otherwise hang it for about fifteen minutes, with the stream still open.
+func leadPingTimeout() time.Duration { return max(leadHeartbeat/2, leadPingTimeoutFloor) }
+
 // tryLead takes the session advisory lock on a dedicated connection, so the
 // lock lives exactly as long as that connection. A nil conn means someone
 // else leads.
@@ -40,13 +47,26 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
 	return conn, nil
 }
 
+// pingLead checks that the lock connection answers within leadPingTimeout.
+func pingLead(ctx context.Context, conn *pgxpool.Conn) error {
+	pingCtx, cancel := context.WithTimeout(ctx, leadPingTimeout())
+	defer cancel()
+
+	err := conn.Ping(pingCtx)
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("lead: lock connection lost", "error", err)
+	}
+
+	return err //nolint:wrapcheck
+}
+
 // LeadHandler elects the build farm scheduler. Each candidate keeps one
 // NDJSON stream open and is told every heartbeat whether it leads.
 // Leadership ends when the stream, this process or Postgres goes away.
 //
-// A leader whose connection died keeps leading until its next ping fails, but
-// the lock is already free. A new holder therefore stays quiet for one
-// heartbeat, or the two leaders would overlap.
+// A leader whose connection died keeps leading until its ping fails, but the
+// lock is already free. A new holder waits a heartbeat plus the ping timeout
+// before announcing, so the two leaders never overlap.
 func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -79,8 +99,8 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		conn *pgxpool.Conn
-		// fresh marks the heartbeat that took the lock, which still says false.
-		fresh bool
+		// announceAt is the earliest time a new lock holder may say true.
+		announceAt time.Time
 	)
 
 	defer func() { //nolint:contextcheck // must close even though ctx is done
@@ -92,8 +112,6 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		fresh = false
-
 		if conn == nil && !time.Now().Before(holdBack) {
 			var err error
 			if conn, err = tryLead(ctx, s.Pool); err != nil {
@@ -103,15 +121,15 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if conn != nil {
-				fresh = true
+				announceAt = time.Now().Add(leadHeartbeat + leadPingTimeout())
 
 				slog.Info("lead: acquired", "remote", r.RemoteAddr)
 			}
-		} else if conn != nil && conn.Ping(ctx) != nil {
+		} else if conn != nil && pingLead(ctx, conn) != nil {
 			return
 		}
 
-		if err := enc.Encode(api.LeadStatus{Lead: conn != nil && !fresh}); err != nil {
+		if err := enc.Encode(api.LeadStatus{Lead: conn != nil && !time.Now().Before(announceAt)}); err != nil {
 			return
 		}
 

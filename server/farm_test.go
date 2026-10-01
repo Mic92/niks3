@@ -3,16 +3,24 @@ package server_test
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type pipeWriter struct {
@@ -67,11 +75,13 @@ func (l *leadStream) next() api.LeadStatus {
 	return api.LeadStatus{}
 }
 
-// until skips heartbeats until want matches.
+// until skips heartbeats until want matches, for at most ten seconds.
 func (l *leadStream) until(want api.LeadStatus) {
 	l.t.Helper()
 
-	for range 20 {
+	deadline := time.Now().Add(10 * time.Second)
+
+	for time.Now().Before(deadline) {
 		if l.next() == want {
 			return
 		}
@@ -92,9 +102,13 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 	defer s.Close()
 
 	a := openLead(t, s)
+	defer a.close()
+
 	a.until(api.LeadStatus{Lead: true})
 
 	b := openLead(t, s)
+	defer b.close()
+
 	b.until(api.LeadStatus{Lead: false})
 
 	// Still exactly one leader a few beats later.
@@ -108,15 +122,15 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 		}
 	}
 
-	// The old leader notices a lost connection on its next heartbeat, so the
-	// new one must not announce sooner, or the two overlap.
+	// The old leader needs a heartbeat, or a ping timeout, to notice the loss.
+	// The new one must not announce before then.
 	released := time.Now()
 
 	a.close()
 	b.until(api.LeadStatus{Lead: true})
 
-	if since := time.Since(released); since < server.LeadHeartbeat() {
-		t.Fatalf("b announced leadership %s after a released it, within one heartbeat (%s)", since, server.LeadHeartbeat())
+	if since, bound := time.Since(released), server.LeadHeartbeat()+server.LeadPingTimeout(); since < bound {
+		t.Fatalf("b announced leadership %s after a released it, within a heartbeat and a ping timeout (%s)", since, bound)
 	}
 
 	c := openLead(t, s)
@@ -192,5 +206,135 @@ func TestLeadEndsOnShutdown(t *testing.T) {
 	case <-a.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream survived shutdown")
+	}
+}
+
+// cutProxy forwards TCP to the test Postgres until cut, then swallows traffic
+// without closing anything, as a crashed host or a partition does.
+type cutProxy struct {
+	ln  net.Listener
+	cut atomic.Bool
+
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func startCutProxy(t *testing.T) *cutProxy {
+	t.Helper()
+
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	ok(t, err)
+
+	p := &cutProxy{ln: ln}
+	// Postgres names its socket after PGPORT.
+	port := cmp.Or(os.Getenv("PGPORT"), "5432")
+	socket := filepath.Join(testPostgresServer.tempDir, ".s.PGSQL."+port)
+
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			var d net.Dialer
+
+			upstream, err := d.DialContext(t.Context(), "unix", socket)
+			if err != nil {
+				_ = client.Close()
+
+				continue
+			}
+
+			p.mu.Lock()
+			p.conns = append(p.conns, client, upstream)
+			p.mu.Unlock()
+
+			go p.pipe(upstream, client)
+			go p.pipe(client, upstream)
+		}
+	}()
+
+	return p
+}
+
+func (p *cutProxy) pipe(dst io.Writer, src io.Reader) {
+	buf := make([]byte, 32<<10)
+
+	for {
+		n, err := src.Read(buf)
+		if n > 0 && !p.cut.Load() {
+			if _, err := dst.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p *cutProxy) close() {
+	_ = p.ln.Close()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, c := range p.conns {
+		_ = c.Close()
+	}
+}
+
+// A leader's lock connection can die silently, and the lock with it. The old
+// stream must end before the successor announces.
+func TestLeadEndsWhenItsConnectionHangs(t *testing.T) { //nolint:paralleltest // lengthens the heartbeat
+	defer server.SetLeadHeartbeat(200 * time.Millisecond)()
+
+	s := createTestService(t)
+	defer s.Close()
+
+	proxy := startCutProxy(t)
+
+	cfg := s.Pool.Config().ConnConfig
+	viaProxy, err := pgxpool.New(t.Context(),
+		fmt.Sprintf("postgres://%s@%s/%s?sslmode=disable", cfg.User, proxy.ln.Addr(), cfg.Database))
+	ok(t, err)
+
+	defer viaProxy.Close()
+
+	a := openLead(t, &server.Service{Pool: viaProxy})
+	defer a.close()
+	// Unblock a leader stuck on the dead connection before waiting for it.
+	defer proxy.close()
+
+	a.until(api.LeadStatus{Lead: true})
+
+	b := openLead(t, s)
+	defer b.close()
+
+	b.until(api.LeadStatus{Lead: false})
+
+	proxy.cut.Store(true)
+
+	// Postgres drops the leader's session and lock without telling the leader.
+	var terminated bool
+	ok(t, s.Pool.QueryRow(t.Context(), `
+		SELECT coalesce(bool_and(pg_terminate_backend(pid, 5000)), false) FROM pg_locks
+		WHERE locktype = 'advisory'
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&terminated))
+
+	if !terminated {
+		t.Fatal("leader's session was not terminated")
+	}
+
+	b.until(api.LeadStatus{Lead: true})
+
+	select {
+	case <-a.done:
+	default:
+		t.Fatal("two leaders: the old leader's stream is still open after its successor announced")
 	}
 }
