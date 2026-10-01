@@ -94,8 +94,9 @@ WHERE key = $1
 LIMIT 1;
 
 -- name: CleanupPendingClosures :execrows
+-- Pass the cutoff that GetOldMultipartUploads used.
 WITH cutoff_time AS (
-    SELECT timezone('UTC', now()) - interval '1 second' * $1::int AS time
+    SELECT sqlc.arg(cutoff)::timestamp AS time
 ),
 
 -- Skips closures being committed, which hold their row.
@@ -179,7 +180,7 @@ VALUES ($1, $2, $3);
 SELECT upload_id, object_key
 FROM multipart_uploads mu
 JOIN pending_closures pc ON mu.pending_closure_id = pc.id
-WHERE pc.started_at < timezone('UTC', now()) - interval '1 second' * $1::int;
+WHERE pc.started_at < sqlc.arg(cutoff)::timestamp;
 
 -- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads

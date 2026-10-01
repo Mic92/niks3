@@ -143,6 +143,100 @@ func TestMultipartUploadAbortedWhenCancelledBeforeRecorded(t *testing.T) {
 	}
 }
 
+// Cleanup must use one cutoff for the aborts and the delete, or a closure that
+// ages in between loses its row with its upload still open.
+func TestPendingCleanupUsesOneCutoff(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	push := func(hash string) (string, string) {
+		t.Helper()
+
+		narKey := narKeyFor(hash)
+		resp := createPendingClosure(t, service, map[string]any{
+			"closure": hash + ".narinfo",
+			"objects": []map[string]any{
+				{"key": hash + ".narinfo", "type": "narinfo", "refs": []string{narKey}},
+				{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
+			},
+		})
+
+		return narKey, resp.PendingObjects[narKey].MultipartInfo.UploadID
+	}
+
+	oldHash, youngHash := strings.Repeat("k", 32), strings.Repeat("m", 32)
+	oldNar, oldUpload := push(oldHash)
+	youngNar, youngUpload := push(youngHash)
+
+	// The young closure crosses the cutoff while the old upload's abort runs.
+	const abortDelay = 6 * time.Second
+
+	_, err := service.Pool.Exec(ctx, `UPDATE pending_closures SET started_at = CASE key
+		WHEN $1 THEN timezone('UTC', now()) - interval '2 hours'
+		ELSE timezone('UTC', now()) - interval '1 hour' + interval '4 seconds' END`, oldHash+".narinfo")
+	ok(t, err)
+
+	good := service.MinioClient
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			select {
+			case <-time.After(abortDelay):
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+
+		return next.RoundTrip(r)
+	})
+
+	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	w := httptest.NewRecorder()
+	service.CleanupPendingClosuresHandler(w,
+		httptest.NewRequestWithContext(cleanupCtx, http.MethodDelete, "/api/pending_closures?older-than=1h", nil))
+	httpOkDepth(t, w)
+
+	service.MinioClient = good
+
+	uploadRows := func(uploadID string) int {
+		var n int
+		ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", uploadID).Scan(&n))
+
+		return n
+	}
+
+	coreClient := minio.Core{Client: service.MinioClient}
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, oldNar, oldUpload, 0, 10); err == nil {
+		t.Error("the old closure's upload was not aborted")
+	}
+
+	if n := uploadRows(oldUpload); n != 0 {
+		t.Errorf("the old closure's upload row survived its abort (rows=%d)", n)
+	}
+
+	// It was not selected for abort, so it must not be deleted either.
+	if n := uploadRows(youngUpload); n != 1 {
+		t.Fatalf("the young closure's upload row was dropped although its upload was never aborted (rows=%d)", n)
+	}
+
+	// Once it has really aged out, cleanup reaps it.
+	testRequest(t, &TestRequest{
+		method:  "DELETE",
+		path:    "/api/pending_closures?older-than=0s",
+		handler: service.CleanupPendingClosuresHandler,
+	})
+
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, youngNar, youngUpload, 0, 10); err == nil {
+		t.Error("the young closure's upload was not aborted by the later cleanup")
+	}
+}
+
 // roundTripFunc adapts a function to http.RoundTripper.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
