@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 
@@ -104,12 +105,15 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	s.S3RateLimiter.RecordSuccess()
 
 	// Store upload ID in database
+	// A cancelled ctx is the usual reason to get here, and the abort would fail on it.
+	abortCtx := context.WithoutCancel(ctx)
+
 	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
 	}); err != nil {
-		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
 
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
 	}
@@ -117,8 +121,7 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	// Generate presigned URLs for each part (starting from part 1)
 	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
 	if err != nil {
-		// Cleanup: abort multipart upload
-		_ = coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
+		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
 
 		return PendingObject{}, err
 	}
@@ -129,6 +132,13 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 			PartURLs: partURLs,
 		},
 	}, nil
+}
+
+// abortMultipartUpload aborts an upload we cannot hand out. Failures are logged.
+func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) {
+	if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); err != nil {
+		slog.Warn("Failed to abort multipart upload", "key", objectKey, "upload_id", uploadID, "error", err)
+	}
 }
 
 // generatePartURLs generates presigned URLs for multipart upload parts.

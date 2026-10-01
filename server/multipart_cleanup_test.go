@@ -1,7 +1,14 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,4 +80,95 @@ func TestMultipartCleanup(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when listing parts of aborted upload, but got none")
 	}
+}
+
+// If the request is cancelled after S3 opened the upload but before the row is
+// stored, the upload must still be aborted. Nothing else can find it.
+func TestMultipartUploadAbortedWhenCancelledBeforeRecorded(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	reqCtx, cancelReq := context.WithCancel(t.Context())
+	defer cancelReq()
+
+	var aborts atomic.Int32
+
+	service.MinioClient = interceptedS3Client(t, func(r *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+			aborts.Add(1)
+		}
+
+		resp, err := next.RoundTrip(r)
+		if err != nil || r.Method != http.MethodPost || !r.URL.Query().Has("uploads") {
+			return resp, err //nolint:wrapcheck // transparent
+		}
+
+		// Cancel after S3 opened the upload and before the server records it.
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if err != nil {
+			return nil, err //nolint:wrapcheck // transparent
+		}
+
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+
+		cancelReq()
+
+		return resp, nil
+	})
+
+	hash := strings.Repeat("d", 32)
+	narKey := narKeyFor(hash)
+
+	w := httptest.NewRecorder()
+	service.CreatePendingClosureHandler(w, httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/api/pending_closures",
+		strings.NewReader(`{"closure":"`+hash+`.narinfo","objects":[`+
+			`{"key":"`+hash+`.narinfo","type":"narinfo","refs":["`+narKey+`"]},`+
+			`{"key":"`+narKey+`","type":"nar","refs":[],"nar_size":104857600}]}`)))
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("request succeeded although it was cancelled: %s", w.Body.String())
+	}
+
+	if n := aborts.Load(); n != 1 {
+		t.Errorf("%d abort request(s) reached S3, want 1", n)
+	}
+
+	for upload := range testRustfsServer.Client(t).ListIncompleteUploads(t.Context(), service.Bucket, narKey, true) {
+		ok(t, upload.Err)
+		t.Errorf("multipart upload %s left open in S3 with no row to find it by", upload.UploadID)
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// interceptedS3Client returns a client whose requests go through intercept,
+// which may observe, delay or fail them. Retries are off.
+func interceptedS3Client(
+	t *testing.T,
+	intercept func(r *http.Request, next http.RoundTripper) (*http.Response, error),
+) *minio.Client {
+	t.Helper()
+
+	next, isTransport := http.DefaultTransport.(*http.Transport)
+	if !isTransport {
+		t.Fatal("http.DefaultTransport is not an *http.Transport")
+	}
+
+	next = next.Clone()
+
+	c, err := minio.New(fmt.Sprintf("localhost:%d", testRustfsServer.port), &minio.Options{
+		Creds:      testRustfsServer.Creds(),
+		Transport:  roundTripFunc(func(r *http.Request) (*http.Response, error) { return intercept(r, next) }),
+		MaxRetries: 1,
+	})
+	ok(t, err)
+
+	return c
 }
