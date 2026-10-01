@@ -271,7 +271,15 @@ let
   ++ lib.concatMap (f: [
     "--sign-key-path"
     (toString f)
-  ]) cfg.signKeyFiles;
+  ]) cfg.signKeyFiles
+  ++ lib.optionals (cfg.signProgram != null) [
+    "--sign-program"
+    (lib.getExe cfg.signProgram)
+  ]
+  ++ lib.optionals (cfg.signPublicKey != null) [
+    "--sign-public-key"
+    cfg.signPublicKey
+  ];
 in
 {
   options.services.niks3 = {
@@ -460,6 +468,25 @@ in
         Multiple keys can be provided for key rotation.
       '';
       example = lib.literalExpression "[ /run/secrets/niks3-sign-key ]";
+    };
+
+    signProgram = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = ''
+        Package providing an executable for signing narinfo batches.
+        Runs without arguments, with the server's environment and permissions.
+        Must be set together with signPublicKey.
+      '';
+    };
+
+    signPublicKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Ed25519 public key of the signing program in "name:base64-public-key" format.
+        Must be set together with signProgram.
+      '';
     };
 
     cacheUrl = lib.mkOption {
@@ -676,6 +703,10 @@ in
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = (cfg.signProgram != null) == (cfg.signPublicKey != null);
+        message = "services.niks3.signProgram and services.niks3.signPublicKey must be set together";
+      }
       {
         assertion = cfg.s3.useIAM || cfg.s3.accessKeyFile != null;
         message = "services.niks3.s3.accessKeyFile must be set (or enable s3.useIAM)";
