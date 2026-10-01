@@ -614,3 +614,88 @@ func TestGetExistingObjectsLocksRows(t *testing.T) {
 		t.Errorf("sweep picked %v while a push transaction held the rows", keys)
 	}
 }
+
+// A push whose pending rows commit after the sweep selected a key must keep
+// the object: the sweep rechecks once it holds the row.
+func TestSweepRechecksPendingAfterLocking(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	key := "nar/" + strings.Repeat("h", 52) + ".nar.zst"
+
+	_, err := service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
+	ok(t, err)
+
+	_, err = service.Pool.Exec(ctx, `INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+		VALUES ($1, '{}', timezone('UTC', now()) - interval '1 hour', timezone('UTC', now()) - interval '1 hour')`, key)
+	ok(t, err)
+
+	service.SetTestHookAfterSweepSelect(func() {
+		q := pg.New(service.Pool)
+
+		pc, err := q.InsertPendingClosure(ctx, "late.narinfo")
+		ok(t, err)
+
+		_, err = q.InsertPendingObjects(ctx, []pg.InsertPendingObjectsParams{
+			{PendingClosureID: pc.ID, Key: key, Refs: []string{}},
+		})
+		ok(t, err)
+	})
+
+	if st := service.RunGCForTest(0, 24*time.Hour, true); st.Error != "" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if _, err := service.MinioClient.StatObject(ctx, service.Bucket, key, minio.StatObjectOptions{}); err != nil {
+		t.Errorf("sweep deleted %s although a push had it pending: %v", key, err)
+	}
+}
+
+// A push that re-offers a tombstoned object waits for a sweep holding its row,
+// so its upload cannot land before the sweep's S3 delete.
+func TestPushWaitsForSweepHoldingRow(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	hash := strings.Repeat("k", 32)
+	narKey := "nar/" + strings.Repeat("k", 52) + ".nar.zst"
+
+	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+		VALUES ($1, '{}', timezone('UTC', now()) - interval '1 hour', timezone('UTC', now()) - interval '1 hour')`, narKey)
+	ok(t, err)
+
+	sweep, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = sweep.Rollback(ctx) }()
+
+	_, err = sweep.Exec(ctx, "SELECT key FROM objects WHERE key = $1 FOR UPDATE", narKey)
+	ok(t, err)
+
+	done := make(chan int, 1)
+
+	go func() { done <- postPendingClosureJSON(t, service, closureBody(hash, narKey)).Code }()
+
+	select {
+	case code := <-done:
+		t.Fatalf("push answered %d while the sweep held the row", code)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	ok(t, sweep.Commit(ctx))
+
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Errorf("status=%d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("push still blocked after the sweep committed")
+	}
+}

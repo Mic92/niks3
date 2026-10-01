@@ -221,7 +221,6 @@ SELECT
     END)::interval AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
-ORDER BY o.key
 FOR KEY SHARE OF o
 `
 
@@ -230,8 +229,8 @@ type GetExistingObjectsRow struct {
 	DeletedAt pgtype.Interval `json:"deleted_at"`
 }
 
-// Locks the rows until the transaction ends so the sweep cannot delete an
-// object the push is about to treat as present.
+// Waits for a sweep holding a row, so the push's upload cannot land before the
+// sweep's S3 delete.
 func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]GetExistingObjectsRow, error) {
 	rows, err := q.db.Query(ctx, getExistingObjects, dollar_1)
 	if err != nil {
@@ -245,6 +244,34 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getKeysNotPending = `-- name: GetKeysNotPending :many
+SELECT key FROM objects
+WHERE key = any($1::varchar [])
+  AND NOT EXISTS (SELECT 1 FROM pending_objects AS po WHERE po.key = objects.key)
+`
+
+// Rechecks on a fresh snapshot, after the sweep holds the rows: a push may
+// have committed its pending rows since the sweep's query took its snapshot.
+func (q *Queries) GetKeysNotPending(ctx context.Context, keys []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getKeysNotPending, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

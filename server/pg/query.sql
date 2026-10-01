@@ -30,8 +30,8 @@ SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;
 
 -- name: GetExistingObjects :many
--- Locks the rows until the transaction ends so the sweep cannot delete an
--- object the push is about to treat as present.
+-- Waits for a sweep holding a row, so the push's upload cannot land before the
+-- sweep's S3 delete.
 WITH ct AS (
     SELECT timezone('UTC', now()) AS now
 )
@@ -44,7 +44,6 @@ SELECT
     END)::interval AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
-ORDER BY o.key
 FOR KEY SHARE OF o;
 
 -- name: GetPresentObjects :many
@@ -244,6 +243,13 @@ WHERE first_deleted_at IS NOT NULL
 ORDER BY key
 LIMIT sqlc.arg(limit_count)
 FOR UPDATE SKIP LOCKED;
+
+-- name: GetKeysNotPending :many
+-- Rechecks on a fresh snapshot, after the sweep holds the rows: a push may
+-- have committed its pending rows since the sweep's query took its snapshot.
+SELECT key FROM objects
+WHERE key = any(sqlc.arg(keys)::varchar [])
+  AND NOT EXISTS (SELECT 1 FROM pending_objects AS po WHERE po.key = objects.key);
 
 -- name: GetClosureForShare :one
 -- Lock the closure row so concurrent GC cannot delete it between the

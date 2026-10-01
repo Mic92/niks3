@@ -145,6 +145,9 @@ type Service struct {
 	testHookBeforePendingInsert func()
 	// testHookAfterPresenceCheck runs once a push has decided what is present.
 	testHookAfterPresenceCheck func()
+	// testHookAfterSweepSelect runs after the sweep locked a batch, before it
+	// rechecks pending rows.
+	testHookAfterSweepSelect func()
 }
 
 // Close closes the database connection pool.

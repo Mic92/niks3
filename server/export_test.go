@@ -101,3 +101,9 @@ func (s *Service) SetTestHookBeforePendingInsert(f func()) {
 func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
 	s.testHookAfterPresenceCheck = f
 }
+
+// SetTestHookAfterSweepSelect runs f after the sweep locked a batch of rows,
+// before it rechecks pending rows.
+func (s *Service) SetTestHookAfterSweepSelect(f func()) {
+	s.testHookAfterSweepSelect = f
+}

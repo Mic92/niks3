@@ -47,8 +47,17 @@ func (s *Service) sweepBatch(ctx context.Context, gracePeriod int32, afterKey st
 		return "", nil, nil
 	}
 
-	objectCh := make(chan minio.ObjectInfo, len(keys))
-	for _, key := range keys {
+	if s.testHookAfterSweepSelect != nil {
+		s.testHookAfterSweepSelect()
+	}
+
+	unpending, err := pg.New(tx).GetKeysNotPending(ctx, keys)
+	if err != nil {
+		return "", nil, fmt.Errorf("recheck pending objects: %w", err)
+	}
+
+	objectCh := make(chan minio.ObjectInfo, len(unpending))
+	for _, key := range unpending {
 		objectCh <- minio.ObjectInfo{Key: key}
 	}
 
