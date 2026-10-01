@@ -47,6 +47,8 @@ type options struct {
 	APIToken string
 
 	SignKeyPaths    []string
+	SignProgram     string
+	SignPublicKey   string
 	CacheURL        string
 	ServerURL       string
 	OIDCConfigPath  string
@@ -109,7 +111,7 @@ type Service struct {
 	S3Concurrency         int
 	S3RateLimiter         *ratelimit.AdaptiveRateLimiter
 	APIToken              string
-	SigningKeys           []*signing.Key
+	SigningKeys           []signing.Signer
 	CacheURL              string
 	ServerURL             string
 	OIDCValidator         *oidc.Validator
@@ -283,10 +285,10 @@ func runServer(opts *options) error {
 	}
 
 	// Load signing keys
-	if len(opts.SignKeyPaths) == 0 {
+	if len(opts.SignKeyPaths) == 0 && opts.SignProgram == "" {
 		slog.Warn("No signing keys configured; narinfo signing will rely on CA entries only (if any)")
 	} else {
-		service.SigningKeys = make([]*signing.Key, 0, len(opts.SignKeyPaths))
+		service.SigningKeys = make([]signing.Signer, 0, len(opts.SignKeyPaths))
 	}
 
 	for _, path := range opts.SignKeyPaths {
@@ -297,6 +299,16 @@ func runServer(opts *options) error {
 
 		service.SigningKeys = append(service.SigningKeys, key)
 		slog.Info("Loaded signing key", "name", key.Name, "path", path)
+	}
+
+	if opts.SignProgram != "" {
+		signer, err := signing.NewExternalSigner(opts.SignProgram, opts.SignPublicKey)
+		if err != nil {
+			return fmt.Errorf("failed to configure external signer: %w", err)
+		}
+
+		service.SigningKeys = append(service.SigningKeys, signer)
+		slog.Info("Configured external signer", "program", opts.SignProgram)
 	}
 
 	// Initialize the bucket with nix-cache-info if it doesn't exist

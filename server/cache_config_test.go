@@ -31,14 +31,14 @@ func TestCacheConfigHandler(t *testing.T) {
 	tests := []struct {
 		name     string
 		cacheURL string
-		keys     []*signing.Key
+		keys     []signing.Signer
 		query    string
 		want     api.CacheConfig
 	}{
 		{
 			name:     "full config, no issuer",
 			cacheURL: "https://cache.example.com",
-			keys:     []*signing.Key{key},
+			keys:     []signing.Signer{key},
 			query:    "",
 			want: api.CacheConfig{
 				SubstituterURL: "https://cache.example.com",
@@ -49,7 +49,7 @@ func TestCacheConfigHandler(t *testing.T) {
 		{
 			name:     "no cache url configured",
 			cacheURL: "",
-			keys:     []*signing.Key{key},
+			keys:     []signing.Signer{key},
 			query:    "",
 			want: api.CacheConfig{
 				SubstituterURL: "",
@@ -71,7 +71,7 @@ func TestCacheConfigHandler(t *testing.T) {
 		{
 			name:     "issuer requested but no OIDC validator",
 			cacheURL: "https://cache.example.com",
-			keys:     []*signing.Key{key},
+			keys:     []signing.Signer{key},
 			query:    "?issuer=https://token.actions.githubusercontent.com",
 			want: api.CacheConfig{
 				SubstituterURL: "https://cache.example.com",

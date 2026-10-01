@@ -18,7 +18,7 @@ func TestGenerateLandingPage(t *testing.T) {
 	}
 
 	service := &server.Service{
-		SigningKeys: []*signing.Key{key},
+		SigningKeys: []signing.Signer{key},
 		CacheURL:    "https://cache.example.com",
 	}
 
@@ -62,7 +62,7 @@ func TestGenerateLandingPage(t *testing.T) {
 
 	// With ServerURL set the page fetches stats from the absolute niks3 URL.
 	withServer, err := (&server.Service{
-		SigningKeys: []*signing.Key{key},
+		SigningKeys: []signing.Signer{key},
 		ServerURL:   "https://niks3.example.com/",
 	}).GenerateLandingPage("https://cache.example.com")
 	if err != nil {

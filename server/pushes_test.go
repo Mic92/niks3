@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -217,7 +219,7 @@ func TestPush_SignsNarinfosOfItsPendingObjects(t *testing.T) {
 	key, err := signing.ParseKey(testSigningSecret)
 	ok(t, err)
 
-	service.SigningKeys = []*signing.Key{key}
+	service.SigningKeys = []signing.Signer{key}
 
 	hash := strings.Repeat("a", 32)
 	resp := createPush(t, service, []string{hash + ".narinfo"}, pkgObjects(hash))
@@ -251,4 +253,42 @@ func TestPush_SignsNarinfosOfItsPendingObjects(t *testing.T) {
 	if len(signed.Signatures[hash+".narinfo"]) != 1 {
 		t.Errorf("signatures = %v, want one for %s.narinfo", signed.Signatures, hash)
 	}
+
+	for _, signer := range []signing.Signer{
+		nil,
+		(*signing.Key)(nil),
+		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+			return nil, errors.New("signer failed")
+		}),
+		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+			return map[string]string{}, nil
+		}),
+		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+			return map[string]string{"unexpected.narinfo": "test-key:signature"}, nil
+		}),
+	} {
+		service.SigningKeys = []signing.Signer{key, signer}
+		check := checkStatusCode(http.StatusInternalServerError)
+		rr := testRequest(t, &TestRequest{
+			method:        "POST",
+			path:          "/api/pushes/" + resp.ID + "/sign",
+			body:          body,
+			handler:       service.SignNarinfosHandler,
+			pathValues:    map[string]string{"id": resp.ID},
+			checkResponse: &check,
+		})
+		if strings.Contains(rr.Body.String(), `"signatures"`) {
+			t.Fatalf("error response contains signatures: %s", rr.Body.String())
+		}
+	}
+}
+
+type testSigner func(context.Context, map[string]*signing.NarInfo) (map[string]string, error)
+
+func (testSigner) PublicKey() (string, error) {
+	return testSigningPublic, nil
+}
+
+func (signer testSigner) Sign(ctx context.Context, infos map[string]*signing.NarInfo) (map[string]string, error) {
+	return signer(ctx, infos)
 }

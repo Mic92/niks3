@@ -271,7 +271,15 @@ func parseArgs() (*options, error) {
 	}
 
 	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
+	flag.StringVar(&opts.SignProgram, "sign-program", getEnvOrDefault("NIKS3_SIGN_PROGRAM", ""),
+		"Executable for signing narinfo batches (requires --sign-public-key)")
+	flag.StringVar(&opts.SignPublicKey, "sign-public-key", getEnvOrDefault("NIKS3_SIGN_PUBLIC_KEY", ""),
+		"Public key of the signing program in name:base64-public-key format")
 	flag.Parse()
+
+	if (opts.SignProgram == "") != (opts.SignPublicKey == "") {
+		return nil, errors.New("--sign-program and --sign-public-key must be set together")
+	}
 
 	var err error
 

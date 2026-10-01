@@ -1,6 +1,9 @@
 package signing_test
 
 import (
+	"context"
+	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -77,7 +80,7 @@ func TestParseSigningKey(t *testing.T) {
 	}
 }
 
-func TestSignMessage(t *testing.T) {
+func TestSign(t *testing.T) {
 	t.Parallel()
 
 	keyStr := "test-key:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -87,8 +90,19 @@ func TestSignMessage(t *testing.T) {
 		t.Fatalf("signing.ParseKey failed: %v", err)
 	}
 
-	msg := []byte("Hello, world!")
-	signature := key.Sign(msg)
+	info := &signing.NarInfo{
+		StorePath: "/nix/store/test",
+		NarHash:   "sha256:1mkvday29m2qxg1fnbv8xh9s6151bh8a2xzhh0k86j7lqhyfwibh",
+		NarSize:   100,
+	}
+	signatures, err := key.Sign(t.Context(), map[string]*signing.NarInfo{"test.narinfo": info})
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+	if len(signatures) != 1 {
+		t.Fatalf("Expected 1 signature, got %d", len(signatures))
+	}
+	signature := signatures["test.narinfo"]
 
 	// Check format
 	if !strings.HasPrefix(signature, "test-key:") {
@@ -101,13 +115,16 @@ func TestSignMessage(t *testing.T) {
 	}
 
 	// Verify the signature is deterministic
-	signature2 := key.Sign(msg)
-	if signature != signature2 {
+	signatures2, err := key.Sign(t.Context(), map[string]*signing.NarInfo{"test.narinfo": info})
+	if err != nil {
+		t.Fatalf("Sign (second call) failed: %v", err)
+	}
+	if !maps.Equal(signatures, signatures2) {
 		t.Errorf("Signature should be deterministic")
 	}
 }
 
-func TestSignNarinfo(t *testing.T) {
+func TestSignBatch(t *testing.T) {
 	t.Parallel()
 	// Create multiple signing keys
 	// #nosec G101 -- These are test keys with dummy values, not real credentials
@@ -124,7 +141,7 @@ func TestSignNarinfo(t *testing.T) {
 		t.Fatalf("signing.ParseKey key2 failed: %v", err)
 	}
 
-	keys := []*signing.Key{key1, key2}
+	keys := []signing.Signer{key1, key2}
 
 	narInfo := &signing.NarInfo{
 		StorePath: "/nix/store/26xbg1ndr7hbcncrlf9nhx5is2b25d13-hello-2.12.1",
@@ -135,31 +152,90 @@ func TestSignNarinfo(t *testing.T) {
 		},
 	}
 
-	signatures, err := signing.SignNarinfo(keys, narInfo)
+	second := *narInfo
+	second.StorePath = "/nix/store/second"
+	infos := map[string]*signing.NarInfo{"first.narinfo": narInfo, "second.narinfo": &second}
+
+	for i, key := range keys {
+		signatures, err := key.Sign(t.Context(), infos)
+		if err != nil {
+			t.Fatalf("Sign failed: %v", err)
+		}
+		if len(signatures) != len(infos) {
+			t.Fatalf("Expected 2 signatures, got %d", len(signatures))
+		}
+
+		prefix := []string{"cache.example.com-1:", "cache.example.com-2:"}[i]
+		for objectKey, info := range infos {
+			if !strings.HasPrefix(signatures[objectKey], prefix) {
+				t.Errorf("Signature should start with %q, got: %s", prefix, signatures[objectKey])
+			}
+
+			single, err := key.Sign(t.Context(), map[string]*signing.NarInfo{"test.narinfo": info})
+			if err != nil {
+				t.Fatalf("Sign (single narinfo) failed: %v", err)
+			}
+			if len(single) != 1 || signatures[objectKey] != single["test.narinfo"] {
+				t.Errorf("Batch signature %q does not match signing its narinfo individually", objectKey)
+			}
+		}
+
+		// Signatures should be deterministic
+		signatures2, err := key.Sign(t.Context(), infos)
+		if err != nil {
+			t.Fatalf("Sign (second call) failed: %v", err)
+		}
+		if !maps.Equal(signatures, signatures2) {
+			t.Errorf("Signatures should be deterministic")
+		}
+	}
+}
+
+func TestNilKeyPublicKey(t *testing.T) {
+	t.Parallel()
+
+	var key *signing.Key
+	if _, err := key.PublicKey(); err == nil {
+		t.Fatal("expected nil key to return an error")
+	}
+}
+
+func TestSignErrors(t *testing.T) {
+	t.Parallel()
+
+	key, err := signing.ParseKey("test-key:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
-		t.Fatalf("signing.SignNarinfo failed: %v", err)
+		t.Fatal(err)
 	}
 
-	if len(signatures) != 2 {
-		t.Errorf("Expected 2 signatures, got %d", len(signatures))
-	}
+	for _, tc := range []struct {
+		name     string
+		key      *signing.Key
+		info     *signing.NarInfo
+		canceled bool
+	}{
+		{name: "nil key"},
+		{name: "nil narinfo", key: key},
+		{name: "invalid narinfo", key: key, info: &signing.NarInfo{}},
+		{name: "canceled", key: key, canceled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Verify signature format
-	if !strings.HasPrefix(signatures[0], "cache.example.com-1:") {
-		t.Errorf("First signature should start with 'cache.example.com-1:', got: %s", signatures[0])
-	}
+			ctx := t.Context()
+			if tc.canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
 
-	if !strings.HasPrefix(signatures[1], "cache.example.com-2:") {
-		t.Errorf("Second signature should start with 'cache.example.com-2:', got: %s", signatures[1])
-	}
-
-	// Signatures should be deterministic
-	signatures2, err := signing.SignNarinfo(keys, narInfo)
-	if err != nil {
-		t.Fatalf("signing.SignNarinfo (second call) failed: %v", err)
-	}
-
-	if signatures[0] != signatures2[0] || signatures[1] != signatures2[1] {
-		t.Errorf("Signatures should be deterministic")
+			signatures, err := tc.key.Sign(ctx, map[string]*signing.NarInfo{"test.narinfo": tc.info})
+			if err == nil || len(signatures) != 0 {
+				t.Fatalf("got %v, %v; want no signatures and an error", signatures, err)
+			}
+			if tc.canceled && !errors.Is(err, context.Canceled) {
+				t.Errorf("got %v, want context.Canceled", err)
+			}
+		})
 	}
 }
