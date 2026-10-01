@@ -109,7 +109,7 @@ type Service struct {
 	S3Concurrency         int
 	S3RateLimiter         *ratelimit.AdaptiveRateLimiter
 	APIToken              string
-	SigningKeys           []*signing.Key
+	SigningKeys           []signing.Signer
 	CacheURL              string
 	ServerURL             string
 	OIDCValidator         *oidc.Validator
@@ -286,7 +286,7 @@ func runServer(opts *options) error {
 	if len(opts.SignKeyPaths) == 0 {
 		slog.Warn("No signing keys configured; narinfo signing will rely on CA entries only (if any)")
 	} else {
-		service.SigningKeys = make([]*signing.Key, 0, len(opts.SignKeyPaths))
+		service.SigningKeys = make([]signing.Signer, 0, len(opts.SignKeyPaths))
 	}
 
 	for _, path := range opts.SignKeyPaths {

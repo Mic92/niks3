@@ -662,8 +662,8 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		validKeys[key] = true
 	}
 
-	// Sign each narinfo and collect signatures
 	signaturesMap := make(map[string][]string, len(req.Narinfos))
+	narInfos := make(map[string]*signing.NarInfo, len(req.Narinfos))
 
 	for objectKey, meta := range req.Narinfos {
 		// Validate objectKey belongs to this pending closure
@@ -674,30 +674,60 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Sign narinfo if signing keys are configured
 		// Initialize as empty slice to ensure JSON serializes as [] not null
-		signatures := []string{}
+		signaturesMap[objectKey] = make([]string, 0, len(s.SigningKeys))
+		narInfos[objectKey] = &signing.NarInfo{
+			StorePath:  meta.StorePath,
+			NarHash:    meta.NarHash,
+			NarSize:    meta.NarSize,
+			References: meta.References,
+		}
+	}
 
-		if len(s.SigningKeys) > 0 {
-			narInfo := &signing.NarInfo{
-				StorePath:  meta.StorePath,
-				NarHash:    meta.NarHash,
-				NarSize:    meta.NarSize,
-				References: meta.References,
-			}
+	if len(req.Narinfos) == 0 {
+		writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap})
 
-			signatures, err = signing.SignNarinfo(s.SigningKeys, narInfo)
-			if err != nil {
-				slog.Error("Failed to sign narinfo", "object_key", objectKey, "error", err)
-				http.Error(w, fmt.Sprintf("failed to sign narinfo: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	for i, signer := range s.SigningKeys {
+		if signer == nil {
+			http.Error(w, "signing key cannot be nil", http.StatusInternalServerError)
+
+			return
+		}
+
+		signerName := fmt.Sprintf("index %d", i)
+		if publicKey, err := signer.PublicKey(); err == nil {
+			signerName, _, _ = strings.Cut(publicKey, ":")
+		}
+
+		signatures, err := signer.Sign(r.Context(), narInfos)
+		if err != nil {
+			slog.Error("Failed to sign narinfos", "signer", signerName, "error", err)
+			http.Error(w, fmt.Sprintf("failed to sign narinfos: %v", err), http.StatusInternalServerError)
+
+			return
+		}
+
+		if len(signatures) != len(req.Narinfos) {
+			slog.Error("Signer returned unexpected signature count", "signer", signerName, "got", len(signatures), "want", len(req.Narinfos))
+			http.Error(w, "failed to sign narinfos: unexpected signature count", http.StatusInternalServerError)
+
+			return
+		}
+
+		for objectKey, signature := range signatures {
+			existing, ok := signaturesMap[objectKey]
+			if !ok {
+				slog.Error("Signer returned unexpected object key", "signer", signerName, "object_key", objectKey)
+				http.Error(w, "failed to sign narinfos: unexpected object key", http.StatusInternalServerError)
 
 				return
 			}
 
-			slog.Debug("Signed narinfo", "object_key", objectKey, "signatures", len(signatures))
+			signaturesMap[objectKey] = append(existing, signature)
 		}
-
-		signaturesMap[objectKey] = signatures
 	}
 
 	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap))

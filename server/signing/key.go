@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
@@ -77,16 +78,36 @@ func LoadKeyFromFile(path string) (*Key, error) {
 	return ParseKey(strings.TrimSpace(string(content)))
 }
 
-// Sign signs a message and returns the signature in the format "name:base64-signature".
-func (k *Key) Sign(msg []byte) string {
-	signature := ed25519.Sign(k.key, msg)
-	signatureBase64 := base64.StdEncoding.EncodeToString(signature)
+// Sign returns "name:base64-signature" strings keyed like infos.
+func (k *Key) Sign(ctx context.Context, infos map[string]*NarInfo) (map[string]string, error) {
+	if k == nil {
+		return nil, errors.New("signing key cannot be nil")
+	}
 
-	return fmt.Sprintf("%s:%s", k.Name, signatureBase64)
+	signatures := make(map[string]string, len(infos))
+	for objectKey, info := range infos {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("signing canceled: %w", err)
+		}
+
+		fingerprint, err := GenerateFingerprint(info)
+		if err != nil {
+			return nil, fmt.Errorf("narinfo %q: %w", objectKey, err)
+		}
+
+		signature := ed25519.Sign(k.key, fingerprint)
+		signatures[objectKey] = fmt.Sprintf("%s:%s", k.Name, base64.StdEncoding.EncodeToString(signature))
+	}
+
+	return signatures, nil
 }
 
 // PublicKey returns the public key in the format "name:base64-public-key" for use in nix configuration.
 func (k *Key) PublicKey() (string, error) {
+	if k == nil {
+		return "", errors.New("signing key cannot be nil")
+	}
+
 	// Ed25519 public key is the last 32 bytes of the private key
 	publicKey, ok := k.key.Public().(ed25519.PublicKey)
 	if !ok {
