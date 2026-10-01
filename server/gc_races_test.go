@@ -776,9 +776,18 @@ func TestCommitRacingPendingCleanupKeepsObjects(t *testing.T) {
 
 	waitForLockWaiter(t, service)
 
-	st := service.RunGCForTest(24*time.Hour, 24*time.Hour, true)
-	if st.State != "succeeded" {
-		t.Fatalf("GC failed: %s", st.Error)
+	gcDone := make(chan api.GCTaskStatus, 1)
+
+	go func() { gcDone <- service.RunGCForTest(24*time.Hour, 24*time.Hour, true) }()
+
+	select {
+	case st := <-gcDone:
+		if st.State != "succeeded" {
+			t.Fatalf("GC failed: %s", st.Error)
+		}
+	case <-time.After(10 * time.Second):
+		ok(t, holder.Rollback(ctx))
+		t.Fatal("the cleanup waits for a closure being committed instead of skipping it")
 	}
 
 	ok(t, holder.Rollback(ctx))
