@@ -60,6 +60,11 @@ module gc_pushes {
   // rows the sweep holds locked; writers wait, i.e. their action is disabled
   val locked: Set[str] = gc.picked.union(gc.s3gone)
 
+  // rows a running create transaction holds FOR KEY SHARE; the sweep skips them
+  val createLocked: Set[str] =
+    CLIENTS.filter(c => pushes.get(c).phase == Creating and pushes.get(c).alive)
+      .map(c => closureOf(pushes.get(c).roots)).flatten()
+
   action init = all {
     rows' = KEYS.mapBy(_ => noObj),
     s3' = Set(),
@@ -85,6 +90,7 @@ module gc_pushes {
       pushes.get(c).phase != Created,
       pushes.get(c).alive,
       roots != Set(),
+      not(cl.exists(k => locked.contains(k))),
       pushes' = pushes.set(c, { phase: Creating, alive: true, roots: roots, at: now,
                                 offered: cl.exclude(present), uploaded: Set() }),
       rows' = rows, s3' = s3, pend' = pend, closureRoots' = closureRoots, gc' = gc, now' = now,
@@ -95,8 +101,6 @@ module gc_pushes {
   action createFinish(c: str): bool = all {
     pushes.get(c).phase == Creating,
     pushes.get(c).alive,
-    // claims live rows too, so locks them
-    not(closureOf(pushes.get(c).roots).exists(k => locked.contains(k))),
     pend' = pend.set(c, closureOf(pushes.get(c).roots)),
     pushes' = pushes.set(c, { ...pushes.get(c), phase: Created }),
     rows' = rows, s3' = s3, closureRoots' = closureRoots, gc' = gc, now' = now,
@@ -113,15 +117,12 @@ module gc_pushes {
     rows' = rows, pend' = pend, closureRoots' = closureRoots, gc' = gc, now' = now,
   }
 
-  // RegisterCompletedObject; best effort, refs only if a pending row is left
+  // RegisterCompletedObject, only while the push's own pending row exists
   action register(c: str, k: str): bool = all {
+    pend.get(c).contains(k),
     pushes.get(c).uploaded.contains(k),
-    s3.contains(k),
     not(locked.contains(k)),
-    rows' = rows.set(k, {
-      row: Live, first: -1,
-      refs: rows.get(k).refs.union(if (pendingKeys.contains(k)) REFS.get(k) else Set()),
-    }),
+    rows' = rows.set(k, { row: Live, first: -1, refs: rows.get(k).refs.union(REFS.get(k)) }),
     s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, gc' = gc, now' = now,
   }
 
@@ -210,6 +211,7 @@ module gc_pushes {
     now - rows.get(k).first >= gc.grace,
     not(pendingKeys.contains(k)),
     not(locked.contains(k)),
+    not(createLocked.contains(k)),
     gc' = { ...gc, picked: gc.picked.union(Set(k)) },
     rows' = rows, s3' = s3, pend' = pend, pushes' = pushes, closureRoots' = closureRoots, now' = now,
   }
