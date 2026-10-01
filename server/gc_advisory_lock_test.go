@@ -1,12 +1,16 @@
 package server_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestGCAdvisoryLockBlocksConcurrentRun checks GC fails fast when another
@@ -39,6 +43,26 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 		ok(t, err)
 	}()
 
+	// A replica without a task reports the peer's run while the lock is held.
+	statusReq := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		service.GCStatusHandler(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/gc/status", nil))
+
+		return w
+	}
+
+	w := statusReq()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status while a peer holds the lock: %d %s", w.Code, w.Body.String())
+	}
+
+	var remote api.GCTaskStatus
+	ok(t, json.Unmarshal(w.Body.Bytes(), &remote))
+
+	if remote.State != api.GCTaskStateRunning || remote.Phase != api.GCTaskPhaseOtherReplica {
+		t.Fatalf("status while a peer holds the lock = %+v, want running on another replica", remote)
+	}
+
 	// GC must not proceed while the lock is held elsewhere.
 	status := service.RunGCForTest(720*time.Hour, 6*time.Hour, false)
 
@@ -48,5 +72,33 @@ func TestGCAdvisoryLockBlocksConcurrentRun(t *testing.T) {
 
 	if !strings.Contains(status.Error, "already running") {
 		t.Fatalf("expected lock-held error, got %q", status.Error)
+	}
+
+	// With no task and no lock there is nothing to report.
+	service.GCTasks = server.NewGCTaskStore()
+
+	_, err = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", server.GCAdvisoryLockKey)
+	ok(t, err)
+
+	if w := statusReq(); w.Code != http.StatusNotFound {
+		t.Fatalf("status with no task and no lock: %d %s", w.Code, w.Body.String())
+	}
+
+	// Re-take the lock so the deferred unlock has something to release.
+	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", server.GCAdvisoryLockKey).Scan(&acquired)
+	ok(t, err)
+
+	// A replica that cannot check the lock must not answer 404.
+	unreachable, err := pgxpool.New(ctx, "postgres:///niks3?host=/nonexistent&connect_timeout=1")
+	ok(t, err)
+
+	defer unreachable.Close()
+
+	blind := &server.Service{Pool: unreachable, GCTasks: server.NewGCTaskStore()}
+	w = httptest.NewRecorder()
+	blind.GCStatusHandler(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/gc/status", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status when the lock cannot be checked: %d %s, want 503", w.Code, w.Body.String())
 	}
 }

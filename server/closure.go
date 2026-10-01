@@ -282,16 +282,64 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	task.succeed(*stats)
 }
 
-// GCStatusHandler handles GET /api/gc/status.
-func (s *Service) GCStatusHandler(w http.ResponseWriter, _ *http.Request) {
+// GCStatusHandler handles GET /api/gc/status. Behind a load balancer a poll can
+// reach a replica that did not start the run. It reports the run as in progress
+// while the GC advisory lock is held.
+func (s *Service) GCStatusHandler(w http.ResponseWriter, r *http.Request) {
 	status, ok := s.GCTasks.Get()
-	if !ok {
+	if ok {
+		writeJSONResponse(w, status)
+
+		return
+	}
+
+	held, err := gcLockHeld(r.Context(), s.Pool)
+	if err != nil {
+		// A 404 would tell a client that saw the run that it has ended.
+		slog.Error("failed to check GC advisory lock", "error", err)
+		http.Error(w, "could not check for a garbage collection on another replica", http.StatusServiceUnavailable)
+
+		return
+	}
+
+	if !held {
 		http.Error(w, "no garbage collection has run yet", http.StatusNotFound)
 
 		return
 	}
 
-	writeJSONResponse(w, status)
+	now := time.Now().UTC()
+
+	writeJSONResponse(w, api.GCTaskStatus{
+		State:     api.GCTaskStateRunning,
+		Phase:     api.GCTaskPhaseOtherReplica,
+		StartedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+// gcLockHeld reports whether any session holds the GC advisory lock. pg_locks
+// splits the 64-bit key into classid and objid, and lists the whole cluster.
+func gcLockHeld(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var held bool
+
+	key := uint64(gcAdvisoryLockKey)
+	classID, objID := int64(key>>32), int64(key&0xffffffff)
+
+	err := pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_locks
+			WHERE locktype = 'advisory' AND granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND objsubid = 1 AND classid = $1 AND objid = $2
+		)`,
+		classID, objID,
+	).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("query pg_locks: %w", err)
+	}
+
+	return held, nil
 }
 
 // vacuumGCTables runs VACUUM ANALYZE on all tables modified during garbage collection.
