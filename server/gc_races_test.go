@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
@@ -402,5 +403,119 @@ func TestFailedS3DeleteKeepsTombstone(t *testing.T) {
 
 	if objectIsLive(t, service, narKey) {
 		t.Errorf("%s is live again after its S3 delete failed", narKey)
+	}
+}
+
+// The sweep must not delete a tombstoned object a running push transaction
+// has locked, because that push is about to treat it as present.
+func TestSweepSkipsRowsLockedByPush(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	key := "nar/" + strings.Repeat("e", 52) + ".nar.zst"
+
+	_, err := service.MinioClient.PutObject(ctx, service.Bucket, key, nil, 0, minio.PutObjectOptions{})
+	ok(t, err)
+
+	_, err = service.Pool.Exec(ctx, `INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+		VALUES ($1, '{}', timezone('UTC', now()) - interval '1 hour', timezone('UTC', now()) - interval '1 hour')`, key)
+	ok(t, err)
+
+	tx, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked string
+	ok(t, tx.QueryRow(ctx, "SELECT key FROM objects WHERE key = $1 FOR KEY SHARE", key).Scan(&locked))
+
+	done := make(chan api.GCTaskStatus, 1)
+
+	go func() { done <- service.RunGCForTest(24*time.Hour, 24*time.Hour, true) }()
+
+	select {
+	case st := <-done:
+		if st.State != "succeeded" {
+			t.Fatalf("GC failed: %s", st.Error)
+		}
+	case <-time.After(5 * time.Second):
+		ok(t, tx.Commit(ctx))
+		<-done
+		t.Fatal("the sweep waits for a row a push holds instead of skipping it")
+	}
+
+	if !objectInS3(t, service, key) {
+		t.Fatalf("%s deleted from S3 while a push held its row", key)
+	}
+
+	ok(t, tx.Commit(ctx))
+
+	if st := service.RunGCForTest(24*time.Hour, 24*time.Hour, true); st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if objectInS3(t, service, key) {
+		t.Errorf("%s survived the sweep after the push released it", key)
+	}
+}
+
+// Registering an upload needs a pending row: it is what keeps the sweep away
+// from the object, so without one the row would outlive its object.
+func TestRegisterCompletedObjectNeedsPendingRow(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	key := "nar/" + strings.Repeat("f", 52) + ".nar.zst"
+
+	ok(t, pg.New(service.Pool).RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
+		Key: key, Refs: []string{},
+	}))
+
+	var n int
+	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM objects WHERE key = $1", key).Scan(&n))
+
+	if n != 0 {
+		t.Errorf("registered %s without a pending row", key)
+	}
+}
+
+// Looking up existing objects in a push transaction locks their rows against the sweep.
+func TestGetExistingObjectsLocksRows(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+	key := "nar/" + strings.Repeat("g", 52) + ".nar.zst"
+
+	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs, deleted_at, first_deleted_at)
+		VALUES ($1, '{}', timezone('UTC', now()) - interval '1 hour', timezone('UTC', now()) - interval '1 hour')`, key)
+	ok(t, err)
+
+	push, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = push.Rollback(ctx) }()
+
+	_, err = pg.New(push).GetExistingObjects(ctx, []string{key})
+	ok(t, err)
+
+	sweep, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = sweep.Rollback(ctx) }()
+
+	keys, err := pg.New(sweep).LockObjectsReadyForDeletion(ctx, pg.LockObjectsReadyForDeletionParams{LimitCount: 10})
+	ok(t, err)
+
+	if len(keys) != 0 {
+		t.Errorf("sweep picked %v while a push transaction held the rows", keys)
 	}
 }

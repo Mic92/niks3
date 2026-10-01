@@ -218,7 +218,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	}
 
 	// Actually delete the objects (simulate full GC)
-	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
+	objsToDelete, err := queries.LockObjectsReadyForDeletion(ctx, pg.LockObjectsReadyForDeletionParams{
 		GracePeriodSeconds: 0,
 		LimitCount:         1000,
 	})
@@ -437,7 +437,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	ok(t, err)
 
 	// Get objects ready for deletion
-	objsToDelete, err := queries.GetObjectsReadyForDeletion(ctx, pg.GetObjectsReadyForDeletionParams{
+	objsToDelete, err := queries.LockObjectsReadyForDeletion(ctx, pg.LockObjectsReadyForDeletionParams{
 		GracePeriodSeconds: 0,
 		LimitCount:         10000,
 	})

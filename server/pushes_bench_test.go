@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/server"
+	"github.com/Mic92/niks3/server/pg"
 )
 
 // Reference graph of a NixOS system closure: one line per store path, the
@@ -131,6 +132,36 @@ func BenchmarkCommitPushShielded(b *testing.B) {
 
 				_, err = service.Pool.Exec(b.Context(), "SELECT commit_push($1)", id)
 				ok(b, err)
+			}
+		})
+	}
+}
+
+// BenchmarkPushLookup times the closure lookup a push starts with.
+func BenchmarkPushLookup(b *testing.B) {
+	for _, unrelated := range []int{1_000, 20_000, 95_000} {
+		b.Run(fmt.Sprintf("cache=%d", unrelated*2), func(b *testing.B) {
+			service, _ := seedCache(b, unrelated)
+
+			defer service.Close()
+
+			lines := strings.Split(strings.TrimSpace(nixosClosure), "\n")
+			keys := make([]string, 0, 2*len(lines))
+
+			for _, line := range lines {
+				hash := strings.Fields(line)[0]
+				keys = append(keys, hash+".narinfo", narKeyFor(hash))
+			}
+
+			b.ResetTimer()
+
+			for range b.N {
+				tx, err := service.Pool.Begin(b.Context())
+				ok(b, err)
+
+				_, err = pg.New(tx).GetExistingObjects(b.Context(), keys)
+				ok(b, err)
+				ok(b, tx.Commit(b.Context()))
 			}
 		})
 	}

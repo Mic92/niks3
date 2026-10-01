@@ -25,6 +25,8 @@ SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;
 
 -- name: GetExistingObjects :many
+-- Locks the rows until the transaction ends so the sweep cannot delete an
+-- object the push is about to treat as present.
 WITH ct AS (
     SELECT timezone('UTC', now()) AS now
 )
@@ -36,7 +38,9 @@ SELECT
         ELSE ct.now - o.first_deleted_at
     END)::interval AS deleted_at
 FROM objects AS o, ct
-WHERE key = any($1::varchar []);
+WHERE key = any($1::varchar [])
+ORDER BY o.key
+FOR KEY SHARE OF o;
 
 -- name: GetPresentObjects :many
 -- GC-marked objects may vanish from S3 any moment, so they count as absent.
@@ -52,10 +56,12 @@ SELECT commit_pending_closure($1::bigint);
 
 -- name: RegisterCompletedObject :exec
 -- Record an object as soon as its upload completes so later closures don't
--- re-offer it if this closure never commits. Conflict handling matches
+-- re-offer it if this closure never commits. Only while a pending row exists:
+-- that row keeps the sweep away from the object. Conflict handling matches
 -- commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
 INSERT INTO objects (key, refs, size)
-VALUES (sqlc.arg(key), sqlc.arg(refs)::varchar [], sqlc.arg(size))
+SELECT sqlc.arg(key)::varchar, sqlc.arg(refs)::varchar [], sqlc.arg(size)
+WHERE EXISTS (SELECT 1 FROM pending_objects WHERE key = sqlc.arg(key)::varchar)
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -215,9 +221,10 @@ SET
 FROM stale_objects, ct
 WHERE objects.key = stale_objects.key;
 
--- name: GetObjectsReadyForDeletion :many
--- Tombstoned objects past the grace period. Keys pending in a closure are
--- skipped. Keyset-paginated on key.
+-- name: LockObjectsReadyForDeletion :many
+-- Tombstoned objects past the grace period, row-locked until the caller's
+-- transaction ends. Rows a push transaction holds are skipped; the push is
+-- about to treat them as present. Keyset-paginated on key.
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
@@ -230,7 +237,8 @@ WHERE first_deleted_at IS NOT NULL
       WHERE po.key = objects.key
   )
 ORDER BY key
-LIMIT sqlc.arg(limit_count);
+LIMIT sqlc.arg(limit_count)
+FOR UPDATE SKIP LOCKED;
 
 -- name: GetClosureForShare :one
 -- Lock the closure row so concurrent GC cannot delete it between the

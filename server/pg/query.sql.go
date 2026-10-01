@@ -210,6 +210,8 @@ SELECT
     END)::interval AS deleted_at
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
+ORDER BY o.key
+FOR KEY SHARE OF o
 `
 
 type GetExistingObjectsRow struct {
@@ -217,6 +219,8 @@ type GetExistingObjectsRow struct {
 	DeletedAt pgtype.Interval `json:"deleted_at"`
 }
 
+// Locks the rows until the transaction ends so the sweep cannot delete an
+// object the push is about to treat as present.
 func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]GetExistingObjectsRow, error) {
 	rows, err := q.db.Query(ctx, getExistingObjects, dollar_1)
 	if err != nil {
@@ -269,50 +273,6 @@ func (q *Queries) GetObjectStats(ctx context.Context) (GetObjectStatsRow, error)
 	var i GetObjectStatsRow
 	err := row.Scan(&i.ObjectCount, &i.TotalBytes)
 	return i, err
-}
-
-const getObjectsReadyForDeletion = `-- name: GetObjectsReadyForDeletion :many
-SELECT key
-FROM objects
-WHERE first_deleted_at IS NOT NULL
-  AND deleted_at IS NOT NULL
-  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
-  AND key > $2::varchar
-  AND NOT EXISTS (
-      SELECT 1
-      FROM pending_objects AS po
-      WHERE po.key = objects.key
-  )
-ORDER BY key
-LIMIT $3
-`
-
-type GetObjectsReadyForDeletionParams struct {
-	GracePeriodSeconds int32  `json:"grace_period_seconds"`
-	AfterKey           string `json:"after_key"`
-	LimitCount         int32  `json:"limit_count"`
-}
-
-// Tombstoned objects past the grace period. Keys pending in a closure are
-// skipped. Keyset-paginated on key.
-func (q *Queries) GetObjectsReadyForDeletion(ctx context.Context, arg GetObjectsReadyForDeletionParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, getObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.AfterKey, arg.LimitCount)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const getOldMultipartUploads = `-- name: GetOldMultipartUploads :many
@@ -588,6 +548,52 @@ func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
 	return items, nil
 }
 
+const lockObjectsReadyForDeletion = `-- name: LockObjectsReadyForDeletion :many
+SELECT key
+FROM objects
+WHERE first_deleted_at IS NOT NULL
+  AND deleted_at IS NOT NULL
+  AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
+  AND key > $2::varchar
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pending_objects AS po
+      WHERE po.key = objects.key
+  )
+ORDER BY key
+LIMIT $3
+FOR UPDATE SKIP LOCKED
+`
+
+type LockObjectsReadyForDeletionParams struct {
+	GracePeriodSeconds int32  `json:"grace_period_seconds"`
+	AfterKey           string `json:"after_key"`
+	LimitCount         int32  `json:"limit_count"`
+}
+
+// Tombstoned objects past the grace period, row-locked until the caller's
+// transaction ends. Rows a push transaction holds are skipped; the push is
+// about to treat them as present. Keyset-paginated on key.
+func (q *Queries) LockObjectsReadyForDeletion(ctx context.Context, arg LockObjectsReadyForDeletionParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.AfterKey, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markStaleObjects = `-- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
@@ -642,7 +648,8 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 
 const registerCompletedObject = `-- name: RegisterCompletedObject :exec
 INSERT INTO objects (key, refs, size)
-VALUES ($1, $2::varchar [], $3)
+SELECT $1::varchar, $2::varchar [], $3
+WHERE EXISTS (SELECT 1 FROM pending_objects WHERE key = $1::varchar)
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -661,7 +668,8 @@ type RegisterCompletedObjectParams struct {
 }
 
 // Record an object as soon as its upload completes so later closures don't
-// re-offer it if this closure never commits. Conflict handling matches
+// re-offer it if this closure never commits. Only while a pending row exists:
+// that row keeps the sweep away from the object. Conflict handling matches
 // commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
 func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
 	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs, arg.Size)
