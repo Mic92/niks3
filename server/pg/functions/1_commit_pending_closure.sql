@@ -4,7 +4,6 @@
 CREATE OR REPLACE FUNCTION commit_pending_closure(closure_id bigint)
 RETURNS void AS $$
 DECLARE
-    is_inserted BOOLEAN;
     closure_key VARCHAR;
     now timestamp without time zone := timezone('UTC', now());
 BEGIN
@@ -17,13 +16,11 @@ BEGIN
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
-    -- Commit the pending closure and capture the inserted value
+    -- Commit the pending closure
     INSERT INTO closures (updated_at, key)
     VALUES (now, closure_key)
     ON CONFLICT (key)
-    DO UPDATE SET updated_at = now
-    RETURNING (xmax = 0) AS is_inserted
-    INTO is_inserted;
+    DO UPDATE SET updated_at = now;
 
     -- Commit the pending objects with their references
     INSERT INTO objects (key, refs, size)
