@@ -63,6 +63,8 @@ func (s *Service) CreatePushHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	extendPendingClosureDeadline(w, len(objectsMap))
+
 	push, err := s.createPendingClosure(r.Context(), s.Pool, req.Roots[0], req.Roots, objectsMap, req.VerifyS3)
 	if err != nil {
 		if s.handleS3Error(w, err, "create push") {

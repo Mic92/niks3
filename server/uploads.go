@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,22 @@ const (
 	// Worst case: complete with 10,000 parts (S3 hard max) ≈ 700 kB. 12× headroom.
 	maxAPIRequestBody = 8 << 20
 )
+
+// PendingClosureWriteTimeout is one minute plus one S3 call per object at the
+// rate limiter's floor, so a throttled push still gets its response.
+func PendingClosureWriteTimeout(n int) time.Duration {
+	perObject := time.Duration(float64(time.Second) / ratelimit.RateMin)
+
+	return time.Minute + time.Duration(n)*perObject
+}
+
+// extendPendingClosureDeadline lifts the global WriteTimeout, which a push
+// with many objects outruns, so the client does not retry a successful push.
+func extendPendingClosureDeadline(w http.ResponseWriter, objects int) {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(PendingClosureWriteTimeout(objects))); err != nil {
+		slog.Debug("Failed to extend write deadline", "error", err)
+	}
+}
 
 // decodeJSONBody decodes a size-limited JSON request body. It writes a
 // 413/400 response and returns false on error.
@@ -144,6 +161,8 @@ func (s *Service) CreatePendingClosureHandler(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+
+	extendPendingClosureDeadline(w, len(objectsMap))
 
 	upload, err := s.createPendingClosure(r.Context(), s.Pool, *req.Closure, nil, objectsMap, req.VerifyS3)
 	if err != nil {
