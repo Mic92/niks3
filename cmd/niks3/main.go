@@ -28,7 +28,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "\nCommands:")
 	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
 	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
-	fmt.Fprintln(os.Stderr, "  pins    Manage pins (list, delete)")
+	fmt.Fprintln(os.Stderr, "  pins    Manage pins (create, list or delete)")
 	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
 	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
