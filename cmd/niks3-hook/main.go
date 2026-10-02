@@ -173,9 +173,14 @@ func runServe() error {
 		slog.Info("Resuming with pending paths from previous run", "pending", count)
 	}
 
-	// Set up signal handling.
+	// Set up signal handling. Once the first signal has started the shutdown
+	// the handler is released, so that a second one ends the process: the
+	// drain waits for the push in flight, without a bound unless
+	// --drain-timeout is set, and the queue on disk loses nothing if cut short.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	context.AfterFunc(ctx, stop)
 
 	// Create the niks3 client.
 	c, err := cmdutil.NewClient(ctx, *cf.ServerURL, ts, tf, *cf.Debug)
@@ -236,19 +241,10 @@ func runServe() error {
 	// Start the upload worker.
 	worker := hook.NewWorker(queue, c.PushPaths, *batchSize, workerNotify)
 	worker.DrainTimeout = *drainTimeout
-	workerDone := make(chan struct{})
-
-	workerCtx, workerCancel := context.WithCancel(ctx)
-	defer workerCancel()
-
-	go func() {
-		defer close(workerDone)
-
-		worker.Run(workerCtx)
-	}()
 
 	// Start the socket server.
 	srv := hook.NewServer(ln, queueFunc)
+	srv.StoreDir = c.StoreDir()
 
 	// Idle exit: cancel the context when both the socket is idle and the queue is empty.
 	if idleTimeout > 0 {
@@ -286,14 +282,36 @@ func runServe() error {
 		}()
 	}
 
+	serveThenDrain(ctx, srv, worker)
+
+	slog.Info("niks3-hook serve stopped")
+
+	return nil
+}
+
+// serveThenDrain runs the worker, serves the socket until ctx is cancelled,
+// and then waits for the worker's final drain.
+func serveThenDrain(ctx context.Context, srv *hook.Server, worker *hook.Worker) {
+	workerDone := make(chan struct{})
+
+	// Not derived from ctx: the worker's final drain must start only after
+	// Serve has returned, i.e. after every accepted connection has enqueued
+	// its paths. Cancelling both at once let the drain find an empty queue
+	// and finish while a send accepted just before the listener closed was
+	// still committing, leaving an acknowledged path behind on exit.
+	workerCtx, workerCancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer workerCancel()
+
+	go func() {
+		defer close(workerDone)
+
+		worker.Run(workerCtx)
+	}()
+
 	// Serve blocks until context is cancelled.
 	_ = srv.Serve(ctx)
 
 	// Wait for worker to finish draining.
 	workerCancel()
 	<-workerDone
-
-	slog.Info("niks3-hook serve stopped")
-
-	return nil
 }

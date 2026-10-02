@@ -8,19 +8,38 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/hook"
 )
+
+// testSocketPath returns a socket path in a fresh directory. t.TempDir
+// embeds the test's name, which for the longer names takes the path past
+// macOS's 104-byte limit on unix socket addresses (bind: invalid argument).
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "hook") //nolint:usetesting // t.TempDir is the path that is too long
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	return filepath.Join(dir, name)
+}
 
 // TestServerClientIntegration tests the full server+client flow: multiple
 // concurrent clients send paths, the server queues them, and acks each client.
 func TestServerClientIntegration(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 
 	lc := net.ListenConfig{}
 
@@ -100,8 +119,7 @@ func TestServerClientIntegration(t *testing.T) {
 func TestServerQueueError(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 
 	lc := net.ListenConfig{}
 
@@ -132,6 +150,96 @@ func TestServerQueueError(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// The socket is writable by the build users. A request must be bounded in
+// size, and a path that is not a store path must be refused before it
+// reaches the queue, where the worker would stat and push it every round.
+func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
+	t.Parallel()
+
+	socketPath := testSocketPath(t, "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	var queued atomic.Int32
+
+	srv := hook.NewServer(ln, func(_ []string) error {
+		queued.Add(1)
+
+		return nil
+	})
+	srv.StoreDir = "/nix/store"
+	srv.MaxRequestBytes = 4096
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	const hash = "0123456789abcdfghijklmnpqrsvwxyz"
+
+	for _, p := range []string{
+		"/etc/shadow",
+		"/nix/store",
+		"/nix/store/",
+		"/nix/store/../../etc/shadow",
+		"/nix/store/" + hash + "-hello/bin/sh",
+		"nix/store/" + hash + "-hello",
+		"/nix/storeX/" + hash + "-hello",
+		// Directly below the store but not store paths. Each exists or
+		// fails Lstat with something other than "not found", so the
+		// worker would keep it queued and retry it for good.
+		"/nix/store/.links",
+		"/nix/store/aaa-hello",
+		"/nix/store/" + hash,
+		"/nix/store/" + hash + "-",
+		"/nix/store/" + strings.Replace(hash, "a", "e", 1) + "-hello",
+		"/nix/store/" + hash + "-hel\x00lo",
+		"/nix/store/" + hash + "-hel/lo",
+		"/nix/store/" + hash + "-" + strings.Repeat("x", 212),
+	} {
+		if err := hook.SendPaths(socketPath, []string{p}); err == nil {
+			t.Errorf("%q was accepted as a store path", p)
+		}
+	}
+
+	if err := hook.SendPaths(socketPath, []string{
+		"/nix/store/" + hash + "-hello-2.12.1",
+		"/nix/store/" + strings.Repeat("0", 32) + "-world.drv",
+		"/nix/store/" + strings.Repeat("z", 32) + "-" + strings.Repeat("A+-._?=", 30) + "x",
+	}); err != nil {
+		t.Errorf("store paths refused: %v", err)
+	}
+
+	// A request that streams past the limit is cut off and answered with an
+	// error rather than buffered whole.
+	huge := make([]string, 0, 200)
+	for i := range 200 {
+		huge = append(huge, "/nix/store/"+strconv.Itoa(i)+"-"+strings.Repeat("x", 100))
+	}
+
+	if err := hook.SendPaths(socketPath, huge); err == nil {
+		t.Error("oversized request was accepted")
+	}
+
+	cancel()
+	<-done
+
+	if n := queued.Load(); n != 1 {
+		t.Errorf("queue called %d times, want 1 (the valid request only)", n)
+	}
 }
 
 // TestGetListenerSocketActivation tests the systemd socket activation path.
@@ -165,8 +273,7 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 		return
 	}
 
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "activated.sock")
+	socketPath := testSocketPath(t, "activated.sock")
 
 	lc := net.ListenConfig{}
 
@@ -208,4 +315,141 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 	}
 
 	t.Log(string(output))
+}
+
+// A client that connects and never sends a request must not keep Serve from
+// returning on shutdown.
+func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
+	t.Parallel()
+
+	socketPath := testSocketPath(t, "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+	srv.ConnTimeout = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	dialer := net.Dialer{}
+
+	stalled, err := dialer.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	defer func() { _ = stalled.Close() }()
+
+	// Connections are accepted in order, so once a later send has been
+	// answered the stalled one has been accepted too and its handler is
+	// waiting for a request.
+	if err := hook.SendPaths(socketPath, []string{"/nix/store/aaa"}); err != nil {
+		t.Fatalf("send after the stalled client: %v", err)
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return while a client held an idle connection")
+	}
+}
+
+// A persistent Accept error (EMFILE) must not spin: Serve backs off, up to a
+// second, and a shutdown during the backoff ends it at once.
+func TestServerBacksOffOnAcceptErrors(t *testing.T) {
+	t.Parallel()
+
+	ln := &failingListener{closed: make(chan struct{}), eighth: make(chan struct{})}
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	serving := time.Now()
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	// 5+10+...+320ms of backoff lie behind the eighth failure, and 640ms
+	// ahead of it.
+	select {
+	case <-ln.eighth:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("only %d accept calls in 5s", ln.calls.Load())
+	}
+
+	if elapsed := time.Since(serving); elapsed < 500*time.Millisecond {
+		t.Errorf("eight accept failures within %v: no backoff between them", elapsed)
+	}
+
+	cancel()
+
+	start := time.Now()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after shutdown")
+	}
+
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Errorf("Serve took %v to return: shutdown waited out the backoff", elapsed)
+	}
+
+	// The eight failures, and one more Accept once the shutdown ended the
+	// backoff.
+	if n := ln.calls.Load(); n > 9 {
+		t.Errorf("%d accept calls, want at most 9: no backoff between failures", n)
+	}
+}
+
+// failingListener fails every Accept until it is closed.
+type failingListener struct {
+	calls     atomic.Int32
+	closed    chan struct{}
+	closeOnce sync.Once
+	eighth    chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if l.calls.Add(1) == 8 {
+		close(l.eighth)
+	}
+
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		return nil, syscall.EMFILE
+	}
+}
+
+func (l *failingListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+
+	return nil
+}
+
+func (l *failingListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: "failing", Net: "unix"}
 }

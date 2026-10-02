@@ -18,6 +18,7 @@ func TestMetricsInventory(t *testing.T) {
 
 	service := createTestService(t)
 	defer service.Close()
+	databaseOnlyTest(t)
 
 	ctx := t.Context()
 	queries := pg.New(service.Pool)

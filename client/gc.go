@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 	"github.com/Mic92/niks3/api"
 )
 
-const gcPollInterval = 2 * time.Second
+const defaultGCPollInterval = 2 * time.Second
 
 // GCConflictError is returned when a different GC task is already running.
 type GCConflictError struct {
@@ -105,11 +106,22 @@ func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, fai
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err() //nolint:wrapcheck // ctx.Err() is the canonical sentinel for cancellation
-		case <-time.After(gcPollInterval):
+		case <-time.After(c.gcPollInterval()):
 		}
 
 		status, err = c.GetGCStatus(ctx)
 		if err != nil {
+			// Behind a load balancer the polls may reach a replica that did
+			// not run the collection. It reports the run while the shared
+			// lock is held; once the lock is gone it has nothing to report,
+			// and neither do we beyond that the run ended.
+			var statusErr *HTTPStatusError
+			if lastPhase == api.GCTaskPhaseOtherReplica && errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
+				slog.Warn("Garbage collection finished on another replica; its statistics are not available here")
+
+				return &api.GCStats{}, nil
+			}
+
 			return nil, fmt.Errorf("polling gc status: %w", err)
 		}
 
@@ -133,4 +145,13 @@ func (c *Client) RunGarbageCollection(ctx context.Context, olderThan string, fai
 	}
 
 	return &status.Stats, nil
+}
+
+// gcPollInterval is how often RunGarbageCollection polls for status.
+func (c *Client) gcPollInterval() time.Duration {
+	if c.GCPollInterval > 0 {
+		return c.GCPollInterval
+	}
+
+	return defaultGCPollInterval
 }

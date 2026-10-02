@@ -66,8 +66,17 @@ packages
         echo "Running OIDC tests..."
         niks3-server-oidc.test -test.v
 
+        echo "Running signing tests..."
+        niks3-server-signing.test -test.v
+
         echo "Running hook tests..."
         niks3-hook.test -test.v
+
+        echo "Running niks3-hook command tests..."
+        niks3-cmd-niks3-hook.test -test.v
+
+        echo "Running rate limiter tests..."
+        niks3-ratelimit.test -test.v
 
         touch $out
       '';
