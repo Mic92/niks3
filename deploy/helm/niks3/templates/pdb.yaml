@@ -2,7 +2,10 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "niks3.fullname" . }}
+  {{- /* The suffix keeps this apart from the PodDisruptionBudget that a
+       CloudNativePG Cluster named like the release manages under the bare
+       name. CloudNativePG would delete this one otherwise. */}}
+  name: {{ include "niks3.fullname" . }}-server
   labels: {{- include "niks3.labels" . | nindent 4 }}
 spec:
   {{- with .Values.podDisruptionBudget.minAvailable }}
