@@ -49,8 +49,8 @@ func (s *Service) authenticate(r *http.Request) (principal, bool) {
 		return principal{scopes: []oidc.Scope{oidc.ScopeRead}}, true
 	}
 
-	token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !found || token == "" {
+	token := requestToken(r)
+	if token == "" {
 		return principal{}, false
 	}
 
@@ -125,4 +125,20 @@ func (s *Service) mayWritePin(r *http.Request, name string) bool {
 	}
 
 	return slices.Contains(p.scopes, oidc.ScopeAdmin) || oidc.GlobMatchAny(p.pins, name)
+}
+
+// requestToken returns the bearer token, or the password of HTTP Basic auth.
+// Nix sends credentials from its netrc file only as Basic auth, so this is
+// how a plain Nix substituter authenticates to a gated read proxy. It
+// ignores the user name.
+func requestToken(r *http.Request) string {
+	if token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found {
+		return token
+	}
+
+	if _, password, ok := r.BasicAuth(); ok {
+		return password
+	}
+
+	return ""
 }
