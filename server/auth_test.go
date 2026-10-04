@@ -375,6 +375,15 @@ func TestService_RequireScope_OIDC(t *testing.T) {
 		return map[string]string{"Authorization": "Bearer " + oidctest.SignToken(t, m, jwt.MapClaims{"sub": sub})}
 	}
 	static := map[string]string{"Authorization": "Bearer " + service.APIToken}
+	// Nix sends a netrc entry as Basic auth, with the token as the password.
+	netrc := func(password string) map[string]string {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		ok(t, err)
+
+		req.SetBasicAuth("nix", password)
+
+		return map[string]string{"Authorization": req.Header.Get("Authorization")}
+	}
 
 	expect := func(code int) *func(*testing.T, *httptest.ResponseRecorder) {
 		f := func(t *testing.T, w *httptest.ResponseRecorder) {
@@ -405,6 +414,11 @@ func TestService_RequireScope_OIDC(t *testing.T) {
 		{"reader may read", oidc.ScopeRead, bearer("reader"), http.StatusOK},
 		{"writer implies read", oidc.ScopeRead, bearer("builder"), http.StatusOK},
 		{"anonymous may not read", oidc.ScopeRead, nil, http.StatusUnauthorized},
+		// Plain Nix substituters authenticate with netrc, which sends Basic auth.
+		{"reader may read with netrc", oidc.ScopeRead, netrc(oidctest.SignToken(t, m, jwt.MapClaims{"sub": "reader"})), http.StatusOK},
+		{"static token may admin with netrc", oidc.ScopeAdmin, netrc(service.APIToken), http.StatusOK},
+		{"wrong netrc password may not read", oidc.ScopeRead, netrc("wrong"), http.StatusUnauthorized},
+		{"empty netrc password may not read", oidc.ScopeRead, netrc(""), http.StatusUnauthorized},
 	}
 
 	for _, tc := range cases {
