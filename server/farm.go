@@ -47,6 +47,17 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
 	return conn, nil
 }
 
+// announceDelay is how long a new lock holder stays quiet. An incumbent comes
+// back after its own stream broke, so no older stream of its own is left to
+// wait for.
+func announceDelay(incumbent bool) time.Duration {
+	if incumbent {
+		return 0
+	}
+
+	return leadHeartbeat + leadPingTimeout()
+}
+
 // pingLead checks that the lock connection answers within leadPingTimeout.
 func pingLead(ctx context.Context, conn *pgxpool.Conn) error {
 	pingCtx, cancel := context.WithTimeout(ctx, leadPingTimeout())
@@ -66,7 +77,8 @@ func pingLead(ctx context.Context, conn *pgxpool.Conn) error {
 //
 // A leader whose connection died keeps leading until its ping fails, but the
 // lock is already free. A new holder waits a heartbeat plus the ping timeout
-// before announcing, so the two leaders never overlap.
+// before announcing, so the two leaders never overlap. The incumbent is the
+// exception: it only reconnects after its own stream broke.
 func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -121,7 +133,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if conn != nil {
-				announceAt = time.Now().Add(leadHeartbeat + leadPingTimeout())
+				announceAt = time.Now().Add(announceDelay(req.Incumbent))
 
 				slog.Info("lead: acquired", "remote", r.RemoteAddr)
 			}

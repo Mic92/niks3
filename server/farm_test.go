@@ -189,6 +189,23 @@ func TestLeadIncumbentWinsAfterRestart(t *testing.T) { //nolint:paralleltest // 
 	standby.close()
 }
 
+// A restart closes every stream of the old process, so the incumbent that
+// takes the lock back has no predecessor to wait out. Waiting anyway made the
+// farm scheduler yield its role on every niks3 restart.
+func TestLeadIncumbentAnnouncesAtOnce(t *testing.T) {
+	t.Parallel()
+
+	s := createTestService(t)
+	defer s.Close()
+
+	incumbent := openLeadAs(t, s, true)
+	defer incumbent.close()
+
+	if st := incumbent.next(); !st.Lead {
+		t.Fatalf("incumbent was told %+v on its first heartbeat, want Lead: true", st)
+	}
+}
+
 func TestLeadEndsOnShutdown(t *testing.T) {
 	t.Parallel()
 
