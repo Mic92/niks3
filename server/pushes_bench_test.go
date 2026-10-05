@@ -13,6 +13,9 @@ import (
 
 // Reference graph of a NixOS system closure: one line per store path, the
 // path's hash followed by the hashes it references. The first line is the root.
+// The hashes are synthetic: only the shape of the graph matters, and a real
+// store path hash would make a fixed-output derivation that embeds this file
+// reference the store.
 //
 //go:embed testdata/nixos-closure.txt
 var nixosClosure string
