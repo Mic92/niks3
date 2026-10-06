@@ -50,7 +50,7 @@ jobs:
           REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -xve
-          PATH="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin:$PATH"
+          PATH="$(nix build .#niks3-docker.regctl --print-out-paths --no-link)/bin:$PATH"
           regctl registry login "$REGISTRY" -u "${{ github.actor }}" --pass-stdin <<< "$REGCTL_PASSWORD"
           regctl image import "ocidir://local:niks3" ./result
           for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
