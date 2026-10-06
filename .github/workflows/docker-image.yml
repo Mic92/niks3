@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      id-token: write
+      attestations: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
@@ -43,6 +45,7 @@ jobs:
         run: |
           nix build .#niks3-docker --print-build-logs
       - name: Push images
+        id: push
         env:
           REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -52,7 +55,16 @@ jobs:
           regctl image import "ocidir://local:niks3" ./result
           for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
             regctl image copy "ocidir://local:niks3" "$tag"
+            # All tags point at the same manifest, so the last digest is the one.
+            digest=$(regctl image digest "$tag")
           done
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
   # GHCR stores the per-arch children of a multi-arch index as untagged
   # versions. A naive "delete untagged" (actions/delete-package-versions) broke
   # every release tag once already (#291). ghcr-cleanup-action walks the index
