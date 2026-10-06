@@ -455,14 +455,7 @@ func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader,
 
 	plain := data
 
-	// S3 stores Content-Encoding either as a standard header or as user
-	// metadata (X-Amz-Meta-Content-Encoding) depending on the implementation.
-	contentEncoding := info.Metadata.Get("Content-Encoding")
-	if contentEncoding == "" {
-		contentEncoding = info.Metadata.Get("X-Amz-Meta-Content-Encoding")
-	}
-
-	if strings.EqualFold(contentEncoding, "zstd") {
+	if strings.EqualFold(objectContentEncoding(info), "zstd") {
 		decoder, ok := zstdDecoderPool.Get().(*zstd.Decoder)
 		if !ok {
 			slog.Error("Failed to get zstd decoder from pool")
@@ -504,10 +497,27 @@ func setProxyWriteDeadline(w http.ResponseWriter, key string, size int64) {
 	}
 }
 
-// setProxyHeaders sets response headers from S3 object metadata.
+// objectContentEncoding reads Content-Encoding from either the standard header
+// or user metadata, depending on the S3 implementation.
+func objectContentEncoding(info *minio.ObjectInfo) string {
+	if enc := info.Metadata.Get("Content-Encoding"); enc != "" {
+		return enc
+	}
+
+	return info.Metadata.Get("X-Amz-Meta-Content-Encoding")
+}
+
+// setProxyHeaders sets response headers from S3 object metadata. Narinfos are
+// decompressed by the proxy, so they must not report Content-Encoding.
 func setProxyHeaders(w http.ResponseWriter, info *minio.ObjectInfo) {
 	if info.ContentType != "" {
 		w.Header().Set("Content-Type", info.ContentType)
+	}
+
+	if !strings.HasSuffix(info.Key, ".narinfo") {
+		if enc := objectContentEncoding(info); enc != "" {
+			w.Header().Set("Content-Encoding", enc)
+		}
 	}
 
 	if info.ETag != "" {

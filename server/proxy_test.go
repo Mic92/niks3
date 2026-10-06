@@ -219,6 +219,65 @@ func TestReadProxyNarinfoAlreadyDecompressed(t *testing.T) {
 	}
 }
 
+func TestReadProxyForwardsContentEncoding(t *testing.T) {
+	t.Parallel()
+
+	service := createProxyTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	const (
+		logKey     = "log/r3sg474a7n33yk85gcda1031lfdvcrsh-mnw-0.12.2.drv"
+		lsKey      = "26xbg1ndr7hbcncrlf9nhx5is2b25d13.ls"
+		narinfoKey = "36xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo"
+	)
+
+	logCompressed := zstdCompress(t, []byte("building...\n"))
+	putTestObject(ctx, t, service, logKey, logCompressed,
+		minio.PutObjectOptions{ContentType: "text/plain", ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, lsKey, zstdCompress(t, []byte(`{"version":1}`)),
+		minio.PutObjectOptions{ContentType: "application/json", ContentEncoding: "zstd"})
+	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/abc-hello\n")),
+		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+
+	ts := setupProxyServer(t, service)
+	defer ts.Close()
+
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{logKey, "zstd"},
+		{lsKey, "zstd"},
+		{narinfoKey, ""},
+	} {
+		header, body := proxyGet(t, ts, "/"+tc.key, http.StatusOK)
+
+		if got := header.Get("Content-Encoding"); got != tc.want {
+			t.Errorf("GET %s: Content-Encoding = %q, want %q", tc.key, got, tc.want)
+		}
+
+		if tc.key == logKey && !bytes.Equal(body, logCompressed) {
+			t.Errorf("GET %s: body was altered", tc.key)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, ts.URL+"/"+tc.key, nil)
+		ok(t, err)
+
+		resp, err := http.DefaultClient.Do(req)
+		ok(t, err)
+
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("Failed to close response body: %v", err)
+		}
+
+		if got := resp.Header.Get("Content-Encoding"); got != tc.want {
+			t.Errorf("HEAD %s: Content-Encoding = %q, want %q", tc.key, got, tc.want)
+		}
+	}
+}
+
 func TestReadProxyNarStreaming(t *testing.T) {
 	t.Parallel()
 
