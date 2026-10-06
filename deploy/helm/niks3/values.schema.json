@@ -192,6 +192,9 @@
         "create": {
           "type": "boolean"
         },
+        "automountToken": {
+          "type": "boolean"
+        },
         "name": {
           "type": "string"
         },

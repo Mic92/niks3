@@ -63,6 +63,9 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}
+  # Mount the service account token. Needed by sidecar injectors such as the
+  # OpenBao agent injector. Always on with auth.workloadIdentity.
+  automountToken: false
 deploymentAnnotations: {}
 podAnnotations: {}
 podLabels: {}

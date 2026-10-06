@@ -24,7 +24,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "niks3.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.auth.workloadIdentity.enabled }}
+      automountServiceAccountToken: {{ or .Values.auth.workloadIdentity.enabled .Values.serviceAccount.automountToken }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
