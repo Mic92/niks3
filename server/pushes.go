@@ -97,8 +97,10 @@ func (s *Service) CompletePushHandler(w http.ResponseWriter, r *http.Request) {
 
 		switch {
 		case errors.As(err, &pgError) && strings.HasPrefix(pgError.Message, "Push does not exist"):
+			slog.Warn("Push not found", "id", id)
 			http.Error(w, "push not found", http.StatusNotFound)
 		case errors.As(err, &pgError) && strings.HasPrefix(pgError.Message, "Push object missing"):
+			slog.Warn("Push object missing", "id", id, "error", pgError.Message)
 			http.Error(w, pgError.Message, http.StatusConflict)
 		default:
 			slog.Error("Failed to complete push", "id", id, "error", err)
@@ -107,6 +109,8 @@ func (s *Service) CompletePushHandler(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+
+	slog.Info("Completed push", "id", id)
 
 	w.WriteHeader(http.StatusNoContent)
 }
