@@ -52,10 +52,10 @@ func createPush(t *testing.T, service *server.Service, roots []string, objects .
 	return resp
 }
 
-func completePush(t *testing.T, service *server.Service, id string, status int) {
+func completePush(t *testing.T, service *server.Service, id string) {
 	t.Helper()
 
-	check := checkStatusCode(status)
+	check := checkStatusCode(http.StatusNoContent)
 	testRequest(t, &TestRequest{
 		method:        "POST",
 		path:          "/api/pushes/" + id + "/complete",
@@ -115,7 +115,7 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 
 	resp := createPush(t, service, []string{rootA + ".narinfo", rootB + ".narinfo"},
 		pkgObjects(base), pkgObjects(rootA, base), pkgObjects(rootB, base))
-	completePush(t, service, resp.ID, http.StatusNoContent)
+	completePush(t, service, resp.ID)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = ANY($1)",
 		[]string{rootA + ".narinfo", rootB + ".narinfo"}); n != 2 {
@@ -128,6 +128,24 @@ func TestPush_CompleteCommitsEveryRoot(t *testing.T) {
 
 	if n := countRows(t, service, "SELECT count(*) FROM pending_objects"); n != 0 {
 		t.Errorf("pending object rows = %d, want 0", n)
+	}
+}
+
+func TestPush_RepeatedRootCommitsOnce(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	base := strings.Repeat("a", 32)
+	root := strings.Repeat("b", 32)
+
+	resp := createPush(t, service, []string{root + ".narinfo", root + ".narinfo"},
+		pkgObjects(base), pkgObjects(root, base))
+	completePush(t, service, resp.ID)
+
+	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", root+".narinfo"); n != 1 {
+		t.Errorf("closure rows = %d, want 1", n)
 	}
 }
 
@@ -146,7 +164,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 	second := strings.Repeat("c", 32)
 
 	one := createPush(t, service, []string{first + ".narinfo"}, pkgObjects(base), pkgObjects(first, base))
-	completePush(t, service, one.ID, http.StatusNoContent)
+	completePush(t, service, one.ID)
 
 	two := createPush(t, service, []string{second + ".narinfo"}, pkgObjects(base), pkgObjects(second, base))
 
@@ -168,7 +186,7 @@ func TestPush_SkippedKeySurvivesGCBeforeCommit(t *testing.T) {
 		}
 	}
 
-	completePush(t, service, two.ID, http.StatusNoContent)
+	completePush(t, service, two.ID)
 
 	if n := countRows(t, service, "SELECT count(*) FROM closures WHERE key = $1", second+".narinfo"); n != 1 {
 		t.Errorf("closure rows for the second push = %d, want 1", n)

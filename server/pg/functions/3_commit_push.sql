@@ -30,8 +30,10 @@ BEGIN
         RAISE EXCEPTION 'Push object missing: %', missing;
     END IF;
 
+    -- DISTINCT: ON CONFLICT cannot update one row twice in a statement.
     INSERT INTO closures (updated_at, key)
-    SELECT timezone('UTC', now()), unnest(push_roots)
+    SELECT timezone('UTC', now()), key
+    FROM (SELECT DISTINCT unnest(push_roots) AS key) AS root
     ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at;
 
     -- The push's key is its first root, so this adds nothing new to closures.
