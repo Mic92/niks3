@@ -301,15 +301,12 @@ func (s *Service) handleProxyHead(w http.ResponseWriter, r *http.Request, key st
 
 	s.S3RateLimiter.RecordSuccess()
 
-	setProxyHeaders(w, &objInfo)
+	decode := setProxyHeaders(w, r, &objInfo)
 
-	// For narinfos we decompress on GET, so the compressed Content-Length
-	// from S3 would be wrong. Omit it — HTTP allows HEAD without Content-Length.
-	if !strings.HasSuffix(key, ".narinfo") {
+	// The decoded length is unknown without reading the object.
+	if !decode {
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", strconv.FormatInt(objInfo.Size, 10))
-	} else {
-		w.Header().Set("Content-Type", "text/x-nix-narinfo")
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -344,7 +341,7 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		}
 	}
 
-	isNarinfo := strings.HasSuffix(key, ".narinfo")
+	decode := needsDecoding(r, &objInfo)
 
 	// Range support is for resuming large NAR downloads on flaky links. We
 	// translate the Range header into an S3 range request rather than using
@@ -352,7 +349,7 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 	// and re-issues the underlying S3 stream.
 	var rng *byteRange
 
-	if !isNarinfo {
+	if !decode {
 		var rangeErr error
 
 		rng, rangeErr = parseSingleRange(r.Header.Get("Range"), objInfo.Size)
@@ -402,17 +399,15 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 
 	s.S3RateLimiter.RecordSuccess()
 
-	// Narinfos are stored zstd-compressed in S3, but Nix's HTTP binary cache
-	// client expects plain text. Decompress on the fly (narinfos are ~500 bytes).
-	if isNarinfo {
-		s.serveDecompressedNarinfo(w, obj, &objInfo)
+	setProxyWriteDeadline(w, key, objInfo.Size)
+
+	if decode {
+		s.serveDecoded(w, r, obj, &objInfo)
 
 		return
 	}
 
-	setProxyWriteDeadline(w, key, objInfo.Size)
-
-	setProxyHeaders(w, &objInfo)
+	setProxyHeaders(w, r, &objInfo)
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	if rng != nil {
@@ -429,64 +424,52 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 	}
 }
 
-// serveDecompressedNarinfo reads a narinfo from S3 and writes the decompressed
-// content to the response. Narinfos are tiny (~500 bytes compressed) so
-// buffering the whole thing is fine, up to maxNarinfoSize either way.
-//
-// Narinfos are stored zstd-compressed in S3 with Content-Encoding: zstd.
-// A transparent proxy (e.g. Cloudflare Tunnel) may decompress the data and
-// strip the Content-Encoding header before it reaches us. We only decompress
-// when the Content-Encoding header is still present.
-func (s *Service) serveDecompressedNarinfo(w http.ResponseWriter, obj io.Reader, info *minio.ObjectInfo) {
-	data, err := io.ReadAll(io.LimitReader(obj, maxNarinfoSize+1))
-	if err != nil {
-		slog.Error("Failed to read narinfo from S3", "error", err)
+// serveDecoded writes a zstd object to a client that does not accept zstd.
+// Narinfos are small and buffered up to maxNarinfoSize so that oversized ones
+// fail with a 502. Everything else is streamed.
+func (s *Service) serveDecoded(w http.ResponseWriter, r *http.Request, obj io.Reader, info *minio.ObjectInfo) {
+	decoder, ok := zstdDecoderPool.Get().(*zstd.Decoder)
+	if !ok {
+		slog.Error("Failed to get zstd decoder from pool")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+
+		return
+	}
+
+	defer zstdDecoderPool.Put(decoder)
+
+	if err := decoder.Reset(obj); err != nil {
+		slog.Error("Failed to start zstd decoding", "key", info.Key, "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 
 		return
 	}
 
-	if len(data) > maxNarinfoSize {
-		slog.Error("Refusing narinfo larger than the limit", "key", info.Key, "limit", maxNarinfoSize)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	defer func() { _ = decoder.Reset(nil) }()
 
-		return
-	}
-
-	plain := data
-
-	if strings.EqualFold(objectContentEncoding(info), "zstd") {
-		decoder, ok := zstdDecoderPool.Get().(*zstd.Decoder)
-		if !ok {
-			slog.Error("Failed to get zstd decoder from pool")
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-
-			return
-		}
-		defer zstdDecoderPool.Put(decoder)
-
-		plain, err = decoder.DecodeAll(data, nil)
-		if err != nil {
-			slog.Error("Failed to decompress narinfo", "error", err)
+	if strings.HasSuffix(info.Key, ".narinfo") {
+		plain, err := io.ReadAll(io.LimitReader(decoder, maxNarinfoSize+1))
+		if err != nil || len(plain) > maxNarinfoSize {
+			slog.Error("Failed to decode narinfo", "key", info.Key, "limit", maxNarinfoSize, "error", err)
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 
 			return
 		}
+
+		setProxyHeaders(w, r, info)
+		w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(plain)
+
+		return
 	}
 
-	w.Header().Set("Content-Type", "text/x-nix-narinfo")
-
-	if info.ETag != "" {
-		w.Header().Set("ETag", info.ETag)
-	}
-
-	if !info.LastModified.IsZero() {
-		w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
-	}
-
-	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
+	setProxyHeaders(w, r, info)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(plain)
+
+	if _, err := io.Copy(w, decoder); err != nil {
+		slog.Debug("Failed to stream decoded S3 object to client", "key", info.Key, "error", err)
+	}
 }
 
 // setProxyWriteDeadline replaces the server's WriteTimeout with ProxyWriteTimeout(size).
@@ -507,15 +490,46 @@ func objectContentEncoding(info *minio.ObjectInfo) string {
 	return info.Metadata.Get("X-Amz-Meta-Content-Encoding")
 }
 
-// setProxyHeaders sets response headers from S3 object metadata. Narinfos are
-// decompressed by the proxy, so they must not report Content-Encoding.
-func setProxyHeaders(w http.ResponseWriter, info *minio.ObjectInfo) {
-	if info.ContentType != "" {
+// acceptsZstd reports whether the client lists zstd in Accept-Encoding.
+func acceptsZstd(r *http.Request) bool {
+	for _, value := range r.Header.Values("Accept-Encoding") {
+		for coding := range strings.SplitSeq(value, ",") {
+			name, params, _ := strings.Cut(coding, ";")
+			if !strings.EqualFold(strings.TrimSpace(name), "zstd") {
+				continue
+			}
+
+			q := strings.ReplaceAll(strings.ToLower(params), " ", "")
+
+			return q != "q=0" && q != "q=0.0" && q != "q=0.00" && q != "q=0.000"
+		}
+	}
+
+	return false
+}
+
+// needsDecoding reports whether the object is stored as zstd and the client
+// cannot decode it.
+func needsDecoding(r *http.Request, info *minio.ObjectInfo) bool {
+	return strings.EqualFold(objectContentEncoding(info), "zstd") && !acceptsZstd(r)
+}
+
+// setProxyHeaders sets response headers from S3 object metadata and reports
+// whether the body is decoded for the client.
+func setProxyHeaders(w http.ResponseWriter, r *http.Request, info *minio.ObjectInfo) bool {
+	decode := needsDecoding(r, info)
+
+	switch {
+	case strings.HasSuffix(info.Key, ".narinfo"):
+		w.Header().Set("Content-Type", "text/x-nix-narinfo")
+	case info.ContentType != "":
 		w.Header().Set("Content-Type", info.ContentType)
 	}
 
-	if !strings.HasSuffix(info.Key, ".narinfo") {
-		if enc := objectContentEncoding(info); enc != "" {
+	if enc := objectContentEncoding(info); enc != "" {
+		w.Header().Add("Vary", "Accept-Encoding")
+
+		if !decode {
 			w.Header().Set("Content-Encoding", enc)
 		}
 	}
@@ -527,6 +541,8 @@ func setProxyHeaders(w http.ResponseWriter, info *minio.ObjectInfo) {
 	if !info.LastModified.IsZero() {
 		w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	}
+
+	return decode
 }
 
 // handleProxyS3Error handles S3 errors from proxy requests.

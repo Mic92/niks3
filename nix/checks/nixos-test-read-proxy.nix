@@ -32,6 +32,7 @@ testers.nixosTest {
     environment.systemPackages = [
       niks3
       pkgs.curl
+      pkgs.zstd
     ];
   };
 
@@ -45,12 +46,20 @@ testers.nixosTest {
 
     # Push a derivation via the write path, retrieve via the HTTP read proxy
     server.succeed("echo -n '${apiToken}' > /tmp/auth-token")
-    server.succeed("nix-build -E 'derivation { name=\"proxy-test\"; system=builtins.currentSystem; builder=\"/bin/sh\"; args=[\"-c\" \"echo hello-proxy > $out\"]; }' --no-out-link > /tmp/proxy-path")
+    server.succeed("nix-build -E 'derivation { name=\"proxy-test\"; system=builtins.currentSystem; builder=\"/bin/sh\"; args=[\"-c\" \"echo hello-proxy-log; echo hello-proxy > $out\"]; }' --no-out-link > /tmp/proxy-path")
     server.succeed("NIKS3_SERVER_URL=http://localhost:5751 NIKS3_AUTH_TOKEN_FILE=/tmp/auth-token ${niks3}/bin/niks3 push $(cat /tmp/proxy-path)")
 
     # nix copy from the HTTP proxy with signature verification
     server.succeed("nix copy --from http://localhost:5751 --to /tmp/proxy-store $(cat /tmp/proxy-path)")
     server.succeed("nix --store /tmp/proxy-store store cat $(cat /tmp/proxy-path) | grep hello-proxy")
+
+    # Build logs are stored as zstd
+    server.succeed("nix log --store http://localhost:5751 $(cat /tmp/proxy-path) | grep hello-proxy-log")
+    server.succeed("nix-store --query --deriver $(cat /tmp/proxy-path) > /tmp/proxy-drv")
+    log_url = "http://localhost:5751/log/$(basename $(cat /tmp/proxy-drv))"
+    server.succeed(f"curl -sf {log_url} | grep hello-proxy-log")
+    server.succeed(f"curl -sf -H 'Accept-Encoding: zstd' {log_url} | zstd -d | grep hello-proxy-log")
+    server.succeed(f"curl -sfI -H 'Accept-Encoding: zstd' {log_url} | grep -i 'content-encoding: zstd'")
 
     # Invalid paths must 404
     server.succeed("test $(curl -so /dev/null -w '%{http_code}' http://localhost:5751/nonexistent) = 404")

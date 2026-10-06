@@ -175,17 +175,13 @@ func TestReadProxyNarinfo(t *testing.T) {
 		t.Error("expected Last-Modified header")
 	}
 
-	// Past the bound the proxy must refuse instead of buffering.
+	// Past the bound the proxy must refuse to decode instead of buffering.
 	oversized := bytes.Repeat([]byte("References: x\n"), server.MaxNarinfoSize/14+1)
 
 	bomb := "3hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
 	putTestObject(ctx, t, service, bomb, zstdCompress(t, oversized),
 		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
 	proxyGet(t, ts, "/"+bomb, http.StatusBadGateway)
-
-	plain := "5hcdxyjf9yiq7qf3i4548drb6sjmwa1v.narinfo"
-	putTestObject(ctx, t, service, plain, oversized, minio.PutObjectOptions{ContentType: "application/x-nix-narinfo"})
-	proxyGet(t, ts, "/"+plain, http.StatusBadGateway)
 }
 
 // TestReadProxyNarinfoAlreadyDecompressed verifies that narinfos already
@@ -219,7 +215,7 @@ func TestReadProxyNarinfoAlreadyDecompressed(t *testing.T) {
 	}
 }
 
-func TestReadProxyForwardsContentEncoding(t *testing.T) {
+func TestReadProxyContentNegotiation(t *testing.T) {
 	t.Parallel()
 
 	service := createProxyTestService(t)
@@ -227,54 +223,98 @@ func TestReadProxyForwardsContentEncoding(t *testing.T) {
 
 	ctx := t.Context()
 
-	const (
-		logKey     = "log/r3sg474a7n33yk85gcda1031lfdvcrsh-mnw-0.12.2.drv"
-		lsKey      = "26xbg1ndr7hbcncrlf9nhx5is2b25d13.ls"
-		narinfoKey = "36xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo"
-	)
+	objects := []struct {
+		key         string
+		contentType string
+		plain       []byte
+	}{
+		{"log/r3sg474a7n33yk85gcda1031lfdvcrsh-mnw-0.12.2.drv", "text/plain", []byte("building...\n")},
+		{"26xbg1ndr7hbcncrlf9nhx5is2b25d13.ls", "application/json", []byte(`{"version":1}`)},
+		{"36xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", "application/x-nix-narinfo", []byte("StorePath: /nix/store/abc-hello\n")},
+	}
 
-	logCompressed := zstdCompress(t, []byte("building...\n"))
-	putTestObject(ctx, t, service, logKey, logCompressed,
-		minio.PutObjectOptions{ContentType: "text/plain", ContentEncoding: "zstd"})
-	putTestObject(ctx, t, service, lsKey, zstdCompress(t, []byte(`{"version":1}`)),
-		minio.PutObjectOptions{ContentType: "application/json", ContentEncoding: "zstd"})
-	putTestObject(ctx, t, service, narinfoKey, zstdCompress(t, []byte("StorePath: /nix/store/abc-hello\n")),
-		minio.PutObjectOptions{ContentType: "application/x-nix-narinfo", ContentEncoding: "zstd"})
+	compressed := make(map[string][]byte)
+
+	for _, o := range objects {
+		compressed[o.key] = zstdCompress(t, o.plain)
+		putTestObject(ctx, t, service, o.key, compressed[o.key],
+			minio.PutObjectOptions{ContentType: o.contentType, ContentEncoding: "zstd"})
+	}
 
 	ts := setupProxyServer(t, service)
 	defer ts.Close()
 
-	for _, tc := range []struct {
-		key  string
-		want string
-	}{
-		{logKey, "zstd"},
-		{lsKey, "zstd"},
-		{narinfoKey, ""},
-	} {
-		header, body := proxyGet(t, ts, "/"+tc.key, http.StatusOK)
-
-		if got := header.Get("Content-Encoding"); got != tc.want {
-			t.Errorf("GET %s: Content-Encoding = %q, want %q", tc.key, got, tc.want)
-		}
-
-		if tc.key == logKey && !bytes.Equal(body, logCompressed) {
-			t.Errorf("GET %s: body was altered", tc.key)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, ts.URL+"/"+tc.key, nil)
+	do := func(method, key, acceptEncoding string) (http.Header, []byte) {
+		req, err := http.NewRequestWithContext(ctx, method, ts.URL+"/"+key, nil)
 		ok(t, err)
+
+		req.Header.Set("Accept-Encoding", acceptEncoding)
 
 		resp, err := http.DefaultClient.Do(req)
 		ok(t, err)
 
-		if err := resp.Body.Close(); err != nil {
-			t.Logf("Failed to close response body: %v", err)
-		}
+		body, err := io.ReadAll(resp.Body)
+		ok(t, err)
+		ok(t, resp.Body.Close())
 
-		if got := resp.Header.Get("Content-Encoding"); got != tc.want {
-			t.Errorf("HEAD %s: Content-Encoding = %q, want %q", tc.key, got, tc.want)
+		return resp.Header, body
+	}
+
+	for _, tc := range []struct {
+		acceptEncoding string
+		passthrough    bool
+	}{
+		{"zstd", true},
+		{"gzip, deflate, br, zstd", true},
+		{"ZSTD;q=0.5", true},
+		{"gzip", false},
+		{"identity", false},
+		{"zstd;q=0", false},
+	} {
+		for _, o := range objects {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				header, body := do(method, o.key, tc.acceptEncoding)
+				name := method + " " + o.key + " with " + tc.acceptEncoding
+
+				wantEncoding, want := "", o.plain
+				if tc.passthrough {
+					wantEncoding, want = "zstd", compressed[o.key]
+				}
+
+				if got := header.Get("Content-Encoding"); got != wantEncoding {
+					t.Errorf("%s: Content-Encoding = %q, want %q", name, got, wantEncoding)
+				}
+
+				if got := header.Get("Vary"); got != "Accept-Encoding" {
+					t.Errorf("%s: Vary = %q, want Accept-Encoding", name, got)
+				}
+
+				if method == http.MethodGet && !bytes.Equal(body, want) {
+					t.Errorf("%s: body = %q, want %q", name, body, want)
+				}
+
+				if strings.HasSuffix(o.key, ".narinfo") && header.Get("Content-Type") != "text/x-nix-narinfo" {
+					t.Errorf("%s: Content-Type = %q", name, header.Get("Content-Type"))
+				}
+			}
 		}
+	}
+
+	// A decoded stream has no known length, so a Range must not be applied to it.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/"+objects[0].key, nil)
+	ok(t, err)
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("Range", "bytes=2-4")
+
+	resp, err := http.DefaultClient.Do(req)
+	ok(t, err)
+
+	body, err := io.ReadAll(resp.Body)
+	ok(t, err)
+	ok(t, resp.Body.Close())
+
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, objects[0].plain) {
+		t.Errorf("ranged GET of a decoded log: status %d, body %q", resp.StatusCode, body)
 	}
 }
 
