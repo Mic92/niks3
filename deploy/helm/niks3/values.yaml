@@ -42,8 +42,14 @@ auth:
   # Further OIDC providers in the server's JSON schema, keyed by name.
   oidcProviders: {}
 signing:
+  # Secret mounted at /secrets/signing. Holds signing keys and, with `program`,
+  # any credentials the program reads, for example an OpenBao token or an HSM PIN.
   existingSecret: ""
-  keys: [] # file names within the Secret, required with existingSecret
+  keys: [] # key file names within the Secret, required with existingSecret unless `program` is set
+  # Program that signs narinfos, started by the server and configured through
+  # extraEnv. It must exist in the image. The image ships /bin/niks3-openbao-signer.
+  program: ""
+  publicKey: "" # name:base64 public key of the program's key, required with `program`
 cacheURL: ""
 readProxy:
   enabled: false

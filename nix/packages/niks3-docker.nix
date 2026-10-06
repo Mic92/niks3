@@ -58,6 +58,12 @@ let
             fi
           '';
         }))
+        # Example signer for --sign-program, see the wiki page on external signers.
+        ((import ./niks3-openbao-signer.nix { inherit pkgs lib; }).overrideAttrs (old: {
+          env = (old.env or { }) // {
+            inherit GOOS GOARCH;
+          };
+        }))
       ]
       ++ (with crossPkgs.pkgsStatic; [
         busybox

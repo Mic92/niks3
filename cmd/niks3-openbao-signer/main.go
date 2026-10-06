@@ -52,14 +52,18 @@ func main() {
 }
 
 func run() error {
-	addr := flag.String("addr", "", "OpenBao address")
-	tokenFile := flag.String("token-file", "", "file containing the OpenBao token, read on every request")
-	key := flag.String("key", "", "transit key name")
-	name := flag.String("signature-name", "", "key name in signatures, must match the public key given to niks3")
+	// niks3 starts the program without arguments, so deployments without a
+	// wrapper script configure it through the environment.
+	addr := flag.String("addr", os.Getenv("NIKS3_OPENBAO_ADDR"), "OpenBao address ($NIKS3_OPENBAO_ADDR)")
+	tokenFile := flag.String("token-file", os.Getenv("NIKS3_OPENBAO_TOKEN_FILE"),
+		"file containing the OpenBao token, read on every request ($NIKS3_OPENBAO_TOKEN_FILE)")
+	key := flag.String("key", os.Getenv("NIKS3_OPENBAO_KEY"), "transit key name ($NIKS3_OPENBAO_KEY)")
+	name := flag.String("signature-name", os.Getenv("NIKS3_OPENBAO_SIGNATURE_NAME"),
+		"key name in signatures, must match the public key given to niks3 ($NIKS3_OPENBAO_SIGNATURE_NAME)")
 	flag.Parse()
 
 	if *addr == "" || *tokenFile == "" || *key == "" || *name == "" {
-		return errors.New("-addr, -token-file, -key and -signature-name are required")
+		return errors.New("address, token file, key and signature name are required, see -help")
 	}
 
 	t := &transit{

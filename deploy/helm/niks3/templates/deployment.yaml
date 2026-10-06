@@ -34,11 +34,18 @@ spec:
           image: {{ include "niks3.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            {{- if and .Values.signing.existingSecret (not .Values.signing.keys) }}
+            {{- if and .Values.signing.existingSecret (not .Values.signing.keys) (not .Values.signing.program) }}
             {{- fail "signing.existingSecret is set but signing.keys is empty. List the key file names, otherwise narinfos stay unsigned" }}
+            {{- end }}
+            {{- if ne (empty .Values.signing.program) (empty .Values.signing.publicKey) }}
+            {{- fail "signing.program and signing.publicKey must be set together" }}
             {{- end }}
             {{- range .Values.signing.keys }}
             - --sign-key-path=/secrets/signing/{{ . }}
+            {{- end }}
+            {{- with .Values.signing.program }}
+            - --sign-program={{ . }}
+            - --sign-public-key={{ $.Values.signing.publicKey }}
             {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}

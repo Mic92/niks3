@@ -137,6 +137,12 @@
         },
         "keys": {
           "type": "array"
+        },
+        "program": {
+          "type": "string"
+        },
+        "publicKey": {
+          "type": "string"
         }
       },
       "additionalProperties": false

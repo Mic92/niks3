@@ -56,19 +56,23 @@ func main() {
 }
 
 func run() error {
-	module := flag.String("module", "", "path to the PKCS#11 module, for example libsofthsm2.so")
-	tokenLabel := flag.String("token", "", "label of the token")
-	pinFile := flag.String("pin-file", "", "file containing the user PIN")
-	keyLabel := flag.String("key", "", "label of the Ed25519 key pair")
-	name := flag.String("signature-name", "", "key name in signatures, must match the public key given to niks3")
+	// niks3 starts the program without arguments, so deployments without a
+	// wrapper script configure it through the environment.
+	module := flag.String("module", os.Getenv("NIKS3_PKCS11_MODULE"),
+		"path to the PKCS#11 module, for example libsofthsm2.so ($NIKS3_PKCS11_MODULE)")
+	tokenLabel := flag.String("token", os.Getenv("NIKS3_PKCS11_TOKEN"), "label of the token ($NIKS3_PKCS11_TOKEN)")
+	pinFile := flag.String("pin-file", os.Getenv("NIKS3_PKCS11_PIN_FILE"), "file containing the user PIN ($NIKS3_PKCS11_PIN_FILE)")
+	keyLabel := flag.String("key", os.Getenv("NIKS3_PKCS11_KEY"), "label of the Ed25519 key pair ($NIKS3_PKCS11_KEY)")
+	name := flag.String("signature-name", os.Getenv("NIKS3_PKCS11_SIGNATURE_NAME"),
+		"key name in signatures, must match the public key given to niks3 ($NIKS3_PKCS11_SIGNATURE_NAME)")
 	printKey := flag.Bool("print-public-key", false, "print the public key as name:base64 and exit")
 	flag.Parse()
 
 	if *module == "" || *tokenLabel == "" || *pinFile == "" || *keyLabel == "" || *name == "" {
-		return errors.New("-module, -token, -pin-file, -key and -signature-name are required")
+		return errors.New("module, token, PIN file, key and signature name are required, see -help")
 	}
 
-	pin, err := os.ReadFile(*pinFile)
+	pin, err := os.ReadFile(*pinFile) //nolint:gosec // the PIN file is operator configuration
 	if err != nil {
 		return fmt.Errorf("reading PIN: %w", err)
 	}
