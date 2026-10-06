@@ -149,6 +149,131 @@ func TestPush_RepeatedRootCommitsOnce(t *testing.T) {
 	}
 }
 
+func TestPush_CompleteWaitsForCleanupOfThePush(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	root := strings.Repeat("b", 32)
+	resp := createPush(t, service, []string{root + ".narinfo"}, pkgObjects(root))
+
+	cleanup, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = cleanup.Rollback(ctx) }()
+
+	_, err = cleanup.Exec(ctx, `SELECT 1 FROM pending_closures WHERE id = $1 FOR UPDATE`, resp.ID)
+	ok(t, err)
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := service.Pool.Exec(ctx, "SELECT commit_push($1)", resp.ID)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("commit_push did not wait for the cleanup holding the push row: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	_, err = cleanup.Exec(ctx, `DELETE FROM pending_closures WHERE id = $1`, resp.ID)
+	ok(t, err)
+	ok(t, cleanup.Commit(ctx))
+
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "Push does not exist") {
+		t.Fatalf("commit_push after cleanup = %v, want Push does not exist", err)
+	}
+}
+
+// A push that waits for a root holds every lower one, so pushes with
+// overlapping roots cannot wait on each other.
+func TestPush_RootsAreLockedInByteOrder(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	// DISTINCT alone returns hash order, so six roots rarely come out sorted.
+	const letters = "gfdcba"
+
+	roots := make([]string, 0, len(letters))
+	objects := make([][]map[string]any, 0, len(letters))
+
+	for _, c := range letters {
+		hash := strings.Repeat(string(c), 32)
+		roots = append(roots, hash+".narinfo")
+		objects = append(objects, pkgObjects(hash))
+	}
+
+	resp := createPush(t, service, roots, objects...)
+
+	_, err := service.Pool.Exec(ctx,
+		`INSERT INTO closures (key, updated_at) SELECT k, now() FROM unnest($1::varchar[]) AS k`, roots)
+	ok(t, err)
+
+	holder, err := service.Pool.Begin(ctx)
+	ok(t, err)
+
+	defer func() { _ = holder.Rollback(ctx) }()
+
+	top := roots[0]
+
+	var holderPID int
+
+	ok(t, holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID))
+
+	_, err = holder.Exec(ctx, `SELECT 1 FROM closures WHERE key = $1 FOR UPDATE`, top)
+	ok(t, err)
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := service.Pool.Exec(ctx, "SELECT commit_push($1)", resp.ID)
+		done <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		var waiting int
+
+		ok(t, service.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting))
+
+		if waiting > 0 {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("commit_push never waited for the held root")
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, lower := range roots[1:] {
+		probe, err := service.Pool.Begin(ctx)
+		ok(t, err)
+
+		_, err = probe.Exec(ctx, `SELECT 1 FROM closures WHERE key = $1 FOR UPDATE NOWAIT`, lower)
+		_ = probe.Rollback(ctx)
+
+		if err == nil {
+			t.Errorf("commit_push waits for %s without holding %s", top, lower)
+		}
+	}
+
+	ok(t, holder.Rollback(ctx))
+	ok(t, <-done)
+}
+
 // A key that was live when the push started is not offered for upload, but
 // the push still holds a pending row for it. A GC that runs before the commit,
 // even one that ages out the only closure reaching the key and sweeps with

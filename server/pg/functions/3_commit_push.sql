@@ -7,7 +7,8 @@ DECLARE
     push_roots varchar[];
     missing varchar;
 BEGIN
-    SELECT roots INTO push_roots FROM pending_closures WHERE id = push_id;
+    -- Locked, so cleanup cannot delete the push mid-commit.
+    SELECT roots INTO push_roots FROM pending_closures WHERE id = push_id FOR UPDATE;
 
     IF push_roots IS NULL THEN
         RAISE EXCEPTION 'Push does not exist: id=%', push_id;
@@ -34,6 +35,8 @@ BEGIN
     INSERT INTO closures (updated_at, key)
     SELECT timezone('UTC', now()), key
     FROM (SELECT DISTINCT unnest(push_roots) AS key) AS root
+    -- Byte order, as in commit_pending_closure.
+    ORDER BY key COLLATE "C"
     ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at;
 
     -- The push's key is its first root, so this adds nothing new to closures.
