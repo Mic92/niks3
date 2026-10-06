@@ -27,6 +27,7 @@ pkgs.buildGoModule {
       common.srcs.cmd-niks3
       common.srcs.cmd-niks3-server
       common.srcs.cmd-niks3-hook
+      common.srcs.cmd-niks3-openbao-signer
     ];
   };
 
@@ -46,6 +47,8 @@ pkgs.buildGoModule {
     go test -c -p "$NIX_BUILD_CORES" ./server -o server.test
     go test -c -p "$NIX_BUILD_CORES" ./server/oidc -o server-oidc.test
     go test -c -p "$NIX_BUILD_CORES" ./hook -o hook.test
+    go test -c -p "$NIX_BUILD_CORES" ./server/signing -o server-signing.test
+    go test -c -p "$NIX_BUILD_CORES" ./cmd/niks3-openbao-signer -o openbao-signer.test
 
     runHook postBuild
   '';
@@ -58,6 +61,8 @@ pkgs.buildGoModule {
     install -D server.test $out/bin/niks3-server.test
     install -D server-oidc.test $out/bin/niks3-server-oidc.test
     install -D hook.test $out/bin/niks3-hook.test
+    install -D server-signing.test $out/bin/niks3-server-signing.test
+    install -D openbao-signer.test $out/bin/niks3-openbao-signer.test
 
     # Remove Go compiler reference to reduce closure size
     if command -v remove-references-to >/dev/null; then

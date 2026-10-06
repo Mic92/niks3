@@ -70,6 +70,12 @@ packages
         echo "Running hook tests..."
         niks3-hook.test -test.v
 
+        echo "Running signing tests..."
+        niks3-server-signing.test -test.v
+
+        echo "Running OpenBao signer tests..."
+        niks3-openbao-signer.test -test.v
+
         touch $out
       '';
 }
@@ -93,6 +99,11 @@ packages
   nixos-test-read-proxy = pkgs.callPackage ./nixos-test-read-proxy.nix {
     inherit common;
     niks3 = selfPackages.niks3;
+  };
+  nixos-test-external-signer = pkgs.callPackage ./nixos-test-external-signer.nix {
+    inherit common;
+    niks3 = selfPackages.niks3;
+    niks3-openbao-signer = selfPackages.niks3-openbao-signer;
   };
   nixos-test-k3s = pkgs.callPackage ./nixos-test-k3s.nix {
     inherit common;
