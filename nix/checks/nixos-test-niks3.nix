@@ -1,23 +1,24 @@
 {
   lib,
   testers,
-  writeText,
-  s5cmd,
   niks3,
+  s5cmd,
   niks3-hook,
-  rustfs,
   mock-oidc-server,
   nix,
   pkgs,
+  common,
   ca-derivations-supported,
   ...
 }:
 
 let
-  apiToken = "test-token-that-is-at-least-36-characters-long";
-  apiTokenFile = writeText "api-token" apiToken;
-  s3AccessKey = "rustfsadmin";
-  s3SecretKey = "rustfsadmin";
+  inherit (common)
+    apiToken
+    apiTokenFile
+    s3AccessKey
+    s3SecretKey
+    ;
   serverUrl = "http://server:5751";
 in
 testers.nixosTest {
@@ -26,10 +27,6 @@ testers.nixosTest {
   nodes = {
     server =
       let
-        # Test signing key pair (generated with nix key generate-secret / convert-secret-to-public)
-        signingSecretKey = writeText "niks3-signing-key" "niks3-test-1:0knWkx/F+6IJmI4dkvNs14SCaewg9ZWSAQUNg9juRxh/8x+rzUJx9SWdyGOVl21IbJlQemUKG40qW2TTyrE++w==";
-        signingPublicKey = "niks3-test-1:f/Mfq81CcfUlnchjlZdtSGyZUHplChuNKltk08qxPvs=";
-
         # Create a symlink wrapper for testing issue #59
         symlinkWrapper = pkgs.runCommand "symlink-wrapper" { } ''
           ln -s ${
@@ -43,32 +40,27 @@ testers.nixosTest {
         '';
       in
       {
-        imports = [ ../nixosModules/niks3.nix ];
+        imports = [
+          ../nixosModules/niks3.nix
+          (common.rustfsModule { })
+        ];
 
         nix.package = nix;
-        nix.settings.experimental-features = [
-          "nix-command"
-          "flakes"
-        ]
-        ++ lib.optional ca-derivations-supported "ca-derivations";
-        nix.settings.substituters = lib.mkForce [ ];
-        # Trust the signing key
-        nix.settings.trusted-public-keys = [ signingPublicKey ];
+        nix.settings = common.nixSettings // {
+          experimental-features =
+            common.nixSettings.experimental-features ++ lib.optional ca-derivations-supported "ca-derivations";
+        };
 
         services.niks3 = {
           enable = true;
           httpAddr = "0.0.0.0:5751";
 
-          s3 = {
+          s3 = common.s3 // {
             endpoint = "server:9000";
-            bucket = "niks3-test";
-            useSSL = false;
-            accessKeyFile = writeText "s3-access-key" s3AccessKey;
-            secretKeyFile = writeText "s3-secret-key" s3SecretKey;
           };
 
           inherit apiTokenFile;
-          signKeyFiles = [ signingSecretKey ];
+          signKeyFiles = [ common.signing.secretKeyFile ];
 
           # OIDC configuration for testing
           oidc = {
@@ -154,70 +146,6 @@ testers.nixosTest {
             DynamicUser = true;
             Restart = "on-failure";
           };
-        };
-
-        # Run RustFS for S3 storage
-        systemd.services.rustfs = {
-          description = "RustFS S3-compatible object storage";
-          after = [ "network.target" ];
-          wantedBy = [ "multi-user.target" ];
-
-          serviceConfig = {
-            ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key ${s3AccessKey} --secret-key ${s3SecretKey} /var/lib/rustfs";
-            StateDirectory = "rustfs";
-            DynamicUser = true;
-            Restart = "on-failure";
-          };
-        };
-
-        systemd.services.rustfs-setup = {
-          description = "Setup RustFS bucket";
-          after = [ "rustfs.service" ];
-          requires = [ "rustfs.service" ];
-          before = [ "niks3.service" ];
-          wantedBy = [ "multi-user.target" ];
-
-          environment = {
-            S3_ENDPOINT_URL = "http://server:9000";
-            AWS_ACCESS_KEY_ID = s3AccessKey;
-            AWS_SECRET_ACCESS_KEY = s3SecretKey;
-          };
-
-          path = [ s5cmd ];
-
-          script = ''
-            set -e
-
-            # Wait for RustFS to be ready
-            ready=0
-            for i in {1..60}; do
-              if s5cmd ls 2>/dev/null; then
-                ready=1
-                break
-              fi
-              echo "Waiting for RustFS to start... ($i/60)"
-              sleep 2
-            done
-
-            if [ "$ready" -eq 0 ]; then
-              echo "ERROR: RustFS did not become ready after 60 attempts" >&2
-              exit 1
-            fi
-
-            # Create the bucket if it doesn't exist
-            s5cmd mb s3://niks3-test || true
-          '';
-
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-        };
-
-        # Ensure niks3 starts after rustfs-setup
-        systemd.services.niks3 = {
-          after = [ "rustfs-setup.service" ];
-          requires = [ "rustfs-setup.service" ];
         };
 
         # Add niks3 client and hello to the server

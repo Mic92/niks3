@@ -1,82 +1,32 @@
 {
   testers,
-  writeText,
-  s5cmd,
   niks3,
-  rustfs,
   pkgs,
+  common,
   ...
 }:
 
 let
-  signingSecretKey = writeText "niks3-signing-key" "niks3-test-1:0knWkx/F+6IJmI4dkvNs14SCaewg9ZWSAQUNg9juRxh/8x+rzUJx9SWdyGOVl21IbJlQemUKG40qW2TTyrE++w==";
-  signingPublicKey = "niks3-test-1:f/Mfq81CcfUlnchjlZdtSGyZUHplChuNKltk08qxPvs=";
-  apiToken = "test-token-that-is-at-least-36-characters-long";
+  inherit (common) apiToken;
 in
 testers.nixosTest {
   name = "nixos-test-read-proxy";
 
   nodes.server = {
-    imports = [ ../nixosModules/niks3.nix ];
+    imports = [
+      ../nixosModules/niks3.nix
+      (common.rustfsModule { })
+    ];
 
-    nix.settings = {
-      experimental-features = [
-        "nix-command"
-        "flakes"
-      ];
-      substituters = [ ];
-      trusted-public-keys = [ signingPublicKey ];
-    };
+    nix.settings = common.nixSettings;
 
     services.niks3 = {
       enable = true;
       httpAddr = "0.0.0.0:5751";
-      s3 = {
-        endpoint = "localhost:9000";
-        bucket = "niks3-test";
-        useSSL = false;
-        accessKeyFile = writeText "s3-access-key" "rustfsadmin";
-        secretKeyFile = writeText "s3-secret-key" "rustfsadmin";
-      };
-      apiTokenFile = writeText "api-token" apiToken;
-      signKeyFiles = [ signingSecretKey ];
+      inherit (common) s3;
+      apiTokenFile = common.apiTokenFile;
+      signKeyFiles = [ common.signing.secretKeyFile ];
       readProxy.enable = true;
-    };
-
-    systemd.services.rustfs = {
-      after = [ "network.target" ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key rustfsadmin --secret-key rustfsadmin /var/lib/rustfs";
-        StateDirectory = "rustfs";
-        DynamicUser = true;
-      };
-    };
-
-    systemd.services.rustfs-setup = {
-      after = [ "rustfs.service" ];
-      requires = [ "rustfs.service" ];
-      before = [ "niks3.service" ];
-      wantedBy = [ "multi-user.target" ];
-      environment = {
-        S3_ENDPOINT_URL = "http://localhost:9000";
-        AWS_ACCESS_KEY_ID = "rustfsadmin";
-        AWS_SECRET_ACCESS_KEY = "rustfsadmin";
-      };
-      path = [ s5cmd ];
-      script = ''
-        for i in $(seq 60); do s5cmd ls 2>/dev/null && break; sleep 2; done
-        s5cmd mb s3://niks3-test || true
-      '';
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-    };
-
-    systemd.services.niks3 = {
-      after = [ "rustfs-setup.service" ];
-      requires = [ "rustfs-setup.service" ];
     };
 
     environment.systemPackages = [

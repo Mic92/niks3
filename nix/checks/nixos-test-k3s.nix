@@ -3,11 +3,10 @@
   testers,
   runCommand,
   kubernetes-helm,
-  s5cmd,
-  rustfs,
   k3s,
   niks3,
   niks3-docker,
+  common,
   stdenv,
   ...
 }:
@@ -21,7 +20,7 @@ let
     mv niks3-*.tgz $out
   '';
 
-  apiToken = "test-token-that-is-at-least-36-characters-long";
+  inherit (common) apiToken;
   hostIP = "192.168.1.1";
   nodePort = 30051;
 in
@@ -31,6 +30,13 @@ testers.nixosTest {
   nodes.machine =
     { pkgs, ... }:
     {
+      imports = [
+        (common.rustfsModule {
+          bucket = "niks3";
+          orderNiks3 = false;
+        })
+      ];
+
       virtualisation = {
         memorySize = 3072;
         cores = 2;
@@ -56,34 +62,6 @@ testers.nixosTest {
           }
         ];
         authentication = "host all all 10.42.0.0/16 trust";
-      };
-
-      systemd.services.rustfs = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig = {
-          ExecStart = "${rustfs}/bin/rustfs --address 0.0.0.0:9000 --access-key rustfsadmin --secret-key rustfsadmin /var/lib/rustfs";
-          StateDirectory = "rustfs";
-          DynamicUser = true;
-        };
-      };
-      systemd.services.rustfs-setup = {
-        after = [ "rustfs.service" ];
-        requires = [ "rustfs.service" ];
-        wantedBy = [ "multi-user.target" ];
-        environment = {
-          S3_ENDPOINT_URL = "http://localhost:9000";
-          AWS_ACCESS_KEY_ID = "rustfsadmin";
-          AWS_SECRET_ACCESS_KEY = "rustfsadmin";
-        };
-        path = [ s5cmd ];
-        script = ''
-          for i in $(seq 60); do s5cmd ls 2>/dev/null && break; sleep 2; done
-          s5cmd mb s3://niks3 || true
-        '';
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
       };
 
       services.k3s = {
@@ -113,8 +91,8 @@ testers.nixosTest {
               endpoint = "${hostIP}:9000";
               bucket = "niks3";
               useSSL = false;
-              accessKey = "rustfsadmin";
-              secretKey = "rustfsadmin";
+              accessKey = common.s3AccessKey;
+              secretKey = common.s3SecretKey;
             };
             auth = {
               token = apiToken;

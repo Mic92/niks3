@@ -6,6 +6,7 @@
 }:
 let
   lib = pkgs.lib;
+  common = import ./common.nix { inherit pkgs; };
   system = pkgs.stdenv.hostPlatform.system;
   packages = lib.mapAttrs' (n: lib.nameValuePair "package-${n}") selfPackages;
   devShells = lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") selfDevShells;
@@ -74,26 +75,27 @@ packages
 }
 // lib.optionalAttrs (lib.hasSuffix "linux" system) {
   nixos-test-niks3 = pkgs.callPackage ./nixos-test-niks3.nix {
+    inherit common;
     mock-oidc-server = selfPackages.mock-oidc-server;
     niks3 = selfPackages.niks3;
     niks3-hook = selfPackages.niks3-hook;
-    rustfs = pkgs.rustfs;
     nix = pkgs.nixVersions.latest;
     ca-derivations-supported = true;
   };
   nixos-test-niks3-lix = pkgs.callPackage ./nixos-test-niks3.nix {
+    inherit common;
     mock-oidc-server = selfPackages.mock-oidc-server;
     niks3 = selfPackages.niks3;
     niks3-hook = selfPackages.niks3-hook;
-    rustfs = pkgs.rustfs;
     nix = pkgs.lixPackageSets.latest.lix;
     ca-derivations-supported = false;
   };
   nixos-test-read-proxy = pkgs.callPackage ./nixos-test-read-proxy.nix {
+    inherit common;
     niks3 = selfPackages.niks3;
-    rustfs = pkgs.rustfs;
   };
   nixos-test-k3s = pkgs.callPackage ./nixos-test-k3s.nix {
+    inherit common;
     inherit (selfPackages) niks3 niks3-docker;
   };
 }
