@@ -474,7 +474,8 @@ in
       type = lib.types.nullOr lib.types.package;
       default = null;
       description = ''
-        Package providing an executable for signing narinfo batches.
+        Package providing a long-running executable that signs narinfo batches
+        (newline-delimited JSON over stdin/stdout, restarted on failure).
         Runs without arguments, with the server's environment and permissions.
         Must be set together with signPublicKey.
       '';

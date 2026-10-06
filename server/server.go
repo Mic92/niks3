@@ -307,6 +307,8 @@ func runServer(opts *options) error {
 			return fmt.Errorf("failed to configure external signer: %w", err)
 		}
 
+		defer signer.Close()
+
 		service.SigningKeys = append(service.SigningKeys, signer)
 		slog.Info("Configured external signer", "program", opts.SignProgram)
 	}
