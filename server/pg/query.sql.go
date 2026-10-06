@@ -101,6 +101,17 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPendingObjects = `-- name: CountPendingObjects :one
+SELECT count(*) FROM pending_objects WHERE pending_closure_id = $1
+`
+
+func (q *Queries) CountPendingObjects(ctx context.Context, pendingClosureID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingObjects, pendingClosureID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
 WHERE upload_id = $1

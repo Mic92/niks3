@@ -92,6 +92,8 @@ func (s *Service) CompletePushHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.extendCommitDeadline(r.Context(), w, id)
+
 	if err := pg.New(s.Pool).CommitPush(r.Context(), id); err != nil {
 		var pgError *pgconn.PgError
 

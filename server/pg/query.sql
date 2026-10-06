@@ -25,6 +25,9 @@ SELECT count(*) FROM pending_closures;
 -- pending objects and multipart uploads cascade.
 DELETE FROM pending_closures WHERE id = $1;
 
+-- name: CountPendingObjects :one
+SELECT count(*) FROM pending_objects WHERE pending_closure_id = $1;
+
 -- name: GetPendingObjectKeys :many
 SELECT key FROM pending_objects
 WHERE pending_closure_id = $1;

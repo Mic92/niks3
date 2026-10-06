@@ -47,6 +47,19 @@ func extendPendingClosureDeadline(w http.ResponseWriter, objects int) {
 	}
 }
 
+// extendCommitDeadline does the same for a commit, whose work grows with the
+// pending objects it folds into the closure. A commit that outruns the deadline
+// still lands, but its answer never reaches the client. The client retries and
+// the retry finds the push gone.
+func (s *Service) extendCommitDeadline(ctx context.Context, w http.ResponseWriter, id int64) {
+	objects, err := pg.New(s.Pool).CountPendingObjects(ctx, id)
+	if err != nil {
+		slog.Debug("Failed to count pending objects", "id", id, "error", err)
+	}
+
+	extendPendingClosureDeadline(w, int(objects))
+}
+
 // decodeJSONBody decodes a size-limited JSON request body. It writes a
 // 413/400 response and returns false on error.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
@@ -748,6 +761,8 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+
+	s.extendCommitDeadline(r.Context(), w, parsedUploadID)
 
 	// Commit the pending closure (all objects including narinfos should already be uploaded)
 	if err := commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
