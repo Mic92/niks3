@@ -11,7 +11,7 @@ let
 in
 pkgs.buildGoModule {
   pname = "niks3-tests";
-  version = "1.4.0";
+  inherit (common) version;
   vendorHash = common.vendorHashTests;
 
   src = lib.fileset.toSource {

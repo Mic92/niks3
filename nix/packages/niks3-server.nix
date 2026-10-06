@@ -9,7 +9,7 @@ let
 in
 pkgs.buildGoModule {
   pname = "niks3-server";
-  version = "1.4.0";
+  inherit (common) version;
   vendorHash = common.vendorHashServer;
 
   src = lib.fileset.toSource {

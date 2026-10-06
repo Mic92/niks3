@@ -31,6 +31,9 @@ in
   vendorHashTests = lib.fileContents ./goVendorHash-tests.txt;
   vendorHashMockOIDC = lib.fileContents ./goVendorHash-mock-oidc-server.txt;
 
+  # Written by bin/create-release.sh.
+  version = lib.fileContents ../../VERSION;
+
   inherit root srcs;
 
   # Go module files needed by every package.

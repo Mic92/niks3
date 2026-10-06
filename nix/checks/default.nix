@@ -15,6 +15,14 @@ packages
 // devShells
 // {
   treefmt = treefmtCheck;
+
+  version-sync = pkgs.runCommand "niks3-version-sync" { } ''
+    version=$(cat ${../../VERSION})
+    chart=${../../deploy/helm/niks3/Chart.yaml}
+    grep -qx "version: $version" "$chart" || { echo "Chart.yaml version != VERSION ($version)" >&2; exit 1; }
+    grep -qx "appVersion: \"v$version\"" "$chart" || { echo "Chart.yaml appVersion != v$version" >&2; exit 1; }
+    touch $out
+  '';
   golangci-lint = selfPackages.niks3-tests.overrideAttrs (old: {
     # niks3-tests' fileset only carries go.mod, go.sum and the Go source
     # dirs, so without this golangci-lint silently runs with its default
