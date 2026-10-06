@@ -69,3 +69,41 @@ func TestObjectStatsTrigger(t *testing.T) {
 
 	assertStats(1, 0) // delete
 }
+
+// Committing n objects must not take time quadratic in n.
+func TestObjectStatsLargeCommit(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	const objects = 60000
+
+	var id int64
+
+	ok(t, service.Pool.QueryRow(ctx, `INSERT INTO pending_closures (key, started_at)
+		VALUES (repeat('0', 32) || '.narinfo', now()) RETURNING id`).Scan(&id))
+
+	_, err := service.Pool.Exec(ctx, `INSERT INTO pending_objects (pending_closure_id, key, refs, size)
+		SELECT $1, lpad(i::text, 32, '0') || '.narinfo', '{}', 100 FROM generate_series(1, $2::int) AS i`, id, objects)
+	ok(t, err)
+
+	start := time.Now()
+
+	_, err = service.Pool.Exec(ctx, "SELECT commit_pending_closure($1)", id)
+	ok(t, err)
+
+	if took := time.Since(start); took > 8*time.Second {
+		t.Errorf("committing %d objects took %v", objects, took)
+	}
+
+	stats, err := pg.New(service.Pool).GetObjectStats(ctx)
+	ok(t, err)
+
+	if stats.ObjectCount != objects || stats.TotalBytes != objects*100 {
+		t.Errorf("stats = (count=%d, bytes=%d), want (count=%d, bytes=%d)",
+			stats.ObjectCount, stats.TotalBytes, objects, objects*100)
+	}
+}
