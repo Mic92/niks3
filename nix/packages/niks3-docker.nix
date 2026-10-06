@@ -5,6 +5,16 @@
   imageName ? "${niks3-server.pname}:latest",
 }:
 let
+  # Drop once NixOS/nixpkgs#569689 reaches our nixpkgs.
+  regctl =
+    (pkgs.regclient.overrideAttrs (old: {
+      postInstall =
+        builtins.replaceStrings
+          [ "export bin=" "export outputBin=bin" "unset bin outputBin" ]
+          [ "local bin=" "local outputBin=bin" "" ]
+          old.postInstall;
+    })).regctl;
+
   allPlatforms = {
     "x86_64-linux" = {
       GOOS = "linux";
@@ -85,7 +95,7 @@ pkgs.stdenvNoCC.mkDerivation {
   passthru.perArch = platforms;
   phases = [ "installPhase" ];
   src = pkgs.linkFarm "images" (lib.mapAttrsToList (name: path: { inherit name path; }) platforms);
-  nativeBuildInputs = [ pkgs.regctl ];
+  nativeBuildInputs = [ regctl ];
   installPhase = ''
     set -xve
     image_refs=()
