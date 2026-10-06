@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // TestGCBugBareHashReferences verifies that the GC bug fix works correctly.
@@ -64,10 +64,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Delete old closures (should delete B but keep A)
-	_, err = queries.DeleteClosures(ctx, pgtype.Timestamp{
-		Time:  timeAfterB.Add(50 * time.Millisecond),
-		Valid: true,
-	})
+	_, err = server.DeleteClosuresBefore(ctx, service, timeAfterB.Add(50*time.Millisecond))
 	ok(t, err)
 
 	// Verify B is deleted but A remains

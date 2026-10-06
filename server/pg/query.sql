@@ -173,16 +173,23 @@ WITH RECURSIVE closure_reach AS (
 )
 SELECT DISTINCT key FROM closure_reach;
 
--- name: DeleteClosures :execrows
--- Delete old closures, except pinned ones. Skip a closure a pin request holds.
--- Waiting would delete it despite the new pin and fail on the foreign key.
+-- name: LockOldClosures :many
+-- Lock the old closures that have no pin until the transaction ends.
+-- Closures that a pin request is locking are skipped. Waiting for them would
+-- delete a closure right after it got pinned.
+SELECT c.key FROM closures AS c
+WHERE c.updated_at < $1
+  AND c.key NOT IN (SELECT narinfo_key FROM pins)
+ORDER BY c.key COLLATE "C"
+FOR UPDATE SKIP LOCKED;
+
+-- name: DeleteUnpinnedClosures :execrows
+-- Delete the locked closures unless they are pinned by now. This statement
+-- sees pins that committed after the lock query ran. Without the check, such
+-- a pin would make the delete fail on the foreign key.
 DELETE FROM closures
-WHERE closures.key IN (
-    SELECT c.key FROM closures AS c
-    WHERE c.updated_at < $1
-      AND c.key NOT IN (SELECT narinfo_key FROM pins)
-    FOR UPDATE SKIP LOCKED
-);
+WHERE key = any($1::varchar [])
+  AND key NOT IN (SELECT narinfo_key FROM pins);
 
 -- name: DeleteObjects :exec
 DELETE FROM objects

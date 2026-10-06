@@ -24,6 +24,11 @@ func RunWatchdogForTest(ctx context.Context, interval time.Duration, check func(
 	runWatchdog(ctx, interval, check)
 }
 
+// DeleteClosuresBefore exposes deleteClosuresBefore to tests.
+func DeleteClosuresBefore(ctx context.Context, service *Service, cutoff time.Time) (int, error) {
+	return deleteClosuresBefore(ctx, service.Pool, cutoff)
+}
+
 // GCAdvisoryLockKey exposes the GC advisory lock key to tests.
 const GCAdvisoryLockKey = gcAdvisoryLockKey
 

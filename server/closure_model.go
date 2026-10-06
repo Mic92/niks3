@@ -43,24 +43,30 @@ func getClosure(ctx context.Context, pool *pgxpool.Pool, closureKey string) (*Cl
 	}, nil
 }
 
-func cleanupClosureOlderThan(ctx context.Context, pool *pgxpool.Pool, age time.Duration) (int, error) {
-	conn, err := pool.Acquire(ctx)
+// deleteClosuresBefore deletes the closures not updated since cutoff, except
+// pinned ones. A pin that commits after the lock is seen by the delete.
+func deleteClosuresBefore(ctx context.Context, pool *pgxpool.Pool, cutoff time.Time) (int, error) {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get database connection: %w", err)
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	defer conn.Release()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	queries := pg.New(conn)
+	queries := pg.New(tx)
 
-	timeOlder := pgtype.Timestamp{
-		Time:  time.Now().UTC().Add(-age),
-		Valid: true,
+	keys, err := queries.LockOldClosures(ctx, pgtype.Timestamp{Time: cutoff, Valid: true})
+	if err != nil {
+		return 0, fmt.Errorf("failed to lock older closures: %w", err)
 	}
 
-	count, err := queries.DeleteClosures(ctx, timeOlder)
+	count, err := queries.DeleteUnpinnedClosures(ctx, keys)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete older closures: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("failed to commit closure cleanup: %w", err)
 	}
 
 	return int(count), nil

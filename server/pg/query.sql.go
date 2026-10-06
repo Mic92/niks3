@@ -101,26 +101,6 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const deleteClosures = `-- name: DeleteClosures :execrows
-DELETE FROM closures
-WHERE closures.key IN (
-    SELECT c.key FROM closures AS c
-    WHERE c.updated_at < $1
-      AND c.key NOT IN (SELECT narinfo_key FROM pins)
-    FOR UPDATE SKIP LOCKED
-)
-`
-
-// Delete old closures, except pinned ones. Skip a closure a pin request holds.
-// Waiting would delete it despite the new pin and fail on the foreign key.
-func (q *Queries) DeleteClosures(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteClosures, updatedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
 WHERE upload_id = $1
@@ -160,6 +140,23 @@ WHERE name = $1
 func (q *Queries) DeletePin(ctx context.Context, name string) error {
 	_, err := q.db.Exec(ctx, deletePin, name)
 	return err
+}
+
+const deleteUnpinnedClosures = `-- name: DeleteUnpinnedClosures :execrows
+DELETE FROM closures
+WHERE key = any($1::varchar [])
+  AND key NOT IN (SELECT narinfo_key FROM pins)
+`
+
+// Delete the locked closures unless they are pinned by now. This statement
+// sees pins that committed after the lock query ran. Without the check, such
+// a pin would make the delete fail on the foreign key.
+func (q *Queries) DeleteUnpinnedClosures(ctx context.Context, dollar_1 []string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUnpinnedClosures, dollar_1)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getClosure = `-- name: GetClosure :one
@@ -632,6 +629,37 @@ type LockObjectsReadyForDeletionParams struct {
 // about to treat them as present. Keyset-paginated on key.
 func (q *Queries) LockObjectsReadyForDeletion(ctx context.Context, arg LockObjectsReadyForDeletionParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, lockObjectsReadyForDeletion, arg.GracePeriodSeconds, arg.AfterKey, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockOldClosures = `-- name: LockOldClosures :many
+SELECT c.key FROM closures AS c
+WHERE c.updated_at < $1
+  AND c.key NOT IN (SELECT narinfo_key FROM pins)
+ORDER BY c.key COLLATE "C"
+FOR UPDATE SKIP LOCKED
+`
+
+// Lock the old closures that have no pin until the transaction ends.
+// Closures that a pin request is locking are skipped. Waiting for them would
+// delete a closure right after it got pinned.
+func (q *Queries) LockOldClosures(ctx context.Context, updatedAt pgtype.Timestamp) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockOldClosures, updatedAt)
 	if err != nil {
 		return nil, err
 	}

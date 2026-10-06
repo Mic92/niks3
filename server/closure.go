@@ -221,7 +221,7 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 
 	task.setPhase(api.GCTaskPhaseCleanupOldClosures)
 
-	oldClosuresCount, err := cleanupClosureOlderThan(ctx, s.Pool, age)
+	oldClosuresCount, err := deleteClosuresBefore(ctx, s.Pool, time.Now().UTC().Add(-age))
 	if err != nil {
 		task.fail(*stats, "failed to cleanup old closures: "+err.Error())
 

@@ -145,10 +145,7 @@ func TestOrphanedObjectsGC(t *testing.T) {
 	})
 
 	// Delete Closure B
-	_, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
-		Time:  cutoffTime,
-		Valid: true,
-	})
+	_, err := server.DeleteClosuresBefore(ctx, service, cutoffTime)
 	ok(t, err)
 
 	// Verify B is deleted but A remains
@@ -426,10 +423,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 		numActiveClosure, numDeletedClosures, numOrphanedChains)
 
 	// ===== Delete the marked closures =====
-	_, err := queries.DeleteClosures(ctx, pgtype.Timestamp{
-		Time:  cutoffTime,
-		Valid: true,
-	})
+	_, err := server.DeleteClosuresBefore(ctx, service, cutoffTime)
 	ok(t, err)
 
 	// ===== Run GC =====
