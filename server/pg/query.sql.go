@@ -734,16 +734,25 @@ func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompl
 }
 
 const touchPresentClosures = `-- name: TouchPresentClosures :many
+WITH live AS (
+    SELECT c.key
+    FROM closures AS c
+    INNER JOIN objects AS o ON o.key = c.key
+    WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL
+    ORDER BY c.key COLLATE "C"
+    FOR UPDATE OF c
+)
 UPDATE closures AS c
 SET updated_at = timezone('UTC', now())
-FROM objects AS o
-WHERE o.key = c.key AND c.key = any($1::varchar []) AND o.deleted_at IS NULL
+FROM live
+WHERE c.key = live.key
 RETURNING c.key
 `
 
 // Narinfo keys that are live closure roots, with their age refreshed.
-// Check and refresh are one UPDATE. If GC is deleting a closure, the UPDATE
-// waits for that delete and then matches nothing, so the key is not reported.
+// If GC is deleting a closure, the lock waits for that delete and then matches
+// nothing, so the key is not reported. Rows are locked in byte order, as in
+// commit_pending_closure, so overlapping callers cannot deadlock.
 func (q *Queries) TouchPresentClosures(ctx context.Context, dollar_1 []string) ([]string, error) {
 	rows, err := q.db.Query(ctx, touchPresentClosures, dollar_1)
 	if err != nil {
