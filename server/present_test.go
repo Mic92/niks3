@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/server/pg"
 )
 
 // A narinfo that exists only as a dependency is not present, it must be pushed.
@@ -63,10 +64,66 @@ func TestPresentReportsOnlyClosureRoots(t *testing.T) {
 	}
 }
 
+func TestPresentRefreshesOnlyStaleClosures(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	fresh := strings.Repeat("e", 32) + ".narinfo"
+	stale := strings.Repeat("f", 32) + ".narinfo"
+
+	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs) VALUES ($1, '{}'), ($2, '{}')`, fresh, stale)
+	ok(t, err)
+
+	_, err = service.Pool.Exec(ctx,
+		`INSERT INTO closures (key, updated_at) VALUES
+		 ($1, timezone('UTC', now()) - interval '1 minute'), ($2, timezone('UTC', now()) - interval '1 hour')`, fresh, stale)
+	ok(t, err)
+
+	present, err := pg.New(service.Pool).TouchPresentClosures(ctx, []string{fresh, stale})
+	ok(t, err)
+
+	if len(present) != 2 {
+		t.Fatalf("present=%v, want both closures", present)
+	}
+
+	var freshKept, staleRefreshed bool
+
+	ok(t, service.Pool.QueryRow(ctx,
+		`SELECT
+		   (SELECT updated_at < timezone('UTC', now()) - interval '30 seconds' FROM closures WHERE key = $1),
+		   (SELECT updated_at > timezone('UTC', now()) - interval '30 seconds' FROM closures WHERE key = $2)`,
+		fresh, stale).Scan(&freshKept, &staleRefreshed))
+
+	if !freshKept {
+		t.Error("a closure touched a minute ago was rewritten")
+	}
+
+	if !staleRefreshed {
+		t.Error("a closure touched an hour ago was not refreshed")
+	}
+}
+
 // If GC is deleting a closure, the present check must not report it.
 // Otherwise the client skips the push and the closure is lost.
 func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
 	t.Parallel()
+
+	// The check waits for GC even when it does not rewrite the row.
+	for name, age := range map[string]string{"stale": "30 days", "fresh": "1 minute"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			presentWaitsForGC(t, age)
+		})
+	}
+}
+
+func presentWaitsForGC(t *testing.T, age string) {
+	t.Helper()
 
 	service := createTestService(t)
 	defer service.Close()
@@ -79,7 +136,7 @@ func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
 	ok(t, err)
 
 	_, err = service.Pool.Exec(ctx,
-		`INSERT INTO closures (key, updated_at) VALUES ($1, now() - interval '30 days')`, root)
+		`INSERT INTO closures (key, updated_at) VALUES ($1, timezone('UTC', now()) - $2::interval)`, root, age)
 	ok(t, err)
 
 	// GC has locked the row for deletion but not yet committed.
@@ -88,7 +145,7 @@ func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
 
 	defer func() { _ = gcTx.Rollback(ctx) }()
 
-	_, err = gcTx.Exec(ctx, `DELETE FROM closures WHERE updated_at < now() - interval '1 day'`)
+	_, err = gcTx.Exec(ctx, `DELETE FROM closures WHERE key = $1`, root)
 	ok(t, err)
 
 	body, err := json.Marshal(api.PresentRequest{Keys: []string{root}})

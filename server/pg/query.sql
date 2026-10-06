@@ -52,23 +52,28 @@ SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL;
 
 -- name: TouchPresentClosures :many
--- Narinfo keys that are live closure roots, with their age refreshed.
--- If GC is deleting a closure, the lock waits for that delete and then matches
--- nothing, so the key is not reported. Rows are locked in byte order, as in
--- commit_pending_closure, so overlapping callers cannot deadlock.
+-- Rows younger than ten minutes keep their age, since GC cuts off by days.
+-- Locking in byte order stops overlapping callers from deadlocking, and waits
+-- for a GC delete in flight.
 WITH live AS (
-    SELECT c.key
+    SELECT
+        c.key,
+        c.updated_at
     FROM closures AS c
     INNER JOIN objects AS o ON o.key = c.key
     WHERE c.key = any($1::varchar []) AND o.deleted_at IS NULL
     ORDER BY c.key COLLATE "C"
     FOR UPDATE OF c
+),
+
+touched AS (
+    UPDATE closures AS c
+    SET updated_at = timezone('UTC', now())
+    FROM live
+    WHERE c.key = live.key AND live.updated_at < timezone('UTC', now()) - interval '10 minutes'
 )
-UPDATE closures AS c
-SET updated_at = timezone('UTC', now())
-FROM live
-WHERE c.key = live.key
-RETURNING c.key;
+
+SELECT key FROM live;
 
 -- name: CommitPendingClosure :exec
 SELECT commit_pending_closure($1::bigint);
