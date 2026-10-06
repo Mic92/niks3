@@ -40,3 +40,21 @@ jobs:
           helm package deploy/helm/niks3 --version "$version" --app-version "$GITHUB_REF_NAME"
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm push "niks3-$version.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+  # niks3-action pins a niks3 release and downloads its assets at runtime, so
+  # only ask it to bump once goreleaser has uploaded them.
+  update-action:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: niks3-action
+          permission-actions: write
+      - name: Trigger niks3-action update
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh workflow run update-niks3.yml -R "$GITHUB_REPOSITORY_OWNER/niks3-action"
