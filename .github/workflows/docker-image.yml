@@ -59,6 +59,13 @@ jobs:
             digest=$(regctl image digest "$tag")
           done
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # regctl keeps its own credentials, but the attest action reads Docker's.
+      - name: Log in to the registry for attestations
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
