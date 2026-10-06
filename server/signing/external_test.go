@@ -311,8 +311,15 @@ func writeSigningProgram(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	program := filepath.Join(t.TempDir(), "sign program")
+	// Parallel tests fork while we hold the script open for writing. A child
+	// inheriting that descriptor makes exec fail with ETXTBSY, so block forks
+	// until the file is closed (golang/go#22315).
+	syscall.ForkLock.RLock()
 	//nolint:gosec // test script must be executable
-	if err := os.WriteFile(program, []byte("#!"+shell+"\nset -eu\n"+body), 0o700); err != nil {
+	err = os.WriteFile(program, []byte("#!"+shell+"\nset -eu\n"+body), 0o700)
+	syscall.ForkLock.RUnlock()
+
+	if err != nil {
 		t.Fatal(err)
 	}
 
