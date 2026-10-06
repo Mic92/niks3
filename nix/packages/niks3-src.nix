@@ -21,6 +21,7 @@ let
     cmd-niks3-hook = ../../cmd/niks3-hook;
     oidcmock = ../../server/oidc/oidcmock;
     cmd-mock-oidc-server = ../../cmd/mock-oidc-server;
+    cmd-niks3-openbao-signer = ../../cmd/niks3-openbao-signer;
   };
 in
 {
