@@ -92,7 +92,10 @@ in
 pkgs.stdenvNoCC.mkDerivation {
   name = "${niks3-server.pname}-docker";
   inherit (niks3-server) version;
-  passthru.perArch = platforms;
+  passthru = {
+    perArch = platforms;
+    inherit regctl;
+  };
   phases = [ "installPhase" ];
   src = pkgs.linkFarm "images" (lib.mapAttrsToList (name: path: { inherit name path; }) platforms);
   nativeBuildInputs = [ regctl ];
