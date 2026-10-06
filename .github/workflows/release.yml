@@ -11,6 +11,10 @@ concurrency:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -26,6 +30,11 @@ jobs:
         run: nix shell --inputs-from . nixpkgs#goreleaser --command goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # checksums.txt lists every archive, so one attestation covers them all.
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/checksums.txt
   helm-chart:
     runs-on: ubuntu-latest
     permissions:
