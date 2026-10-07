@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -16,11 +17,13 @@ import (
 
 // TestServerClientIntegration tests the full server+client flow: multiple
 // concurrent clients send paths, the server queues them, and acks each client.
+//
+//nolint:paralleltest // t.Chdir is incompatible with t.Parallel
 func TestServerClientIntegration(t *testing.T) {
-	t.Parallel()
+	// macOS limits a socket path to 103 bytes, which the sandbox's temp dir exceeds.
+	t.Chdir(t.TempDir())
 
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
+	socketPath := "test.sock"
 
 	lc := net.ListenConfig{}
 
@@ -97,11 +100,13 @@ func TestServerClientIntegration(t *testing.T) {
 }
 
 // TestServerQueueError verifies that queue errors are propagated back to the client.
+//
+//nolint:paralleltest // t.Chdir is incompatible with t.Parallel
 func TestServerQueueError(t *testing.T) {
-	t.Parallel()
+	// macOS limits a socket path to 103 bytes, which the sandbox's temp dir exceeds.
+	t.Chdir(t.TempDir())
 
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
+	socketPath := "test.sock"
 
 	lc := net.ListenConfig{}
 
@@ -137,6 +142,10 @@ func TestServerQueueError(t *testing.T) {
 // TestGetListenerSocketActivation tests the systemd socket activation path.
 // Uses a subprocess because dup2 to fd 3 conflicts with Go's runtime netpoller.
 func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.Setenv incompatible with t.Parallel
+	if runtime.GOOS == "darwin" {
+		t.Skip("systemd socket activation does not exist on darwin")
+	}
+
 	if os.Getenv("GO_TEST_SOCKET_ACTIVATION") == "1" {
 		socketPath := os.Getenv("GO_TEST_SOCKET_PATH")
 

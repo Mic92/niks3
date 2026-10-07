@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,7 +15,10 @@ import (
 func newNotifySocket(t *testing.T) *net.UnixConn {
 	t.Helper()
 
-	socketPath := filepath.Join(t.TempDir(), "notify.sock")
+	// macOS limits a socket path to 103 bytes, which the sandbox's temp dir exceeds.
+	t.Chdir(t.TempDir())
+
+	socketPath := "notify.sock"
 
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Net: "unixgram", Name: socketPath})
 	ok(t, err)
