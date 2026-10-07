@@ -17,6 +17,7 @@ BEGIN
         RAISE EXCEPTION 'Push does not exist: id=%', push_id;
     END IF;
 
+    -- EXCEPT is hashed whatever the planner expects from a new push's rows.
     WITH own AS MATERIALIZED (
         SELECT key, refs FROM pending_objects WHERE pending_closure_id = push_id
     )
@@ -25,9 +26,10 @@ BEGIN
         SELECT unnest(push_roots) AS key
         UNION
         SELECT unnest(refs) FROM own
+        EXCEPT
+        SELECT key FROM own
     ) AS d
     WHERE NOT EXISTS (SELECT 1 FROM objects o WHERE o.key = d.key AND o.deleted_at IS NULL)
-      AND NOT EXISTS (SELECT 1 FROM own WHERE own.key = d.key)
     LIMIT 1;
 
     IF missing IS NOT NULL THEN
