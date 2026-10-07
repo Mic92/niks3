@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,9 +11,8 @@ import (
 	"github.com/Mic92/niks3/server/oidc"
 )
 
+//nolint:paralleltest // t.Chdir is incompatible with t.Parallel
 func TestProxyHeadersOnlyTrustedOnSocket(t *testing.T) {
-	t.Parallel()
-
 	service := createTestService(t)
 	defer service.Close()
 	service.Pool.Close()
@@ -31,7 +29,11 @@ func TestProxyHeadersOnlyTrustedOnSocket(t *testing.T) {
 	tcp, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	ok(t, err)
 
-	sock := filepath.Join(t.TempDir(), "proxy.sock")
+	// macOS limits a socket path to 103 bytes, which the sandbox's temp dir exceeds.
+	t.Chdir(t.TempDir())
+
+	const sock = "proxy.sock"
+
 	unixLn, err := lc.Listen(context.Background(), "unix", sock)
 	ok(t, err)
 
