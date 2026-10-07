@@ -790,6 +790,10 @@ in
       ++ lib.optional cfg.nginx.mtls.enable "niks3-proxy.socket"
       ++ lib.optional cfg.database.createLocally "postgresql.service";
 
+      # The default stops niks3.socket along with the service on a switch, so
+      # clients get refused until the new generation starts it again.
+      stopIfChanged = false;
+
       serviceConfig = {
         # niks3-server sends sd_notify READY=1 once the listener is bound and
         # WATCHDOG=1 heartbeats (gated on a DB ping) while WatchdogSec is set.
