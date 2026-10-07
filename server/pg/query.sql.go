@@ -72,22 +72,26 @@ func (q *Queries) CleanupPendingClosures(ctx context.Context, arg CleanupPending
 	return result.RowsAffected(), nil
 }
 
-const commitPendingClosure = `-- name: CommitPendingClosure :exec
-SELECT commit_pending_closure($1::bigint)
+const commitPendingClosure = `-- name: CommitPendingClosure :one
+SELECT commit_pending_closure($1::bigint)::bigint
 `
 
-func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) error {
-	_, err := q.db.Exec(ctx, commitPendingClosure, dollar_1)
-	return err
+func (q *Queries) CommitPendingClosure(ctx context.Context, dollar_1 int64) (int64, error) {
+	row := q.db.QueryRow(ctx, commitPendingClosure, dollar_1)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
-const commitPush = `-- name: CommitPush :exec
-SELECT commit_push($1::bigint)
+const commitPush = `-- name: CommitPush :one
+SELECT commit_push($1::bigint)::bigint
 `
 
-func (q *Queries) CommitPush(ctx context.Context, dollar_1 int64) error {
-	_, err := q.db.Exec(ctx, commitPush, dollar_1)
-	return err
+func (q *Queries) CommitPush(ctx context.Context, dollar_1 int64) (int64, error) {
+	row := q.db.QueryRow(ctx, commitPush, dollar_1)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const countPendingClosures = `-- name: CountPendingClosures :one

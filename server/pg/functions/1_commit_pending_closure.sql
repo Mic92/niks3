@@ -1,11 +1,16 @@
 -- +goose up
 
 -- +goose statementbegin
-CREATE OR REPLACE FUNCTION commit_pending_closure(closure_id bigint)
-RETURNS void AS $$
+-- Returns the number of pending objects it folded in. The return type changed
+-- from void, which CREATE OR REPLACE cannot do.
+DROP FUNCTION IF EXISTS commit_pending_closure(bigint);
+
+CREATE FUNCTION commit_pending_closure(closure_id bigint)
+RETURNS bigint AS $$
 DECLARE
     closure_key VARCHAR;
     now timestamp without time zone := timezone('UTC', now());
+    folded bigint;
 BEGIN
     -- Lock the pending closure so the cleanup cannot delete its rows mid-commit.
     SELECT key INTO closure_key
@@ -49,9 +54,12 @@ BEGIN
 
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;
+    GET DIAGNOSTICS folded = ROW_COUNT;
 
     -- Delete the pending closure
     DELETE FROM pending_closures WHERE id = closure_id;
+
+    RETURN folded;
 END;
 $$ LANGUAGE plpgsql;
 -- +goose statementend

@@ -750,7 +750,10 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	// Commit the pending closure (all objects including narinfos should already be uploaded)
-	if err := commitPendingClosure(r.Context(), s.Pool, parsedUploadID); err != nil {
+	objects, took, err := s.timedCommit(r.Context(), func(ctx context.Context) (int64, error) {
+		return commitPendingClosure(ctx, s.Pool, parsedUploadID)
+	})
+	if err != nil {
 		if errors.Is(err, errPendingClosureNotFound) {
 			http.Error(w, "pending closure not found", http.StatusNotFound)
 
@@ -764,7 +767,7 @@ func (s *Service) CommitPendingClosureHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	slog.Info("Completed upload", "id", parsedUploadID)
+	slog.Info("Completed upload", "id", parsedUploadID, "objects", objects, "duration", took)
 
 	w.WriteHeader(http.StatusNoContent)
 }

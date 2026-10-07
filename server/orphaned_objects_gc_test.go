@@ -32,7 +32,7 @@ func createTestClosure(t *testing.T, service *server.Service, queries *pg.Querie
 	uploadTestObject(hash + ".narinfo")
 	uploadTestObject("nar/" + hash + ".nar.zst")
 
-	err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
+	_, err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
 	ok(t, err)
 }
 
@@ -346,7 +346,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 		uploadTestObject(infoKey)
 		uploadTestObject(narKey)
 
-		err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
+		_, err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
 		ok(t, err)
 
 		deletedKeys[infoKey] = true
@@ -378,7 +378,7 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 		uploadTestObject(infoKey)
 		uploadTestObject(narKey)
 
-		err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
+		_, err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
 		ok(t, err)
 
 		activeKeys[infoKey] = true

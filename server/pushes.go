@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -92,7 +93,8 @@ func (s *Service) CompletePushHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pg.New(s.Pool).CommitPush(r.Context(), id); err != nil {
+	objects, took, err := s.timedCommit(r.Context(), func(ctx context.Context) (int64, error) { return pg.New(s.Pool).CommitPush(ctx, id) })
+	if err != nil {
 		var pgError *pgconn.PgError
 
 		switch {
@@ -110,7 +112,7 @@ func (s *Service) CompletePushHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("Completed push", "id", id)
+	slog.Info("Completed push", "id", id, "objects", objects, "duration", took)
 
 	w.WriteHeader(http.StatusNoContent)
 }

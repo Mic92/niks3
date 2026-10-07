@@ -57,7 +57,7 @@ func TestConcurrentCommitsSharingObjectsDoNotDeadlock(t *testing.T) {
 	errs := make(chan error, closures)
 
 	for _, id := range ids {
-		wg.Go(func() { errs <- q.CommitPendingClosure(ctx, id) })
+		wg.Go(func() { errs <- commitErr(q.CommitPendingClosure(ctx, id)) })
 	}
 
 	wg.Wait()

@@ -31,7 +31,7 @@ func TestCacheStatsHandler(t *testing.T) {
 		{PendingClosureID: pendingClosure.ID, Key: narKey, Refs: []string{}, Size: pgtype.Int8{Int64: 2048, Valid: true}},
 	})
 	ok(t, err)
-	ok(t, queries.CommitPendingClosure(ctx, pendingClosure.ID))
+	commitOK(t)(queries.CommitPendingClosure(ctx, pendingClosure.ID))
 
 	rec := httptest.NewRecorder()
 	service.CacheStatsHandler(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/cache-stats", nil))

@@ -433,19 +433,20 @@ func (s *Service) createPendingClosure(
 
 var errPendingClosureNotFound = errors.New("not found")
 
-func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosureID int64) error {
-	if err := pg.New(pool).CommitPendingClosure(ctx, pendingClosureID); err != nil {
+func commitPendingClosure(ctx context.Context, pool *pgxpool.Pool, pendingClosureID int64) (int64, error) {
+	folded, err := pg.New(pool).CommitPendingClosure(ctx, pendingClosureID)
+	if err != nil {
 		msg := "Closure does not exist:"
 
 		var pgError *pgconn.PgError
 
 		ok := errors.As(err, &pgError)
 		if ok && strings.Contains(pgError.Message, msg) {
-			return fmt.Errorf("failed to commit pending closure: %w", errPendingClosureNotFound)
+			return 0, fmt.Errorf("failed to commit pending closure: %w", errPendingClosureNotFound)
 		}
 
-		return fmt.Errorf("failed to commit pending closure: %w", err)
+		return 0, fmt.Errorf("failed to commit pending closure: %w", err)
 	}
 
-	return nil
+	return folded, nil
 }

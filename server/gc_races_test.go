@@ -84,7 +84,7 @@ func TestPushDedupSurvivesConcurrentGC(t *testing.T) {
 		ok(t, err)
 	}
 
-	ok(t, q.CommitPendingClosure(ctx, oldClosure.ID))
+	commitOK(t)(q.CommitPendingClosure(ctx, oldClosure.ID))
 
 	// New push lists its whole closure, as the client does; the server
 	// deduplicates hashOld's objects, so only the new ones are offered.
@@ -121,7 +121,7 @@ func TestPushDedupSurvivesConcurrentGC(t *testing.T) {
 
 	var id int64
 	ok(t, service.Pool.QueryRow(ctx, "SELECT id FROM pending_closures WHERE key=$1", hashNew+".narinfo").Scan(&id))
-	ok(t, q.CommitPendingClosure(ctx, id))
+	commitOK(t)(q.CommitPendingClosure(ctx, id))
 
 	if !objectIsLive(t, service, oldNar) {
 		t.Errorf("%s is tombstoned although committed closure %s.narinfo references it", oldNar, hashNew)
@@ -224,7 +224,7 @@ func TestGCSweepSkipsPendingObjects(t *testing.T) {
 
 	var id int64
 	ok(t, service.Pool.QueryRow(ctx, "SELECT id FROM pending_closures WHERE key=$1", hash+".narinfo").Scan(&id))
-	ok(t, q.CommitPendingClosure(ctx, id))
+	commitOK(t)(q.CommitPendingClosure(ctx, id))
 
 	if !objectIsLive(t, service, narKey) {
 		t.Errorf("%s not live after commit", narKey)
@@ -431,7 +431,7 @@ func TestForceGCDuringPushOffersSweptObject(t *testing.T) {
 
 			id, err := strconv.ParseInt(resp.ID, 10, 64)
 			ok(t, err)
-			ok(t, pg.New(service.Pool).CommitPendingClosure(ctx, id))
+			commitOK(t)(pg.New(service.Pool).CommitPendingClosure(ctx, id))
 
 			if !objectIsLive(t, service, narKey) {
 				t.Errorf("%s not live after commit", narKey)
@@ -468,7 +468,7 @@ func TestFailedS3DeleteKeepsTombstone(t *testing.T) {
 
 	var id int64
 	ok(t, service.Pool.QueryRow(ctx, "SELECT id FROM pending_closures WHERE key=$1", hash+".narinfo").Scan(&id))
-	ok(t, pg.New(service.Pool).CommitPendingClosure(ctx, id))
+	commitOK(t)(pg.New(service.Pool).CommitPendingClosure(ctx, id))
 
 	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
 	ok(t, err)
@@ -772,7 +772,7 @@ func TestCommitRacingPendingCleanupKeepsObjects(t *testing.T) {
 
 	committed := make(chan error, 1)
 
-	go func() { committed <- q.CommitPendingClosure(ctx, pc.ID) }()
+	go func() { committed <- commitErr(q.CommitPendingClosure(ctx, pc.ID)) }()
 
 	waitForLockWaiter(t, service)
 

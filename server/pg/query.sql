@@ -8,8 +8,8 @@ INSERT INTO pending_closures (started_at, key, roots)
 VALUES (timezone('UTC', now()), $1, $2)
 RETURNING *;
 
--- name: CommitPush :exec
-SELECT commit_push($1::bigint);
+-- name: CommitPush :one
+SELECT commit_push($1::bigint)::bigint;
 
 -- name: InsertPendingObjects :copyfrom
 INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2, $3, $4);
@@ -75,8 +75,8 @@ touched AS (
 
 SELECT key FROM live;
 
--- name: CommitPendingClosure :exec
-SELECT commit_pending_closure($1::bigint);
+-- name: CommitPendingClosure :one
+SELECT commit_pending_closure($1::bigint)::bigint;
 
 -- name: RegisterCompletedObject :exec
 -- Record an object as soon as its upload completes so later closures don't

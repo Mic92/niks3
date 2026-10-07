@@ -34,7 +34,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	})
 	ok(t, err)
 
-	err = queries.CommitPendingClosure(ctx, pendingClosureB.ID)
+	_, err = queries.CommitPendingClosure(ctx, pendingClosureB.ID)
 	ok(t, err)
 
 	// Create closure A that references B using proper object key
@@ -48,7 +48,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 	})
 	ok(t, err)
 
-	err = queries.CommitPendingClosure(ctx, pendingClosureA.ID)
+	_, err = queries.CommitPendingClosure(ctx, pendingClosureA.ID)
 	ok(t, err)
 
 	// Update closure A to have a newer timestamp
@@ -58,7 +58,7 @@ func TestGCBugBareHashReferences(t *testing.T) {
 
 	pendingClosureA2, err := queries.InsertPendingClosure(ctx, hashA+".narinfo")
 	ok(t, err)
-	err = queries.CommitPendingClosure(ctx, pendingClosureA2.ID)
+	_, err = queries.CommitPendingClosure(ctx, pendingClosureA2.ID)
 	ok(t, err)
 
 	time.Sleep(100 * time.Millisecond)

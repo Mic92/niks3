@@ -1,11 +1,14 @@
 -- +goose up
 
 -- +goose statementbegin
-CREATE OR REPLACE FUNCTION commit_push(push_id bigint)
-RETURNS void AS $$
+DROP FUNCTION IF EXISTS commit_push(bigint);
+
+CREATE FUNCTION commit_push(push_id bigint)
+RETURNS bigint AS $$
 DECLARE
     push_roots varchar[];
     missing varchar;
+    folded bigint;
 BEGIN
     -- Locked, so cleanup cannot delete the push mid-commit.
     SELECT roots INTO push_roots FROM pending_closures WHERE id = push_id FOR UPDATE;
@@ -40,7 +43,9 @@ BEGIN
     ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at;
 
     -- The push's key is its first root, so this adds nothing new to closures.
-    PERFORM commit_pending_closure(push_id);
+    SELECT commit_pending_closure(push_id) INTO folded;
+
+    RETURN folded;
 END;
 $$ LANGUAGE plpgsql;
 -- +goose statementend

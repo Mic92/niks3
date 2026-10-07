@@ -20,6 +20,10 @@ import (
 // point refreshing faster than the scrape interval.
 const inventoryRefreshInterval = time.Minute
 
+// slowBuckets extend the default buckets past 10 s, because commits of large
+// pushes take longer and a client gives up on a response after one minute.
+var slowBuckets = append(prometheus.DefBuckets, 20, 30, 60, 120) //nolint:gochecknoglobals
+
 // Metrics holds the Prometheus registry and instruments exposed at /metrics.
 type Metrics struct {
 	registry          *prometheus.Registry
@@ -37,6 +41,8 @@ type Metrics struct {
 	gcLastRun         prometheus.Gauge
 	skippedPaths      prometheus.Counter
 	skippedNarBytes   prometheus.Counter
+	commitDuration    prometheus.Histogram
+	commitObjects     prometheus.Counter
 }
 
 // NewMetrics builds a registry with the Go/process collectors and the cache
@@ -79,7 +85,7 @@ func NewMetrics() *Metrics {
 		httpDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "niks3_http_request_duration_seconds",
 			Help:    "HTTP request duration by method and matched route.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: slowBuckets,
 		}, []string{"method", "route"}),
 		httpInFlight: factory.NewGauge(prometheus.GaugeOpts{
 			Name: "niks3_http_requests_in_flight",
@@ -111,7 +117,31 @@ func NewMetrics() *Metrics {
 			Name: "niks3_upload_skipped_nar_bytes_total",
 			Help: "Uncompressed NAR bytes of store paths clients skipped due to the max NAR size.",
 		}),
+		commitDuration: factory.NewHistogram(prometheus.HistogramOpts{
+			Name:    "niks3_commit_duration_seconds",
+			Help:    "Time the database takes to commit a push.",
+			Buckets: slowBuckets,
+		}),
+		commitObjects: factory.NewCounter(prometheus.CounterOpts{
+			Name: "niks3_commit_objects_total",
+			Help: "Pending objects folded into the cache by committed pushes.",
+		}),
 	}
+}
+
+// timedCommit runs commit and, if it succeeds, records its duration and the
+// pending objects it folded in. Dividing the two rates gives the cost per object.
+func (s *Service) timedCommit(ctx context.Context, commit func(context.Context) (int64, error)) (int64, time.Duration, error) {
+	start := time.Now()
+	objects, err := commit(ctx)
+	took := time.Since(start)
+
+	if err == nil {
+		s.Metrics.commitDuration.Observe(took.Seconds())
+		s.Metrics.commitObjects.Add(float64(objects))
+	}
+
+	return objects, took, err
 }
 
 // statusRecorder captures the response status for instrumentation. Unwrap lets

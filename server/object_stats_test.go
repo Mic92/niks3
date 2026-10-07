@@ -46,7 +46,7 @@ func TestObjectStatsTrigger(t *testing.T) {
 	})
 	ok(t, err)
 
-	err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
+	_, err = queries.CommitPendingClosure(ctx, pendingClosure.ID)
 	ok(t, err)
 
 	assertStats(2, 1000)
