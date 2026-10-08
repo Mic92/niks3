@@ -145,7 +145,7 @@ func TestServerQueueError(t *testing.T) {
 func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 
 	lc := net.ListenConfig{}
 
