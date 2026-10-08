@@ -19,6 +19,22 @@ import (
 	"github.com/Mic92/niks3/hook"
 )
 
+// testSocketPath returns a socket path in a fresh directory. t.TempDir
+// embeds the test's name, which for the longer names takes the path past
+// macOS's 104-byte limit on unix socket addresses (bind: invalid argument).
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "hook") //nolint:usetesting // t.TempDir is the path that is too long
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	return filepath.Join(dir, name)
+}
+
 // TestServerClientIntegration tests the full server+client flow: multiple
 // concurrent clients send paths, the server queues them, and acks each client.
 //
@@ -149,7 +165,7 @@ func TestServerQueueError(t *testing.T) {
 func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 
 	lc := net.ListenConfig{}
 
@@ -318,7 +334,7 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 
 	lc := net.ListenConfig{}
 

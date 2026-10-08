@@ -30,6 +30,22 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// shortTempDir is t.TempDir for directories that hold a unix socket:
+// t.TempDir embeds the test's name, which for the longer names takes the
+// socket path past macOS's 104-byte limit (bind: invalid argument).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "hook") //nolint:usetesting // t.TempDir is the path that is too long
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	return dir
+}
+
 // waitFor polls cond until it holds or the deadline passes.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -51,7 +67,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestServeSecondSignalEndsDrain(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	storeDir := filepath.Join(dir, "store")
 	socketPath := filepath.Join(dir, "hook.sock")
 	tokenPath := filepath.Join(dir, "token")
@@ -170,7 +186,7 @@ func TestServeSecondSignalEndsDrain(t *testing.T) {
 func TestServeThenDrainPushesSendAcceptedBeforeShutdown(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 
 	queue, err := hook.OpenQueue(filepath.Join(dir, "queue.db"))
 	if err != nil {
