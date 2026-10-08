@@ -19,6 +19,7 @@ import (
 // RetryConfig holds retry configuration for HTTP requests.
 type RetryConfig struct {
 	MaxRetries     int           // Maximum number of retry attempts (0 = no retries)
+	Timeout        time.Duration // Keep retrying a request for this long once MaxRetries is used up
 	InitialBackoff time.Duration // Initial backoff duration
 	MaxBackoff     time.Duration // Maximum backoff duration
 	Multiplier     float64       // Backoff multiplier for each retry
@@ -220,11 +221,9 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		return nil, errors.New("request with body must have GetBody set for retry support")
 	}
 
-	var lastErr error
+	deadline := time.Now().Add(c.Retry.Timeout)
 
-	var lastResp *http.Response
-
-	for attempt := 0; attempt <= c.Retry.MaxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		if err := waitForLimiter(ctx, limiter); err != nil {
 			return nil, err
 		}
@@ -252,10 +251,6 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 			return resp, nil
 		}
 
-		// Store error/response for potential final return
-		lastErr = err
-		lastResp = resp
-
 		// Determine if we should retry
 		var shouldRetry bool
 		if err != nil {
@@ -267,7 +262,7 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		}
 
 		// Check if we've exhausted retries
-		if !shouldRetry || attempt == c.Retry.MaxRetries {
+		if !shouldRetry || (attempt >= c.Retry.MaxRetries && !time.Now().Before(deadline)) {
 			if err != nil {
 				return nil, fmt.Errorf("request failed after retries: %w", err)
 			}
@@ -307,14 +302,12 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		if err != nil {
 			slog.Warn("Request failed, retrying",
 				"attempt", attempt+1,
-				"max_attempts", c.Retry.MaxRetries+1,
 				"backoff", backoff,
 				"error", err,
 				"url", req.URL.Redacted())
 		} else {
 			slog.Warn("Request returned retryable status, retrying",
 				"attempt", attempt+1,
-				"max_attempts", c.Retry.MaxRetries+1,
 				"backoff", backoff,
 				"status", resp.StatusCode,
 				"url", req.URL.Redacted())
@@ -324,22 +317,11 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		if backoff > 0 {
 			select {
 			case <-ctx.Done():
-				if lastResp != nil {
-					closeResponseBody(lastResp.Body)
-				}
-
 				return nil, fmt.Errorf("context canceled during retry: %w", ctx.Err())
 			case <-time.After(backoff):
 			}
 		}
 	}
-
-	// Should never reach here, but return last error/response
-	if lastErr != nil {
-		return nil, lastErr
-	}
-
-	return lastResp, nil
 }
 
 // doOnce executes a single HTTP request without retries, with rate limiting feedback.

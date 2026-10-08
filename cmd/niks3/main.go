@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Mic92/niks3/client"
 	"github.com/Mic92/niks3/cmdutil"
@@ -47,6 +48,9 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Exits after stdin is closed and everything was reported.")
 	fmt.Fprintf(os.Stderr, "  --batch-size int\n        With --stdin: max paths per push (default: %d)\n", client.DefaultStreamBatchSize)
 	fmt.Fprintf(os.Stderr, "  --parallel-pushes int\n        With --stdin: pushes running at once, each with up to\n        --max-concurrent-uploads NAR uploads (default: %d)\n", client.DefaultStreamParallel)
+	fmt.Fprintln(os.Stderr, "  --retry-timeout duration")
+	fmt.Fprintln(os.Stderr, "        With --stdin: keep retrying a failing request for this long, e.g. 2m,")
+	fmt.Fprintln(os.Stderr, "        to outlast a server restart (default: a few seconds)")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
@@ -109,6 +113,7 @@ func run() error {
 		fromStdin := pushCmd.Bool("stdin", false, "Stream store paths from stdin")
 		batchSize := pushCmd.Int("batch-size", client.DefaultStreamBatchSize, "Max paths per push with --stdin")
 		parallelPushes := pushCmd.Int("parallel-pushes", client.DefaultStreamParallel, "Concurrent pushes with --stdin")
+		retryTimeout := pushCmd.Duration("retry-timeout", 0, "Keep retrying a failing request for this long with --stdin")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
 		ts, err := cmdutil.ParseCommand(pushCmd, cf, tf, os.Args[2:], printPushHelp)
@@ -123,7 +128,7 @@ func run() error {
 				return errors.New("--stdin takes no store path arguments and no --pin")
 			}
 
-			return pushStdinCommand(*cf.ServerURL, ts, *maxConcurrent, *parallelPushes, *batchSize, *verifyS3Integrity, *cf.Debug, tf)
+			return pushStdinCommand(*cf.ServerURL, ts, *maxConcurrent, *parallelPushes, *batchSize, *retryTimeout, *verifyS3Integrity, *cf.Debug, tf)
 		}
 
 		if len(paths) == 0 {
@@ -237,7 +242,7 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 	return nil
 }
 
-func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, parallel, batchSize int, verifyS3Integrity bool, debug bool, tf cmdutil.TLSFlags) error {
+func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, parallel, batchSize int, retryTimeout time.Duration, verifyS3Integrity bool, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -252,6 +257,7 @@ func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, pa
 
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
+	c.Retry.Timeout = retryTimeout
 
 	defer c.WaitRegistrations()
 

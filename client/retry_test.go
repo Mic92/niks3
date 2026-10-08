@@ -82,3 +82,39 @@ func TestDoWithRetry_BodyReplayedViaGetBody(t *testing.T) {
 		t.Fatalf("expected 3 attempts, got %d", got)
 	}
 }
+
+// A server restart takes longer than a handful of attempts.
+func TestRetryTimeoutOutlastsMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) <= 20 {
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	}))
+	defer srv.Close()
+
+	retry := client.RetryConfig{MaxRetries: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond, Multiplier: 1}
+
+	for _, tc := range []struct {
+		timeout time.Duration
+		status  int
+	}{{0, http.StatusBadGateway}, {time.Minute, http.StatusOK}} {
+		retry.Timeout = tc.timeout
+
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+
+		resp, err := client.NewTestClient(srv.Client(), retry).DoServerRequest(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != tc.status {
+			t.Errorf("timeout %v: status %d, want %d", tc.timeout, resp.StatusCode, tc.status)
+		}
+	}
+}
