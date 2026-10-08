@@ -3,8 +3,8 @@ name: niks3
 description: S3-backed Nix binary cache with garbage collection
 type: application
 # Kept in sync with the top-level VERSION file by bin/create-release.sh.
-version: 1.14.2
-appVersion: "v1.14.2"
+version: 1.15.0
+appVersion: "v1.15.0"
 icon: https://raw.githubusercontent.com/Mic92/niks3/main/server/niks3.svg
 home: https://github.com/Mic92/niks3
 sources:
