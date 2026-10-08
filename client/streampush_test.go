@@ -22,6 +22,7 @@ type result struct {
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+	Skipped string `json:"skipped"`
 
 	Signatures []string `json:"signatures"`
 }
@@ -377,6 +378,26 @@ func TestStreamPushReportsSignatures(t *testing.T) {
 
 	if got["/nix/store/bad"].Status != "error" || got["/nix/store/bad"].Signatures != nil {
 		t.Errorf("failed path reports signatures: %+v", got["/nix/store/bad"])
+	}
+}
+
+func TestStreamPushReportsSkippedPaths(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	s := client.NewStreamPusher(func(_ context.Context, p []string) ([]string, error) { return p, nil }, 1, 1)
+	s.Skipped = func(p string) string { return map[string]string{"/nix/store/big": "too big"}[p] }
+
+	if err := s.Run(t.Context(), strings.NewReader(`{"paths":["/nix/store/big","/nix/store/a"]}`), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"path":"/nix/store/big","status":"ok","message":"too big","skipped":"max-nar-size"}
+{"path":"/nix/store/a","status":"ok"}
+`
+	if out.String() != want {
+		t.Errorf("got %s", out.String())
 	}
 }
 

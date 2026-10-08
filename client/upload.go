@@ -312,6 +312,7 @@ func computeClosureMembership(topLevelPaths []string, pathInfos map[string]*Path
 type skippedUploads struct {
 	Paths    uint64
 	NarBytes uint64
+	Reasons  map[string]string // by top-level path
 }
 
 // filterOversizedClosures drops top-level paths whose closure contains a path
@@ -326,6 +327,7 @@ func filterOversizedClosures(topLevelPaths []string, pathInfos map[string]*PathI
 
 	closureMembership := computeClosureMembership(topLevelPaths, pathInfos)
 	kept := make([]string, 0, len(topLevelPaths))
+	reasons := map[string]string{}
 
 nextClosure:
 	for _, topLevelPath := range topLevelPaths {
@@ -336,6 +338,8 @@ nextClosure:
 					"oversized_path", path,
 					"nar_size", info.NarSize,
 					"max_nar_size", maxNarSize)
+
+				reasons[topLevelPath] = fmt.Sprintf("%s: %d bytes exceed the server limit of %d", path, info.NarSize, maxNarSize)
 
 				continue nextClosure
 			}
@@ -359,7 +363,7 @@ nextClosure:
 		}
 	}
 
-	var skipped skippedUploads
+	skipped := skippedUploads{Reasons: reasons}
 
 	for path, info := range pathInfos {
 		if _, ok := prunedInfos[path]; !ok {
@@ -455,6 +459,14 @@ func (c *Client) Signatures(path string) []string {
 	defer c.signedMu.Unlock()
 
 	return c.signed[path]
+}
+
+// Skipped tells why the size limit kept the path out of the cache, or "".
+func (c *Client) Skipped(path string) string {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	return c.skipped[path]
 }
 
 func (c *Client) recordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
@@ -604,6 +616,19 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
 	c.ReportSkippedUploads(ctx, skipped.Paths, skipped.NarBytes)
+
+	// Pushes run in parallel: only touch the paths of this one.
+	c.signedMu.Lock()
+	for _, p := range resolvedPaths {
+		delete(c.skipped, p)
+	}
+
+	if c.skipped == nil {
+		c.skipped = skipped.Reasons
+	} else {
+		maps.Copy(c.skipped, skipped.Reasons)
+	}
+	c.signedMu.Unlock()
 
 	if len(resolvedPaths) == 0 {
 		slog.Warn("All closures skipped by server max NAR size, nothing to upload")

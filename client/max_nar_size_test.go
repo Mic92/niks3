@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Mic92/niks3/client"
@@ -41,6 +42,10 @@ func TestFilterOversizedClosures(t *testing.T) {
 		kept, infos, skipped := client.FilterOversizedClosures([]string{wrapper, small}, pathInfos, 2000)
 		if skipped.Paths != 2 || skipped.NarBytes != 5100 {
 			t.Errorf("skipped = %+v, want 2 paths / 5100 bytes", skipped)
+		}
+
+		if r := skipped.Reasons; len(r) != 1 || !strings.Contains(r[wrapper], image) {
+			t.Errorf("reasons = %v, want %s blamed for %s", r, image, wrapper)
 		}
 
 		if !slices.Equal(kept, []string{small}) {

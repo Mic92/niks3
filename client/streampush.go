@@ -22,6 +22,8 @@ const (
 
 	streamStatusOK    = "ok"
 	streamStatusError = "error"
+
+	streamSkippedMaxNarSize = "max-nar-size"
 )
 
 type StreamPushFunc func(ctx context.Context, paths []string) ([]string, error)
@@ -41,6 +43,8 @@ type StreamResult struct {
 	Path    string `json:"path"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+	// Why an "ok" path is not in the cache after all. Message has the details.
+	Skipped string `json:"skipped,omitempty"`
 	// What the server signed the path with, so the caller can add them to its own store.
 	Signatures []string `json:"signatures,omitempty"`
 }
@@ -56,6 +60,8 @@ type StreamPusher struct {
 	batchSize int
 	// Signatures, if set, fills StreamResult.Signatures for pushed paths.
 	Signatures func(path string) []string
+	// Skipped, if set, tells why a pushed path was left out, or "".
+	Skipped func(path string) string
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -223,6 +229,12 @@ func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult 
 	res := StreamResult{ID: id, Path: path, Status: status, Message: msg}
 	if status == streamStatusOK && s.Signatures != nil {
 		res.Signatures = s.Signatures(path)
+	}
+
+	if status == streamStatusOK && s.Skipped != nil {
+		if why := s.Skipped(path); why != "" {
+			res.Skipped, res.Message = streamSkippedMaxNarSize, why
+		}
 	}
 
 	return res

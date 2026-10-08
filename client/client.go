@@ -42,6 +42,7 @@ type Client struct {
 	registrations           errgroup.Group
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
+	skipped                 map[string]string   // store path -> why the size limit left it out
 	cacheConfigMu           sync.Mutex
 	cacheConfig             *api.CacheConfig
 	cacheConfigAt           time.Time
