@@ -70,7 +70,8 @@ func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher
 	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize}
 }
 
-// Run returns after EOF on `in` once every path was reported on `out`.
+// Run returns after EOF on `in`, or once ctx is canceled, when every path it
+// has read was reported on `out`.
 func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	lines := make(chan string, s.batchSize*s.parallel)
 	readErr := make(chan error, 1)
@@ -158,12 +159,16 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 loop:
 	for {
 		if len(batch) == 0 {
-			line, ok := <-lines
-			if !ok {
-				break
-			}
+			select {
+			case line, ok := <-lines:
+				if !ok {
+					break loop
+				}
 
-			take(line)
+				take(line)
+			case <-ctx.Done():
+				break loop
+			}
 
 			continue
 		}
@@ -189,6 +194,8 @@ loop:
 			}
 
 			take(line)
+		case <-ctx.Done():
+			break loop
 		case slots <- struct{}{}:
 			b := takeBatch()
 
@@ -199,6 +206,11 @@ loop:
 	flush()
 
 	wg.Wait()
+
+	// The reader may be stuck in a read that nobody ends.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reading paths: %w", err)
+	}
 
 	if err := <-readErr; err != nil {
 		return fmt.Errorf("reading paths: %w", err)

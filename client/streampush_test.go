@@ -397,3 +397,22 @@ func TestClientSignaturesByStorePath(t *testing.T) {
 		t.Errorf("unsigned path: %v", got)
 	}
 }
+
+// The caller keeps stdin open for the life of the process, so a signal has to end Run.
+func TestStreamPushStopsWhenCanceled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	in, _ := io.Pipe()
+	done := make(chan error, 1)
+
+	go func() { done <- client.NewStreamPusher(nil, 1, 1).Run(ctx, in, io.Discard) }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run still waits for input")
+	}
+}
