@@ -666,6 +666,7 @@ func (s *Service) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("HEAD /api/objects/{key...}", s.RequireScope(oidc.ScopeWrite, s.ObjectExistsHandler))
 	mux.HandleFunc("POST /api/objects/present", s.RequireScope(oidc.ScopeWrite, s.PresentHandler))
 	mux.HandleFunc("POST /api/farm/lead", s.RequireScope(oidc.ScopeWrite, s.LeadHandler))
+	mux.HandleFunc("POST /api/farm/lead/{farmID}", s.RequireScope(oidc.ScopeWrite, s.LeadHandler))
 	mux.HandleFunc("GET /api/closures/{key}", s.RequireScope(oidc.ScopeWrite, s.GetClosureHandler))
 	mux.HandleFunc("DELETE /api/closures", s.RequireScope(oidc.ScopeAdmin, s.CleanupClosuresOlder))
 	mux.HandleFunc("GET /api/gc/status", s.RequireScope(oidc.ScopeAdmin, s.GCStatusHandler))
