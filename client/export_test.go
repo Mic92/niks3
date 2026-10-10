@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
 )
@@ -94,4 +95,9 @@ func (c *Client) RecordSignatures(narinfos map[string]NarinfoMetadata, signature
 // UploadNARWithListing re-exports uploadNARWithListing for the external test package.
 func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj PendingObject, lsKey string, lsObj PendingObject, pathInfo *PathInfo) error {
 	return c.uploadNARWithListing(ctx, uploadTask{key: narKey, obj: narObj}, &uploadTask{key: lsKey, obj: lsObj}, pathInfo)
+}
+
+// SetRegistrationTimeout shortens the bound on one upload registration.
+func (c *Client) SetRegistrationTimeout(d time.Duration) {
+	c.registrationTimeout = d
 }
