@@ -204,6 +204,14 @@ func waitForLimiter(ctx context.Context, limiter *ratelimit.AdaptiveRateLimiter)
 	return nil
 }
 
+// closeUnsentBody closes the body of a request that never reaches the
+// transport. Do would have closed it.
+func closeUnsentBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+}
+
 // doWithRetry executes an HTTP request with adaptive rate limiting and exponential backoff retry.
 // The request body will be read and stored for retries if necessary.
 // Auth headers must be set by the caller (e.g. DoServerRequest).
@@ -213,11 +221,10 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 		return c.doOnce(ctx, req, limiter)
 	}
 
-	// Require GetBody for retries so we can replay the body without
-	// copying it to the heap. http.NewRequest sets GetBody automatically
-	// for *bytes.Reader and *strings.Reader, which all callers use.
-	// This avoids copying mmap'd data to the heap on retries.
+	// Retries replay the body through GetBody instead of buffering it.
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		closeUnsentBody(req)
+
 		return nil, errors.New("request with body must have GetBody set for retry support")
 	}
 
@@ -225,11 +232,16 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 
 	for attempt := 0; ; attempt++ {
 		if err := waitForLimiter(ctx, limiter); err != nil {
+			// The transport closed the bodies of earlier attempts.
+			if attempt == 0 {
+				closeUnsentBody(req)
+			}
+
 			return nil, err
 		}
 
-		// Reset body for retry attempts using GetBody
-		if req.GetBody != nil {
+		// The first attempt keeps the caller's body so it gets closed.
+		if attempt > 0 && req.GetBody != nil {
 			body, err := req.GetBody()
 			if err != nil {
 				return nil, fmt.Errorf("getting request body for retry: %w", err)
@@ -322,6 +334,8 @@ func (c *Client) retryBackoff(attempt int, resp *http.Response, limiter *ratelim
 // doOnce executes a single HTTP request without retries, with rate limiting feedback.
 func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
 	if err := waitForLimiter(ctx, limiter); err != nil {
+		closeUnsentBody(req)
+
 		return nil, err
 	}
 
