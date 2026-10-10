@@ -40,6 +40,7 @@ type Client struct {
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 	registrations           errgroup.Group
+	registrationTimeout     time.Duration // 0 means registrationTimeout. Tests shorten it
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
 	skipped                 map[string]string   // store path -> why the size limit left it out
