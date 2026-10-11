@@ -40,7 +40,8 @@ type Client struct {
 	S3RateLimiter           *ratelimit.AdaptiveRateLimiter // Rate limiter for S3 presigned URL uploads
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 	registrations           errgroup.Group
-	registrationTimeout     time.Duration // 0 means registrationTimeout. Tests shorten it
+	registrationTimeout     time.Duration  // 0 means registrationTimeout. Tests shorten it
+	partBuffers             partBufferPool // nil: the shared pool
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
 	skipped                 map[string]string   // store path -> why the size limit left it out
@@ -261,12 +262,33 @@ func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
 	return &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
 }
 
-func (c *Client) putBytes(ctx context.Context, url string, data []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+type trackedBody struct {
+	io.Reader
+
+	once sync.Once
+	done *sync.WaitGroup
+}
+
+func (b *trackedBody) Close() error {
+	b.once.Do(b.done.Done)
+
+	return nil
+}
+
+// putBytes counts each body in inFlight until the transport closes it.
+func (c *Client) putBytes(ctx context.Context, url string, data []byte, inFlight *sync.WaitGroup) (*http.Response, error) {
+	newBody := func() io.ReadCloser {
+		inFlight.Add(1)
+
+		return &trackedBody{Reader: bytes.NewReader(data), done: inFlight}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, newBody())
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
+	req.GetBody = func() (io.ReadCloser, error) { return newBody(), nil }
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "application/octet-stream")
 
