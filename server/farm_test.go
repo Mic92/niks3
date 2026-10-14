@@ -142,6 +142,12 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 func openLeadAs(t *testing.T, s *server.Service, incumbent bool) *leadStream {
 	t.Helper()
 
+	return openLeadInFarm(t, s, incumbent, "")
+}
+
+func openLeadInFarm(t *testing.T, s *server.Service, incumbent bool, farmID string) *leadStream {
+	t.Helper()
+
 	ctx, cancel := context.WithCancel(t.Context())
 	pr, pw := io.Pipe()
 	ls := &leadStream{t: t, cancel: cancel, lines: make(chan api.LeadStatus, 64), done: make(chan struct{})}
@@ -155,13 +161,55 @@ func openLeadAs(t *testing.T, s *server.Service, incumbent bool) *leadStream {
 			panic(err)
 		}
 
-		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/farm/lead", bytes.NewReader(body))
+		path := "/api/farm/lead"
+		if farmID != "" {
+			path += "/" + farmID
+		}
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+		r.SetPathValue("farmID", farmID)
 		s.LeadHandler(&pipeWriter{PipeWriter: pw, header: http.Header{}}, r)
 	}()
 
 	go scanLead(pr, ls.lines)
 
 	return ls
+}
+
+func TestLeadScopedToFarm(t *testing.T) {
+	t.Parallel()
+
+	s := createTestService(t)
+	defer s.Close()
+
+	legacy := openLeadInFarm(t, s, true, "")
+	defer legacy.close()
+	legacy.until(api.LeadStatus{Lead: true})
+
+	arm := openLeadInFarm(t, s, true, "arm")
+	defer arm.close()
+	arm.until(api.LeadStatus{Lead: true})
+
+	x86 := openLeadInFarm(t, s, true, "x86")
+	defer x86.close()
+	x86.until(api.LeadStatus{Lead: true})
+
+	otherX86 := openLeadInFarm(t, s, true, "x86")
+	defer otherX86.close()
+	otherX86.until(api.LeadStatus{Lead: false})
+
+	otherLegacy := openLeadInFarm(t, s, true, "")
+	defer otherLegacy.close()
+	otherLegacy.until(api.LeadStatus{Lead: false})
+
+	x86.close()
+	otherX86.until(api.LeadStatus{Lead: true})
+	// Taking over x86 must not disturb either independent leader.
+	if st := arm.next(); !st.Lead {
+		t.Fatalf("arm lost leadership: %+v", st)
+	}
+	if st := legacy.next(); !st.Lead {
+		t.Fatalf("legacy farm lost leadership: %+v", st)
+	}
 }
 
 // After a restart the previous leader gets the lock back even if a standby
