@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/hook"
 )
@@ -234,6 +235,47 @@ func TestQueueConcurrentWriters(t *testing.T) {
 
 	if count != writers*perWriter {
 		t.Errorf("expected %d, got %d", writers*perWriter, count)
+	}
+}
+
+// A write that holds the database past busy_timeout, a commit stuck on a
+// slow fsync under IO pressure, must delay a concurrent Enqueue rather than
+// fail it: the hook reports the failure and the path is never queued. The
+// test above hits the same failure when commits are slow enough that a
+// waiter polling for the lock keeps losing it to writers that just committed.
+func TestQueueEnqueueWaitsOutSlowWriter(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	release, err := q.HoldWrite(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+
+	go func() { done <- q.Enqueue([]string{"/nix/store/aaa"}) }()
+
+	// Past the 5 second busy_timeout.
+	select {
+	case err := <-done:
+		_ = release()
+
+		t.Fatalf("Enqueue finished while another write held the database: %v", err)
+	case <-time.After(6 * time.Second):
+	}
+
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	if count, _ := q.Count(); count != 1 {
+		t.Errorf("expected the path queued, have %d", count)
 	}
 }
 

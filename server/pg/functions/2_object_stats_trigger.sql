@@ -60,24 +60,53 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS object_stats_trigger ON objects;
+-- This file runs on every start. Creating or dropping a trigger locks the
+-- whole table, and that lock waits for every transaction using objects
+-- while holding every later query on it behind itself, so a replica starting
+-- during a mark or a large commit would stall all pushes until that ended.
+-- The triggers are created once; the functions above are replaced in place.
+-- The row-level trigger they replace is dropped only where it still exists.
+-- Any other change to a trigger's own definition needs a versioned migration.
+DO $do$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'objects'::regclass AND tgname = 'object_stats_trigger'
+    ) THEN
+        DROP TRIGGER object_stats_trigger ON objects;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'objects'::regclass AND tgname = 'object_stats_insert'
+    ) THEN
+        CREATE TRIGGER object_stats_insert
+        AFTER INSERT ON objects
+        REFERENCING NEW TABLE AS new_rows
+        FOR EACH STATEMENT EXECUTE FUNCTION object_stats_insert();
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'objects'::regclass AND tgname = 'object_stats_update'
+    ) THEN
+        CREATE TRIGGER object_stats_update
+        AFTER UPDATE ON objects
+        REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+        FOR EACH STATEMENT EXECUTE FUNCTION object_stats_update();
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'objects'::regclass AND tgname = 'object_stats_delete'
+    ) THEN
+        CREATE TRIGGER object_stats_delete
+        AFTER DELETE ON objects
+        REFERENCING OLD TABLE AS old_rows
+        FOR EACH STATEMENT EXECUTE FUNCTION object_stats_delete();
+    END IF;
+END
+$do$;
+
 DROP FUNCTION IF EXISTS object_stats_apply();
-
-DROP TRIGGER IF EXISTS object_stats_insert ON objects;
-CREATE TRIGGER object_stats_insert
-AFTER INSERT ON objects
-REFERENCING NEW TABLE AS new_rows
-FOR EACH STATEMENT EXECUTE FUNCTION object_stats_insert();
-
-DROP TRIGGER IF EXISTS object_stats_update ON objects;
-CREATE TRIGGER object_stats_update
-AFTER UPDATE ON objects
-REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
-FOR EACH STATEMENT EXECUTE FUNCTION object_stats_update();
-
-DROP TRIGGER IF EXISTS object_stats_delete ON objects;
-CREATE TRIGGER object_stats_delete
-AFTER DELETE ON objects
-REFERENCING OLD TABLE AS old_rows
-FOR EACH STATEMENT EXECUTE FUNCTION object_stats_delete();
 -- +goose statementend

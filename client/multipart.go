@@ -70,17 +70,29 @@ var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should 
 	},
 }
 
-func getPartBuffer(partSize int) ([]byte, func()) {
+// partBufferPool is what part buffers come from; *sync.Pool satisfies it.
+type partBufferPool interface {
+	Get() any
+	Put(x any)
+}
+
+// getPartBuffer takes a part buffer from pool, or from uploadBufferPool when
+// pool is nil (always, outside tests).
+func getPartBuffer(pool partBufferPool, partSize int) ([]byte, func()) {
 	if partSize > multipartPartSize {
 		return make([]byte, partSize), func() {}
 	}
 
-	ptr, ok := uploadBufferPool.Get().(*[]byte)
+	if pool == nil {
+		pool = &uploadBufferPool
+	}
+
+	ptr, ok := pool.Get().(*[]byte)
 	if !ok {
 		return make([]byte, multipartPartSize), func() {}
 	}
 
-	return *ptr, func() { uploadBufferPool.Put(ptr) }
+	return *ptr, func() { pool.Put(ptr) }
 }
 
 // ErrUploadSuperseded means a concurrent closure already finished the same NAR
@@ -252,21 +264,27 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 				return nil
 			}
 
-			buffer, release := getPartBuffer(partSize)
+			buffer, release := getPartBuffer(c.partBuffers, partSize)
 
+			// ReadFull reports the end of the stream as io.EOF or, after a
+			// short last part, io.ErrUnexpectedEOF, and only when r itself
+			// returned io.EOF, so compare by identity. A producer's error that
+			// merely wraps one of them (the NAR dump finding a store file
+			// shorter than its size) is a failure: completing on it would
+			// register a truncated NAR.
 			n, err := io.ReadFull(r, buffer)
 			if n == 0 {
 				release()
 				<-slots
 
-				if errors.Is(err, io.EOF) {
+				if err == io.EOF {
 					return nil
 				}
 
 				return fmt.Errorf("reading part %d: %w", partNumber, err)
 			}
 
-			last := errors.Is(err, io.ErrUnexpectedEOF)
+			last := err == io.ErrUnexpectedEOF
 			if err != nil && !last {
 				release()
 				<-slots
@@ -277,12 +295,20 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			partURL, partData := partURLs[partNumber-1], buffer[:n]
 
 			g.Go(func() error {
-				defer func() { release(); <-slots }()
+				defer func() { <-slots }()
 
 				etag, err := c.uploadPart(gctx, partURL, partData)
 				if err != nil {
+					// Not released: on an early error response the transport
+					// may still be copying the request body from this buffer
+					// after Do has returned, and the next part read into a
+					// pooled buffer would race it. Let the GC have this one.
 					return fmt.Errorf("uploading part %d: %w", partNumber, err)
 				}
+
+				// A 2xx means S3 read the whole part, so the transport is
+				// done with the buffer.
+				release()
 
 				mu.Lock()
 				defer mu.Unlock()
