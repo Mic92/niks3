@@ -95,6 +95,7 @@ type CommonFlags struct {
 	AuthTokenScript *string
 	Debug           *bool
 	Help            *bool
+	OIDC            *OIDCFlags
 }
 
 // AddCommonFlags registers --server-url, the auth flags, --debug, and
@@ -128,7 +129,7 @@ func (cf CommonFlags) TokenSource(fs *flag.FlagSet, tf TLSFlags) (client.TokenSo
 
 	hasMTLS := tf.ClientCert != nil && *tf.ClientCert != ""
 
-	return ResolveTokenSource(*cf.AuthToken, *cf.AuthTokenPath, *cf.AuthTokenScript, hasMTLS)
+	return cf.resolveOIDC(hasMTLS)
 }
 
 // RequireServerURL returns an error if the URL is empty.

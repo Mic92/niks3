@@ -82,6 +82,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
 - Authentication via API tokens (Bearer auth)
 - OIDC authentication for CI/CD systems (GitHub Actions, GitLab CI)
+- [Native OIDC device login](docs/native-oidc.md) for interactive CLI users, with optional Linux keyring storage
 - S3 credentials via static keys (`--s3-access-key` / `--s3-secret-key`) or IAM (`--s3-use-iam` for IRSA, EC2 instance profiles, ECS task roles)
 - [Automatic upload](https://github.com/Mic92/niks3/wiki/Auto-Upload) via post-build-hook with crash-safe SQLite queue
 

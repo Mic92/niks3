@@ -30,6 +30,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  push    Upload paths to S3-compatible binary cache")
 	fmt.Fprintln(os.Stderr, "  gc      Run garbage collection on old closures")
 	fmt.Fprintln(os.Stderr, "  pins    Manage pins (create, list or delete)")
+	fmt.Fprintln(os.Stderr, "  auth    Manage native OIDC login (login, status, logout)")
 	fmt.Fprintln(os.Stderr, "\nGlobal flags:")
 	fmt.Fprintln(os.Stderr, "  -h, --help    Show help")
 	fmt.Fprintln(os.Stderr, "\nUse 'niks3 <command> --help' for more information about a command.")
@@ -57,6 +58,7 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.OIDCHelp)
 	fmt.Fprintln(os.Stderr, "  --max-concurrent-uploads int")
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
@@ -77,6 +79,7 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.OIDCHelp)
 	fmt.Fprintln(os.Stderr, "  --older-than string")
 	fmt.Fprintln(os.Stderr, "        Delete closures older than this duration (default: '720h' for 30 days)")
 	fmt.Fprintln(os.Stderr, "  --failed-uploads-older-than string")
@@ -105,9 +108,12 @@ func run() error {
 	}
 
 	switch os.Args[1] {
+	case "auth":
+		return authCommand(os.Args[2:])
 	case "push":
 		pushCmd := flag.NewFlagSet("push", flag.ContinueOnError)
 		cf := cmdutil.AddCommonFlags(pushCmd)
+		cf = cf.AddOIDCFlags(pushCmd)
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
 		pinName := pushCmd.String("pin", "", "Create a named pin for the pushed closure")
@@ -145,6 +151,7 @@ func run() error {
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
 		cf := cmdutil.AddCommonFlags(gcCmd)
+		cf = cf.AddOIDCFlags(gcCmd)
 		olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration")
 		pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration")
 		force := gcCmd.Bool("force", false, "Force immediate deletion without grace period")
@@ -166,6 +173,7 @@ func run() error {
 
 		pinsCmd := flag.NewFlagSet("pins", flag.ContinueOnError)
 		cf := cmdutil.AddCommonFlags(pinsCmd)
+		cf = cf.AddOIDCFlags(pinsCmd)
 		namesOnly := pinsCmd.Bool("names-only", false, "Output only pin names (list only)")
 		jsonOutput := pinsCmd.Bool("json", false, "Output as JSON (list only)")
 		tf := cmdutil.AddTLSFlags(pinsCmd)
@@ -314,6 +322,9 @@ func printPinsHelp() {
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, "  --auth-token string")
 	fmt.Fprintln(os.Stderr, "        Auth token (default: $XDG_CONFIG_HOME/niks3/auth-token or NIKS3_AUTH_TOKEN_FILE)")
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenPathHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenScriptHelp)
+	fmt.Fprintln(os.Stderr, cmdutil.OIDCHelp)
 	fmt.Fprintln(os.Stderr, "  --names-only")
 	fmt.Fprintln(os.Stderr, "        Output only pin names, one per line (for scripting, list only)")
 	fmt.Fprintln(os.Stderr, "  --json")

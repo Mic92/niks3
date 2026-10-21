@@ -55,7 +55,8 @@ packages
           pkgs.rustfs
           pkgs.postgresql
           pkgs.nix
-        ];
+        ]
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.dbus ];
         __darwinAllowLocalNetworking = true;
       }
       ''
@@ -68,6 +69,15 @@ packages
 
         echo "Running client tests..."
         niks3-client.test -test.v
+
+        echo "Running native OIDC login tests..."
+        niks3-client-oidclogin.test -test.v
+
+        echo "Running command utility tests..."
+        niks3-cmdutil.test -test.v
+
+        echo "Running CLI tests..."
+        niks3-cli.test -test.v
 
         echo "Running server tests..."
         niks3-server.test -test.v

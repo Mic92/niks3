@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +58,13 @@ type loggingTransport struct {
 
 func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Log request
-	reqDump, err := httputil.DumpRequestOut(req, false)
+	redacted := req.Clone(req.Context())
+	for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
+		if redacted.Header.Get(name) != "" {
+			redacted.Header.Set(name, "[REDACTED]")
+		}
+	}
+	reqDump, err := httputil.DumpRequestOut(redacted, false)
 	if err != nil {
 		slog.Debug("Failed to dump request", "error", err)
 	} else {
@@ -70,7 +78,13 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	// Log response
-	respDump, err := httputil.DumpResponse(resp, false)
+	redactedResp := new(http.Response)
+	*redactedResp = *resp
+	redactedResp.Header = resp.Header.Clone()
+	if redactedResp.Header.Get("Set-Cookie") != "" {
+		redactedResp.Header.Set("Set-Cookie", "[REDACTED]")
+	}
+	respDump, err := httputil.DumpResponse(redactedResp, false)
 	if err != nil {
 		slog.Debug("Failed to dump response", "error", err)
 	} else {
@@ -159,7 +173,20 @@ func newTransport() *http.Transport {
 }
 
 func newHTTPClient() *http.Client {
-	return &http.Client{Transport: newTransport()}
+	return &http.Client{
+		Transport: newTransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			first := via[0]
+			if first.Header.Get("Authorization") != "" && (req.URL.Scheme != first.URL.Scheme || !strings.EqualFold(req.URL.Host, first.URL.Host)) {
+				return errors.New("refusing to redirect an authenticated request to another origin")
+			}
+
+			return nil
+		},
+	}
 }
 
 // SetDebugHTTP enables or disables HTTP request/response logging.
