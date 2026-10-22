@@ -44,6 +44,9 @@ pkgs.buildGoModule {
     export GOMAXPROCS=$NIX_BUILD_CORES
 
     go test -c -p "$NIX_BUILD_CORES" ./client -o client.test
+    go test -c -p "$NIX_BUILD_CORES" ./client/oidclogin -o client-oidclogin.test
+    go test -c -p "$NIX_BUILD_CORES" ./cmdutil -o cmdutil.test
+    go test -c -p "$NIX_BUILD_CORES" ./cmd/niks3 -o niks3.test
     go test -c -p "$NIX_BUILD_CORES" ./server -o server.test
     go test -c -p "$NIX_BUILD_CORES" ./server/oidc -o server-oidc.test
     go test -c -p "$NIX_BUILD_CORES" ./hook -o hook.test
@@ -58,6 +61,9 @@ pkgs.buildGoModule {
 
     mkdir -p $out/bin
     install -D client.test $out/bin/niks3-client.test
+    install -D client-oidclogin.test $out/bin/niks3-client-oidclogin.test
+    install -D cmdutil.test $out/bin/niks3-cmdutil.test
+    install -D niks3.test $out/bin/niks3-cli.test
     install -D server.test $out/bin/niks3-server.test
     install -D server-oidc.test $out/bin/niks3-server-oidc.test
     install -D hook.test $out/bin/niks3-hook.test

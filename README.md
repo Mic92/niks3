@@ -82,6 +82,7 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 
 - Authentication via API tokens (Bearer auth)
 - OIDC authentication for CI/CD systems (GitHub Actions, GitLab CI)
+- [Native OIDC device login](https://github.com/Mic92/niks3/wiki/OIDC) for interactive CLI users, with optional Linux keyring storage
 - S3 credentials via static keys (`--s3-access-key` / `--s3-secret-key`) or IAM (`--s3-use-iam` for IRSA, EC2 instance profiles, ECS task roles)
 - [Automatic upload](https://github.com/Mic92/niks3/wiki/Auto-Upload) via post-build-hook with crash-safe SQLite queue
 
@@ -107,9 +108,9 @@ Prometheus metrics on `/metrics` and a Grafana dashboard
 (`deploy/helm/niks3/files/niks3.json`, flake output `dashboards.niks3`). See the
 [Monitoring](https://github.com/Mic92/niks3/wiki/Monitoring) wiki page.
 
-## OIDC Authentication (CI/CD)
+## OIDC Authentication
 
-niks3 supports OIDC authentication for CI/CD systems. See the wiki for details:
+niks3 supports OIDC authentication for CI/CD systems and interactive CLI users. See the wiki for details:
 
 - [OIDC Configuration](https://github.com/Mic92/niks3/wiki/OIDC)
 - [GitHub Actions](https://github.com/Mic92/niks3/wiki/GitHub-Actions)
