@@ -177,7 +177,7 @@ func (f *Flow) Token(ctx context.Context, current *Credential) (*Credential, err
 	if err != nil || !verified.Expiry.Equal(current.ExpiresAt) || verified.Subject != current.Subject {
 		return nil, errors.New("stored OIDC ID token verification failed; run login again")
 	}
-	if f.usable(current) && (f.now().Before(current.RefreshAt) || current.MissingIDToken) {
+	if f.usable(current) && (f.now().Before(current.RefreshAt) || current.MissingIDToken || current.RefreshToken == "") {
 		return current, nil
 	}
 	if current.MissingIDToken || current.RefreshToken == "" {

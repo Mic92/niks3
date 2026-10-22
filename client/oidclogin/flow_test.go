@@ -294,6 +294,42 @@ func TestRefreshContracts(t *testing.T) {
 	}
 }
 
+func TestTokenWithoutRefreshToken(t *testing.T) {
+	t.Parallel()
+	m := newTestIssuer(t, issuerResponse{})
+	f := testFlow(t, m)
+	c := initialCredential(t, f, m)
+	c.RefreshToken = ""
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{name: "before-refresh", now: c.RefreshAt.Add(-time.Second), want: true},
+		{name: "at-refresh", now: c.RefreshAt, want: true},
+		{name: "before-expiry-margin", now: c.ExpiresAt.Add(-expiryMargin - time.Second), want: true},
+		{name: "at-expiry-margin", now: c.ExpiresAt.Add(-expiryMargin)},
+		{name: "expired", now: c.ExpiresAt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			flow := testFlow(t, m)
+			flow.now = func() time.Time { return tc.now }
+			next, err := flow.Token(t.Context(), c)
+			if tc.want {
+				if err != nil || next != c {
+					t.Fatalf("usable cached token was not returned: %v", err)
+				}
+			} else if err == nil || next != nil {
+				t.Fatal("unusable token accepted without a refresh token")
+			}
+			if m.polls.Load() != 0 {
+				t.Fatal("token endpoint called without a refresh token")
+			}
+		})
+	}
+}
+
 func TestRefreshRejectsIdentityChangeAndKeepsRotation(t *testing.T) {
 	t.Parallel()
 	m := newTestIssuer(t, issuerResponse{claims: jwt.MapClaims{"sub": "bob"}})
