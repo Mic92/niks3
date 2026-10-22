@@ -156,7 +156,16 @@ func (f *Flow) Login(ctx context.Context, instructions io.Writer) (*Credential, 
 	if err := secureURL(device.VerificationURI, strings.HasPrefix(f.config.Endpoint.DeviceAuthURL, "http://")); err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(instructions, "Open %s and enter code %q\n", device.VerificationURI, device.UserCode); err != nil {
+	verificationURI := device.VerificationURI
+	message := "Open %s and enter code %q\n"
+	if device.VerificationURIComplete != "" {
+		if err := secureURL(device.VerificationURIComplete, strings.HasPrefix(f.config.Endpoint.DeviceAuthURL, "http://")); err != nil {
+			return nil, err
+		}
+		verificationURI = device.VerificationURIComplete
+		message = "Open %s and confirm code %q if prompted\n"
+	}
+	if _, err := fmt.Fprintf(instructions, message, verificationURI, device.UserCode); err != nil {
 		return nil, errors.New("cannot display OIDC device instructions")
 	}
 	token, err := f.config.DeviceAccessToken(ctx, device)

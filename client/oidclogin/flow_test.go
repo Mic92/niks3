@@ -28,18 +28,19 @@ type testIssuer struct {
 }
 
 type issuerResponse struct {
-	claims           jwt.MapClaims
-	omitID           bool
-	omitRefresh      bool
-	oauthError       string
-	pending          bool
-	slow             bool
-	deviceInvalid    bool
-	blockDevice      bool
-	badDiscovery     bool
-	noDevice         bool
-	insecureEndpoint bool
-	redirect         bool
+	verificationURIComplete string
+	claims                  jwt.MapClaims
+	omitID                  bool
+	omitRefresh             bool
+	oauthError              string
+	pending                 bool
+	slow                    bool
+	deviceInvalid           bool
+	blockDevice             bool
+	badDiscovery            bool
+	noDevice                bool
+	insecureEndpoint        bool
+	redirect                bool
 }
 
 func newTestIssuer(t *testing.T, response issuerResponse) *testIssuer {
@@ -97,7 +98,7 @@ func newTestIssuer(t *testing.T, response issuerResponse) *testIssuer {
 			if spec.deviceInvalid {
 				interval = -1
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"device_code": "secret-device", "user_code": "ABCD", "verification_uri": "https://login.example.com/verify", "expires_in": 600, "interval": interval})
+			_ = json.NewEncoder(w).Encode(map[string]any{"device_code": "secret-device", "user_code": "ABCD", "verification_uri": "https://login.example.com/verify", "verification_uri_complete": spec.verificationURIComplete, "expires_in": 600, "interval": interval})
 		case "/token":
 			if err := r.ParseForm(); err != nil {
 				t.Error(err)
@@ -402,5 +403,46 @@ func TestDeviceHTTPRequestTimeout(t *testing.T) {
 	started := time.Now()
 	if _, err := f.Login(t.Context(), io.Discard); err == nil || time.Since(started) > 3*time.Second {
 		t.Fatal("initial device request ignored HTTP timeout")
+	}
+}
+
+func TestDeviceVerificationURL(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		complete string
+		want     string
+		invalid  bool
+	}{
+		{name: "complete", complete: "https://login.example.com/verify?user_code=ABCD", want: `Open https://login.example.com/verify?user_code=ABCD and confirm code "ABCD" if prompted`},
+		{name: "basic-fallback", want: `Open https://login.example.com/verify and enter code "ABCD"`},
+		{name: "insecure", complete: "http://login.example.com/verify?user_code=ABCD", invalid: true},
+		{name: "userinfo", complete: "https://user@login.example.com/verify", invalid: true},
+		{name: "fragment", complete: "https://login.example.com/verify#ABCD", invalid: true},
+		{name: "malformed", complete: "://invalid", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestIssuer(t, issuerResponse{verificationURIComplete: tc.complete})
+			f := testFlow(t, m)
+			var instructions bytes.Buffer
+			c, err := f.Login(t.Context(), &instructions)
+			if tc.invalid {
+				if err == nil || c != nil || instructions.Len() != 0 || m.polls.Load() != 0 {
+					t.Fatal("invalid complete URL was displayed or used for login")
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c == nil || !strings.Contains(instructions.String(), tc.want) {
+				t.Fatal("device instructions did not use the expected verification URL and code")
+			}
+			if strings.Contains(instructions.String(), "secret-") {
+				t.Fatal("device instructions leaked secrets")
+			}
+		})
 	}
 }
