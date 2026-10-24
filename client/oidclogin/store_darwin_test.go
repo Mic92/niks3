@@ -3,7 +3,9 @@ package oidclogin //nolint:testpackage // exercises native Keychain queries with
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"unsafe"
@@ -22,6 +24,38 @@ func TestKeychainBindings(t *testing.T) {
 		t.Fatal("could not allocate Keychain query")
 	}
 	api.release(query)
+}
+
+func TestMacOSKeychainIntegration(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("NIKS3_TEST_MACOS_KEYCHAIN") != "1" {
+		t.Skip("requires an explicitly prepared disposable Keychain")
+	}
+	store := systemStore{}
+	key := "integration-" + rand.Text()
+	t.Cleanup(func() {
+		if err := store.Delete(context.Background(), key); err != nil && !errors.Is(err, ErrNotFound) {
+			t.Error("cleaning up synthetic Keychain credential:", err)
+		}
+	})
+	for _, value := range [][]byte{bytes.Repeat([]byte("synthetic-token"), 1024), []byte("rotated-token")} {
+		if err := store.Save(t.Context(), key, value); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.Load(t.Context(), key)
+		if err != nil || !bytes.Equal(got, value) {
+			t.Fatalf("native Keychain round trip failed: %v", err)
+		}
+	}
+	if _, err := store.Load(t.Context(), key+"-absent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("native Keychain missing-item error: %v", err)
+	}
+	if err := store.Delete(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(t.Context(), key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("native Keychain credential survived deletion: %v", err)
+	}
 }
 
 func fakeKeychain(t *testing.T) (*keychainAPI, *int32) {
