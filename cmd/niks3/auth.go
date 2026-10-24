@@ -81,7 +81,7 @@ func runAuth(ctx context.Context, args []string, output, instructions io.Writer)
 		return errors.New("auth commands do not accept positional arguments")
 	}
 	if err := cmdutil.RequireServerURL(*server); err != nil {
-		return err
+		return err //nolint:wrapcheck // cmdutil errors are already user-facing
 	}
 	if action == authLogin && (!device || issuer == "" || clientID == "") {
 		return errors.New("login requires --device, --oidc-issuer and --oidc-client-id")

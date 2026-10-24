@@ -5,7 +5,6 @@ package oidclogin
 import (
 	"context"
 	"errors"
-	"io"
 )
 
 type systemStore struct{}
@@ -16,4 +15,3 @@ func unsupportedStore() error {
 func (systemStore) Load(context.Context, string) ([]byte, error) { return nil, unsupportedStore() }
 func (systemStore) Save(context.Context, string, []byte) error   { return unsupportedStore() }
 func (systemStore) Delete(context.Context, string) error         { return unsupportedStore() }
-func lockProfile(context.Context, string) (io.Closer, error)     { return nil, unsupportedStore() }

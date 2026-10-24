@@ -16,11 +16,16 @@ import (
 
 func TestOIDCResolution(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("NIKS3_AUTH_TOKEN_FILE", "")
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
 	server := "https://cache.example.com"
-	profileDir := filepath.Join(dir, "niks3", "oidc")
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileDir := filepath.Join(configDir, "niks3", "oidc")
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
