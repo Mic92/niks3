@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package oidclogin //nolint:testpackage // exercises internal validation, clock, locking and wire protocol
 
 import (

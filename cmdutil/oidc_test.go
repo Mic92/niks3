@@ -1,13 +1,14 @@
 package cmdutil_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/Mic92/niks3/client/oidclogin"
@@ -21,11 +22,7 @@ func TestOIDCResolution(t *testing.T) {
 	t.Setenv("NIKS3_AUTH_TOKEN_FILE", "")
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
 	server := "https://cache.example.com"
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	profileDir := filepath.Join(configDir, "niks3", "oidc")
+	profileDir := filepath.Join(dir, "niks3", "oidc")
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -49,14 +46,14 @@ func TestOIDCResolution(t *testing.T) {
 		oidc            bool
 		want            string
 		resolutionError bool
-		keyringError    bool
+		savedProfile    bool
 	}{
-		{name: "saved-fallback", oidc: true, keyringError: true},
+		{name: "saved-fallback", oidc: true, savedProfile: true},
 		{name: "explicit-token", oidc: true, flags: []string{"--auth-token", "literal"}, want: "literal"},
 		{name: "explicit-file", oidc: true, flags: []string{"--auth-token-path", tokenFile}, want: "file-token"},
 		{name: "env-file", oidc: true, envFile: tokenFile, want: "file-token"},
 		{name: "mtls", oidc: true, mtls: true},
-		{name: "explicit-profile", oidc: true, mtls: true, envFile: tokenFile, flags: []string{"--oidc-profile"}, keyringError: true},
+		{name: "explicit-profile", oidc: true, mtls: true, envFile: tokenFile, flags: []string{"--oidc-profile"}, savedProfile: true},
 		{name: "explicit-token-over-profile", oidc: true, flags: []string{"--oidc-profile", "--auth-token", "literal"}, want: "literal"},
 		{name: "hook-does-not-select-profile", resolutionError: true},
 		{name: "hook-env-file", envFile: tokenFile, want: "file-token"},
@@ -90,9 +87,17 @@ func TestOIDCResolution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			token, err := source(t.Context())
-			if tc.keyringError {
-				if err == nil || !strings.Contains(err.Error(), "Secret Service") {
+			ctx := t.Context()
+			if tc.savedProfile {
+				// A selected profile observes cancellation before accessing the
+				// real keyring. Other token sources do not acquire profile locks.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			token, err := source(ctx)
+			if tc.savedProfile {
+				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("saved login not selected: %v", err)
 				}
 

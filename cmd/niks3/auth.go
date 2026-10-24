@@ -29,8 +29,8 @@ Login only:
   --oidc-client-id string    Public OIDC client ID (required)
   --oidc-scopes string       Space-separated scopes (default: "openid profile offline_access")
 
-Login saves tokens in Linux Secret Service and selects a fallback profile for
-this server. Unlock the default keyring in your desktop session first.
+Login saves tokens in Linux Secret Service or macOS Keychain and selects a
+fallback profile for this server. Unlock your keyring in the desktop session first.
 Status prints local metadata as JSON without refreshing or printing tokens.
 Logout removes local credentials; it does not revoke the provider's grant.
 For headless sessions without a keyring, use push --oidc-device instead.`)

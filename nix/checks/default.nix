@@ -73,6 +73,9 @@ packages
         echo "Running native OIDC login tests..."
         niks3-client-oidclogin.test -test.v
 
+        echo "Running CLI config directory tests..."
+        niks3-client-configdir.test -test.v
+
         echo "Running command utility tests..."
         niks3-cmdutil.test -test.v
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/client/configdir"
 )
 
 // SetupLogger configures the global slog logger with the specified level.
@@ -27,17 +28,12 @@ func SetupLogger(debug bool) {
 
 // DefaultAuthTokenPath returns the default XDG-compliant path for the auth token.
 func DefaultAuthTokenPath() string {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-
-		configDir = filepath.Join(home, ".config")
+	dir, err := configdir.Dir()
+	if err != nil {
+		return ""
 	}
 
-	return filepath.Join(configDir, "niks3", "auth-token")
+	return filepath.Join(dir, "auth-token")
 }
 
 // envAuthTokenPath returns the token file from NIKS3_AUTH_TOKEN_FILE or the

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Mic92/niks3/client/configdir"
 )
 
 // ErrNotFound means a secure store has no matching credential.
@@ -42,12 +44,12 @@ type Manager struct {
 
 // DefaultManager uses the XDG config directory and the supported OS keyring.
 func DefaultManager() (*Manager, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := configdir.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("finding OIDC config directory: %w", err)
 	}
 
-	return &Manager{Dir: filepath.Join(dir, "niks3", "oidc"), Store: systemStore{}}, nil
+	return &Manager{Dir: filepath.Join(dir, "oidc"), Store: systemStore{}}, nil
 }
 
 // CanonicalServer scopes credentials to HTTPS server URLs, including any path.
