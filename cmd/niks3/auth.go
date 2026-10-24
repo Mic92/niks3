@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/Mic92/niks3/client/oidclogin"
+	"github.com/Mic92/niks3/cmdutil"
 )
 
 const authLogin = "login"
@@ -78,6 +79,9 @@ func runAuth(ctx context.Context, args []string, output, instructions io.Writer)
 	}
 	if fs.NArg() != 0 {
 		return errors.New("auth commands do not accept positional arguments")
+	}
+	if err := cmdutil.RequireServerURL(*server); err != nil {
+		return err
 	}
 	if action == authLogin && (!device || issuer == "" || clientID == "") {
 		return errors.New("login requires --device, --oidc-issuer and --oidc-client-id")
