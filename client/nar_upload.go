@@ -144,7 +144,11 @@ func (c *Client) compressAndMultipartUploadNAR(ctx context.Context, storePath st
 	if err != nil {
 		_ = pw.CloseWithError(err)
 
-		<-errChan // drain to prevent goroutine leak
+		// Drain to prevent a goroutine leak. The dump usually only fails
+		// because of the closed pipe.
+		if dumpErr := <-errChan; dumpErr != nil {
+			slog.Debug("NAR dump stopped after upload failure", "error", dumpErr)
+		}
 
 		return err
 	}
