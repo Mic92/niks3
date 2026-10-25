@@ -70,8 +70,8 @@ func TestObjectStatsTrigger(t *testing.T) {
 	assertStats(1, 0) // delete
 }
 
-// Committing n objects must not take time quadratic in n.
-func TestObjectStatsLargeCommit(t *testing.T) {
+// Committing n objects must update the stats row once, not n times.
+func TestObjectStatsUpdatedOncePerCommit(t *testing.T) {
 	t.Parallel()
 
 	service := createTestService(t)
@@ -79,7 +79,7 @@ func TestObjectStatsLargeCommit(t *testing.T) {
 
 	ctx := t.Context()
 
-	const objects = 60000
+	const objects = 1000
 
 	var id int64
 
@@ -90,14 +90,24 @@ func TestObjectStatsLargeCommit(t *testing.T) {
 		SELECT $1, lpad(i::text, 32, '0') || '.narinfo', '{}', 100 FROM generate_series(1, $2::int) AS i`, id, objects)
 	ok(t, err)
 
-	start := time.Now()
-
-	_, err = service.Pool.Exec(ctx, "SELECT commit_pending_closure($1)", id)
+	tx, err := service.Pool.Begin(ctx)
 	ok(t, err)
 
-	if took := time.Since(start); took > 8*time.Second {
-		t.Errorf("committing %d objects took %v", objects, took)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, "SELECT commit_pending_closure($1)", id)
+	ok(t, err)
+
+	var updates int64
+
+	ok(t, tx.QueryRow(ctx, `SELECT n_tup_upd FROM pg_stat_xact_user_tables
+		WHERE relname = 'object_stats'`).Scan(&updates))
+
+	if updates != 1 {
+		t.Errorf("committing %d objects updated object_stats %d times, want 1", objects, updates)
 	}
+
+	ok(t, tx.Commit(ctx))
 
 	stats, err := pg.New(service.Pool).GetObjectStats(ctx)
 	ok(t, err)
