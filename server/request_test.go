@@ -60,8 +60,11 @@ func createTestService(tb testing.TB) *server.Service {
 	bucketName := "bucket" + strconv.Itoa(int(testBucketCount.Add(1)))
 	minioClient := testRustfsServer.Client(tb)
 
+	// Waiting for the lock must not use up the creation budget.
 	testBucketMu.Lock()
-	err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	bucketCtx, bucketCancel := context.WithTimeout(tb.Context(), 10*time.Second)
+	err = minioClient.MakeBucket(bucketCtx, bucketName, minio.MakeBucketOptions{})
+	bucketCancel()
 	testBucketMu.Unlock()
 	ok(tb, err)
 
