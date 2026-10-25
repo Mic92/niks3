@@ -312,6 +312,32 @@ func TestClientIntegration(t *testing.T) {
 	verifyNarinfoInS3(ctx, t, testService, hash, storePath)
 	verifyLsFileInS3(ctx, t, testService, hash)
 
+	// GC tombstoned the listing and collected the closure, while the narinfo
+	// and NAR stay live through another closure. The re-push must upload it,
+	// as the closure commit records every pending object as present.
+	lsKey := hash + ".ls"
+	ok(t, testService.MinioClient.RemoveObject(ctx, testService.Bucket, lsKey, minio.RemoveObjectOptions{}))
+
+	_, err = testService.Pool.Exec(ctx,
+		`UPDATE objects SET deleted_at = now(), first_deleted_at = now() WHERE key = $1`, lsKey)
+	ok(t, err)
+
+	_, err = testService.Pool.Exec(ctx, `DELETE FROM closures WHERE key = $1`, hash+".narinfo")
+	ok(t, err)
+
+	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)
+	ok(t, err)
+
+	verifyLsFileInS3(ctx, t, testService, hash)
+
+	var tombstoned bool
+	ok(t, testService.Pool.QueryRow(ctx,
+		"SELECT deleted_at IS NOT NULL FROM objects WHERE key = $1", lsKey).Scan(&tombstoned))
+
+	if tombstoned {
+		t.Errorf("listing %s still tombstoned after re-push", lsKey)
+	}
+
 	// Test garbage collection
 	t.Log("Testing garbage collection...")
 	mux.HandleFunc("DELETE /api/closures", testService.RequireScope(oidc.ScopeWrite, testService.CleanupClosuresOlder))
