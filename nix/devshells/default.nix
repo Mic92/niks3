@@ -16,7 +16,7 @@
       pkgs.sqlc
       pkgs.postgresql_16
       pkgs.s5cmd
-      pkgs.awscli
+      pkgs.awscli2
       pkgs.rustfs
     ];
 
