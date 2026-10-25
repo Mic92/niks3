@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // DefaultSocketPath is the default path for the niks3-hook upload socket.
@@ -21,19 +22,27 @@ var DefaultSocketPath = "/run/niks3/upload-to-cache.sock" //nolint:gochecknoglob
 // QueueFunc is called by the server to persist paths. It must return nil on success.
 type QueueFunc func(paths []string) error
 
+// DefaultConnTimeout bounds one connection, so a stalled client cannot keep
+// Serve from returning on shutdown.
+const DefaultConnTimeout = 30 * time.Second
+
 // Server listens on a unix stream socket and accepts path submissions.
 type Server struct {
 	listener  net.Listener
 	queueFunc QueueFunc
 	wg        sync.WaitGroup
+
+	// ConnTimeout is the deadline for handling one connection.
+	ConnTimeout time.Duration
 }
 
 // NewServer creates a Server that accepts connections on listener and calls
 // queueFunc for each batch of paths received.
 func NewServer(listener net.Listener, queueFunc QueueFunc) *Server {
 	return &Server{
-		listener:  listener,
-		queueFunc: queueFunc,
+		listener:    listener,
+		queueFunc:   queueFunc,
+		ConnTimeout: DefaultConnTimeout,
 	}
 }
 
@@ -47,7 +56,10 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = s.listener.Close()
 	}()
 
-	var lastErr error
+	var (
+		lastErr error
+		delay   time.Duration
+	)
 
 	for {
 		conn, err := s.listener.Accept()
@@ -59,8 +71,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			slog.Error("Accept failed", "error", err)
 			lastErr = err
 
+			// Back off like net/http, a persistent EMFILE would spin otherwise.
+			delay = min(max(2*delay, 5*time.Millisecond), time.Second)
+
+			select {
+			case <-ctx.Done():
+			case <-time.After(delay):
+			}
+
 			continue
 		}
+
+		delay = 0
 
 		s.wg.Go(func() {
 			s.handleConn(conn)
@@ -74,6 +96,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+
+	if s.ConnTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(s.ConnTimeout))
+	}
 
 	var req Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {

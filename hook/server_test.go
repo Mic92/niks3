@@ -10,7 +10,10 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Mic92/niks3/hook"
 )
@@ -217,4 +220,135 @@ func TestGetListenerSocketActivation(t *testing.T) { //nolint:paralleltest // t.
 	}
 
 	t.Log(string(output))
+}
+
+// A client that connects and never sends a request must not keep Serve from
+// returning on shutdown.
+func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
+	t.Parallel()
+
+	socketPath := testSocketPath(t, "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+	srv.ConnTimeout = 200 * time.Millisecond
+
+	cancel, done := serveInBackground(t, srv)
+
+	dialer := net.Dialer{}
+
+	stalled, err := dialer.DialContext(t.Context(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	defer func() { _ = stalled.Close() }()
+
+	// Accepted in order, so the stalled connection is being handled now.
+	if err := hook.SendPaths(socketPath, []string{"/nix/store/aaa"}); err != nil {
+		t.Fatalf("send after the stalled client: %v", err)
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return while a client held an idle connection")
+	}
+}
+
+// A persistent Accept error (EMFILE) must not spin, and shutdown must not
+// wait out the backoff.
+func TestServerBacksOffOnAcceptErrors(t *testing.T) {
+	t.Parallel()
+
+	ln := &failingListener{closed: make(chan struct{}), eighth: make(chan struct{})}
+	srv := hook.NewServer(ln, func(_ []string) error { return nil })
+
+	cancel, done := serveInBackground(t, srv)
+
+	// The backoff after the eighth failure is 640ms.
+	<-ln.eighth
+	cancel()
+
+	start := time.Now()
+	<-done
+
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Errorf("Serve took %v to return: shutdown waited out the backoff", elapsed)
+	}
+
+	if n := ln.calls.Load(); n > 9 {
+		t.Errorf("%d accept calls, want at most 9: no backoff between failures", n)
+	}
+}
+
+// testSocketPath avoids t.TempDir, whose name grows with the test's and can
+// exceed the 104 bytes macOS allows for a socket path.
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "hook") //nolint:usetesting // t.TempDir is the path that is too long
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	return filepath.Join(dir, name)
+}
+
+func serveInBackground(t *testing.T, srv *hook.Server) (context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	return cancel, done
+}
+
+// failingListener fails every Accept until it is closed.
+type failingListener struct {
+	calls     atomic.Int32
+	closed    chan struct{}
+	closeOnce sync.Once
+	eighth    chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if l.calls.Add(1) == 8 {
+		close(l.eighth)
+	}
+
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		return nil, syscall.EMFILE
+	}
+}
+
+func (l *failingListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+
+	return nil
+}
+
+func (l *failingListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: "failing", Net: "unix"}
 }
