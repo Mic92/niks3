@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
@@ -100,4 +101,40 @@ func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj
 // SetRegistrationTimeout shortens the bound on one upload registration.
 func (c *Client) SetRegistrationTimeout(d time.Duration) {
 	c.registrationTimeout = d
+}
+
+// lifoPartBuffers hands back the buffer released last, unlike sync.Pool.
+type lifoPartBuffers struct {
+	mu   sync.Mutex
+	free []*[]byte
+}
+
+func (p *lifoPartBuffers) Get() any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if n := len(p.free); n > 0 {
+		buf := p.free[n-1]
+		p.free = p.free[:n-1]
+
+		return buf
+	}
+
+	buf := make([]byte, multipartPartSize)
+
+	return &buf
+}
+
+func (p *lifoPartBuffers) Put(x any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if buf, ok := x.(*[]byte); ok {
+		p.free = append(p.free, buf)
+	}
+}
+
+// UseLIFOPartBuffers makes the next part reuse a released buffer.
+func (c *Client) UseLIFOPartBuffers() {
+	c.partBuffers = &lifoPartBuffers{}
 }

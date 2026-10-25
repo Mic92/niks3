@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,5 +98,85 @@ func TestUploadMultipart_PartsInParallel(t *testing.T) {
 		if p.PartNumber != i+1 || p.ETag != fmt.Sprintf("etag-%d", i+1) {
 			t.Fatalf("part %d completed as %+v", i+1, p)
 		}
+	}
+}
+
+// The LIFO pool hands a released buffer to the next part, so -race catches a
+// release before the transport closed the body.
+func TestUploadMultipart_FailedPartBufferNotReused(t *testing.T) {
+	t.Parallel()
+
+	const parts = 6
+
+	// Hold the other parts so the reader waits for a slot when part 1 fails.
+	var (
+		hold    = make(chan struct{})
+		arrived = make(chan struct{}, parts)
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/part/1" {
+			arrived <- struct{}{}
+
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+			}
+
+			http.Error(w, "held", http.StatusBadRequest)
+
+			return
+		}
+
+		rc := http.NewResponseController(w)
+		if err := rc.EnableFullDuplex(); err != nil {
+			t.Errorf("full duplex: %v", err)
+		}
+
+		// Wait until the reader filled every slot.
+		for range 3 {
+			select {
+			case <-arrived:
+			case <-time.After(5 * time.Second):
+				t.Error("parts 2 to 4 never arrived")
+			}
+		}
+
+		// Answer early, then keep reading the body slowly.
+		const msg = "SlowDown"
+
+		w.Header().Set("Content-Length", strconv.Itoa(len(msg)))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, msg)
+		_ = rc.Flush()
+
+		buf := make([]byte, 64<<10)
+		for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); {
+			if _, err := r.Body.Read(buf); err != nil {
+				return
+			}
+
+			time.Sleep(time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	defer close(hold)
+
+	c := client.NewTestClient(srv.Client(), client.RetryConfig{})
+	c.UseLIFOPartBuffers()
+
+	urls := make([]string, parts)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("%s/part/%d", srv.URL, i+1)
+	}
+
+	payload := bytes.Repeat([]byte{'x'}, (parts-1)*client.MultipartPartSize+1)
+
+	err := c.UploadMultipart(context.Background(), bytes.NewReader(payload),
+		&client.MultipartUploadInfo{UploadID: "upload-1", PartURLs: urls}, "nar/abc.nar.zst", client.MultipartPartSize)
+
+	var statusErr *client.HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("err = %v, want the 503 of part 1", err)
 	}
 }

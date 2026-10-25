@@ -70,17 +70,28 @@ var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should 
 	},
 }
 
-func getPartBuffer(partSize int) ([]byte, func()) {
+// partBufferPool lets tests replace the pool.
+type partBufferPool interface {
+	Get() any
+	Put(x any)
+}
+
+// getPartBuffer takes a buffer from pool, or from uploadBufferPool if nil.
+func getPartBuffer(pool partBufferPool, partSize int) ([]byte, func()) {
 	if partSize > multipartPartSize {
 		return make([]byte, partSize), func() {}
 	}
 
-	ptr, ok := uploadBufferPool.Get().(*[]byte)
+	if pool == nil {
+		pool = &uploadBufferPool
+	}
+
+	ptr, ok := pool.Get().(*[]byte)
 	if !ok {
 		return make([]byte, multipartPartSize), func() {}
 	}
 
-	return *ptr, func() { uploadBufferPool.Put(ptr) }
+	return *ptr, func() { pool.Put(ptr) }
 }
 
 // ErrUploadSuperseded means a concurrent closure already finished the same NAR
@@ -252,7 +263,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 				return nil
 			}
 
-			buffer, release := getPartBuffer(partSize)
+			buffer, release := getPartBuffer(c.partBuffers, partSize)
 
 			n, err := io.ReadFull(r, buffer)
 			if n == 0 {
@@ -277,9 +288,15 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			partURL, partData := partURLs[partNumber-1], buffer[:n]
 
 			g.Go(func() error {
-				defer func() { release(); <-slots }()
+				defer func() { <-slots }()
 
-				etag, err := c.uploadPart(gctx, partURL, partData)
+				// The transport may read the body after an early response.
+				var inFlight sync.WaitGroup
+
+				etag, err := c.uploadPart(gctx, partURL, partData, &inFlight)
+				inFlight.Wait()
+				release()
+
 				if err != nil {
 					return fmt.Errorf("uploading part %d: %w", partNumber, err)
 				}
@@ -328,8 +345,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 }
 
 // uploadPart uploads a single part and returns the ETag.
-func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (string, error) {
-	resp, err := c.putBytes(ctx, partURL, data)
+func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte, inFlight *sync.WaitGroup) (string, error) {
+	resp, err := c.putBytes(ctx, partURL, data, inFlight)
 	if err != nil {
 		return "", err
 	}
