@@ -228,6 +228,10 @@ func verifyGarbageCollection(ctx context.Context, t *testing.T, service *server.
 
 // pushToServer uses the client package to push store paths.
 func pushToServer(ctx context.Context, serverURL, authToken string, paths []string, nixEnv []string) error {
+	return pushToServerWith(ctx, serverURL, authToken, paths, nixEnv, func(*client.Client) {})
+}
+
+func pushToServerWith(ctx context.Context, serverURL, authToken string, paths []string, nixEnv []string, configure func(*client.Client)) error {
 	// Create client
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
@@ -238,6 +242,7 @@ func pushToServer(ctx context.Context, serverURL, authToken string, paths []stri
 	// Tested 8, 16, 24: 16 showed best throughput (3.33s vs 3.59s and 3.62s)
 	c.MaxConcurrentNARUploads = 16
 	c.NixEnv = nixEnv
+	configure(c)
 
 	// Use the high-level PushPaths method
 	if _, err := c.PushPaths(ctx, paths); err != nil {
@@ -264,7 +269,7 @@ func TestClientIntegration(t *testing.T) {
 	var pendingCalls atomic.Int32
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/pending_closures" {
+		if r.URL.Path == "/api/pushes" || r.URL.Path == "/api/pending_closures" {
 			pendingCalls.Add(1)
 		}
 
@@ -312,10 +317,26 @@ func TestClientIntegration(t *testing.T) {
 	verifyNarinfoInS3(ctx, t, testService, hash, storePath)
 	verifyLsFileInS3(ctx, t, testService, hash)
 
+	// With S3 verification a cached closure must still be pushed, as the
+	// server can only verify the objects a pending closure names.
+	lsKey := hash + ".ls"
+	ok(t, testService.MinioClient.RemoveObject(ctx, testService.Bucket, lsKey, minio.RemoveObjectOptions{}))
+	pendingCalls.Store(0)
+
+	err = pushToServerWith(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv, func(c *client.Client) {
+		c.VerifyS3Integrity = true
+	})
+	ok(t, err)
+
+	if n := pendingCalls.Load(); n != 1 {
+		t.Fatalf("verifying re-push created %d pending closures, want 1", n)
+	}
+
+	verifyLsFileInS3(ctx, t, testService, hash)
+
 	// GC tombstoned the listing and collected the closure, while the narinfo
 	// and NAR stay live through another closure. The re-push must upload it,
 	// as the closure commit records every pending object as present.
-	lsKey := hash + ".ls"
 	ok(t, testService.MinioClient.RemoveObject(ctx, testService.Bucket, lsKey, minio.RemoveObjectOptions{}))
 
 	_, err = testService.Pool.Exec(ctx,
