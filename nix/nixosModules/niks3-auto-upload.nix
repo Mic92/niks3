@@ -127,6 +127,8 @@ in
       after = [ "network.target" ];
       requires = [ "niks3-auto-upload.socket" ];
       path = [ config.nix.package ];
+      # DynamicUser has HOME=/, which nix cannot write its eval cache to.
+      environment.XDG_CACHE_HOME = "%C/niks3-hook";
 
       serviceConfig = {
         Type = "simple";
@@ -141,7 +143,7 @@ in
               "--server-url"
               (lib.escapeShellArg cfg.serverUrl)
               "--auth-token-path"
-              (lib.escapeShellArg cfg.authTokenFile)
+              "%d/auth-token"
               "--socket"
               (lib.escapeShellArg cfg.socketPath)
               "--batch-size"
@@ -157,18 +159,32 @@ in
             ++ lib.optional cfg.debug "--debug"
             ++ lib.optionals cfg.mtls.enable [
               "--client-cert"
-              (lib.escapeShellArg cfg.mtls.clientCert)
+              "%d/client-cert"
               "--client-key"
-              (lib.escapeShellArg cfg.mtls.clientKey)
+              "%d/client-key"
             ]
             ++ lib.optionals (cfg.mtls.enable && cfg.mtls.caCert != null) [
               "--ca-cert"
-              (lib.escapeShellArg cfg.mtls.caCert)
+              "%d/ca-cert"
             ]
           );
         Restart = "on-failure";
         RestartSec = "5s";
+        # Uploading only needs world-readable store paths and build logs plus
+        # nix-daemon access, so there is no reason to hold root.
+        DynamicUser = true;
         StateDirectory = "niks3-hook";
+        CacheDirectory = "niks3-hook";
+        # Secrets are typically root-only (sops-nix, agenix). systemd hands
+        # the dynamic user a private copy.
+        LoadCredential = [
+          "auth-token:${cfg.authTokenFile}"
+        ]
+        ++ lib.optionals cfg.mtls.enable [
+          "client-cert:${cfg.mtls.clientCert}"
+          "client-key:${cfg.mtls.clientKey}"
+        ]
+        ++ lib.optional (cfg.mtls.enable && cfg.mtls.caCert != null) "ca-cert:${cfg.mtls.caCert}";
 
         # Hardening
         NoNewPrivileges = true;
@@ -192,7 +208,6 @@ in
         SystemCallFilter = [
           "@system-service"
           "~@privileged"
-          "@chown"
         ];
         SystemCallArchitectures = "native";
       };

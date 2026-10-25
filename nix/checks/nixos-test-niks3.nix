@@ -560,6 +560,9 @@ testers.nixosTest {
     content = server.succeed(f"nix --store /tmp/hook-test-store store cat {test_output}").strip()
     assert "hello from post-build-hook test" in content, f"Content mismatch: {content}"
 
+    # The daemon runs as a dynamic user. Its queue must not be owned by root.
+    builder.succeed("test $(stat -c %u /var/lib/private/niks3-hook/upload-queue.db) -ne 0")
+
     print("Post-build-hook pipeline test passed!")
   '';
 }
