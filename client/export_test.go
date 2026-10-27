@@ -134,6 +134,11 @@ func (p *lifoPartBuffers) Put(x any) {
 	}
 }
 
+// SetTestHookTaken makes Run call f once it has taken line.
+func (s *StreamPusher) SetTestHookTaken(f func(line string)) {
+	s.testHookTaken = f
+}
+
 // UseLIFOPartBuffers makes the next part reuse a released buffer.
 func (c *Client) UseLIFOPartBuffers() {
 	c.partBuffers = &lifoPartBuffers{}

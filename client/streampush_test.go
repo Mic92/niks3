@@ -36,11 +36,17 @@ func runStream(t *testing.T, push client.StreamPushFunc, parallel, batch int, fe
 func runStreamSigned(t *testing.T, push client.StreamPushFunc, sigs func(string) []string, parallel, batch int, feed func(w io.Writer)) []result {
 	t.Helper()
 
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-
 	s := client.NewStreamPusher(push, parallel, batch)
 	s.Signatures = sigs
+
+	return runPusher(t, s, feed)
+}
+
+func runPusher(t *testing.T, s *client.StreamPusher, feed func(w io.Writer)) []result {
+	t.Helper()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
 
 	done := make(chan error, 1)
 
@@ -124,51 +130,100 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 	}
 }
 
+// While the only push is busy, lines accumulate into one batch, also when
+// they arrive one at a time with the input empty in between.
 func TestStreamPushBatchesUnderLoad(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
+	// The hook sequences the test: sleeping left the order to the scheduler.
+	waitTaken := func(t *testing.T, taken <-chan string, want string) bool {
+		t.Helper()
 
-	var (
-		mu      sync.Mutex
-		batches [][]string
-	)
+		select {
+		case got := <-taken:
+			if got != want {
+				t.Errorf("took %s, want %s", got, want)
+			}
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
-		mu.Lock()
+			return got == want
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s was never taken: the batch was fixed while the push was busy", want)
 
-		batches = append(batches, slices.Clone(paths))
-		first := len(batches) == 1
-
-		mu.Unlock()
-
-		if first {
-			<-release
+			return false
 		}
-
-		return paths, nil
 	}
 
-	results := runStream(t, push, 1, 10, func(w io.Writer) {
-		_, _ = io.WriteString(w, "/nix/store/first\n")
-		time.Sleep(50 * time.Millisecond)
+	for _, oneAtATime := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oneAtATime=%v", oneAtATime), func(t *testing.T) {
+			t.Parallel()
 
-		_, _ = io.WriteString(w, "/nix/store/x\n/nix/store/y\n/nix/store/z\n")
+			started := make(chan struct{})
+			release := make(chan struct{})
 
-		time.Sleep(50 * time.Millisecond)
+			var (
+				mu      sync.Mutex
+				batches [][]string
+			)
 
-		close(release)
-	})
+			push := func(_ context.Context, paths []string) ([]string, error) {
+				mu.Lock()
 
-	if len(results) != 4 {
-		t.Fatalf("got %d results, want 4", len(results))
-	}
+				batches = append(batches, slices.Clone(paths))
+				first := len(batches) == 1
 
-	mu.Lock()
-	defer mu.Unlock()
+				mu.Unlock()
 
-	if len(batches) != 2 || len(batches[1]) != 3 {
-		t.Errorf("batches = %v, want [first] then [x y z]", batches)
+				if first {
+					close(started)
+					<-release
+				}
+
+				return paths, nil
+			}
+
+			taken := make(chan string, 4)
+
+			s := client.NewStreamPusher(push, 1, 10)
+			s.SetTestHookTaken(func(line string) { taken <- line })
+
+			results := runPusher(t, s, func(w io.Writer) {
+				defer close(release)
+
+				_, _ = io.WriteString(w, "/nix/store/first\n")
+
+				if !waitTaken(t, taken, "/nix/store/first") {
+					return
+				}
+
+				<-started
+
+				lines := []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"}
+				if !oneAtATime {
+					_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
+				}
+
+				for _, p := range lines {
+					if oneAtATime {
+						_, _ = io.WriteString(w, p+"\n")
+					}
+
+					if !waitTaken(t, taken, p) {
+						return
+					}
+				}
+			})
+
+			if len(results) != 4 {
+				t.Fatalf("got %d results, want 4", len(results))
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if len(batches) != 2 || len(batches[1]) != 3 {
+				t.Errorf("batches = %v, want [first] then [x y z]", batches)
+			}
+		})
 	}
 }
 
