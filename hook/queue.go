@@ -34,6 +34,10 @@ func OpenQueue(dbPath string) (*Queue, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	// Writers wait for the one connection in turn. With a pool SQLite polls
+	// for the lock, and a writer that keeps losing fails with SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
+
 	ctx := context.Background()
 
 	// Create the queue table.
