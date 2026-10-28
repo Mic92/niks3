@@ -783,7 +783,7 @@ in
         "niks3.socket"
       ]
       ++ lib.optional cfg.nginx.mtls.enable "niks3-proxy.socket"
-      ++ lib.optional cfg.database.createLocally "postgresql.service";
+      ++ lib.optional cfg.database.createLocally "postgresql.target";
       requires = [
         "niks3.socket"
       ]
