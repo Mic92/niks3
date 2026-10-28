@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,22 @@ import (
 )
 
 const farmLeadLockKey int64 = 0x6e696b73336c64 // "niks3ld"
+
+// A named farm uses the negative half of the advisory-lock key space. The
+// legacy key is positive, so a named farm cannot accidentally share its lock.
+func farmLeadKey(farmID string) int64 {
+	if farmID == "" {
+		return farmLeadLockKey
+	}
+
+	sum := sha256.Sum256([]byte("niks3/farm/lead/" + farmID))
+	var key int64
+	for _, b := range sum[:8] {
+		key = key<<8 | int64(b)
+	}
+
+	return key | (-1 << 63)
+}
 
 //nolint:gochecknoglobals // tests shorten them
 var (
@@ -31,14 +48,14 @@ func leadPingTimeout() time.Duration { return max(leadHeartbeat/2, leadPingTimeo
 // tryLead takes the session advisory lock on a dedicated connection, so the
 // lock lives exactly as long as that connection. A nil conn means someone
 // else leads.
-func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
+func tryLead(ctx context.Context, pool *pgxpool.Pool, key int64) (*pgxpool.Conn, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err //nolint:wrapcheck
 	}
 
 	var got bool
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", farmLeadLockKey).Scan(&got); err != nil || !got {
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil || !got {
 		conn.Release()
 
 		return nil, err //nolint:wrapcheck
@@ -71,8 +88,10 @@ func pingLead(ctx context.Context, conn *pgxpool.Conn) error {
 	return err //nolint:wrapcheck
 }
 
-// LeadHandler elects the build farm scheduler. Each candidate keeps one
-// NDJSON stream open and is told every heartbeat whether it leads.
+// LeadHandler elects the build farm scheduler. A farmID in the path scopes
+// the election; the original endpoint keeps the shared legacy lock. Each
+// candidate keeps one NDJSON stream open and is told every heartbeat whether
+// it leads.
 // Leadership ends when the stream, this process or Postgres goes away.
 //
 // A leader whose connection died keeps leading until its ping fails, but the
@@ -86,6 +105,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.ContentLength != 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
+	key := farmLeadKey(r.PathValue("farmID"))
 
 	holdBack := time.Time{}
 	if !req.Incumbent {
@@ -126,7 +146,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	for {
 		if conn == nil && !time.Now().Before(holdBack) {
 			var err error
-			if conn, err = tryLead(ctx, s.Pool); err != nil {
+			if conn, err = tryLead(ctx, s.Pool, key); err != nil {
 				slog.Error("lead", "error", err)
 
 				return
