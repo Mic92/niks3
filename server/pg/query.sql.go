@@ -236,7 +236,8 @@ SELECT
     (CASE
         WHEN o.first_deleted_at IS NULL THEN NULL
         ELSE ct.now - o.first_deleted_at
-    END)::interval AS deleted_at
+    END)::interval AS deleted_at,
+    o.refs AS refs
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
 FOR KEY SHARE OF o
@@ -245,6 +246,7 @@ FOR KEY SHARE OF o
 type GetExistingObjectsRow struct {
 	Key       string          `json:"key"`
 	DeletedAt pgtype.Interval `json:"deleted_at"`
+	Refs      []string        `json:"refs"`
 }
 
 // Waits for a sweep holding a row, so the push's upload cannot land before the
@@ -258,7 +260,7 @@ func (q *Queries) GetExistingObjects(ctx context.Context, dollar_1 []string) ([]
 	var items []GetExistingObjectsRow
 	for rows.Next() {
 		var i GetExistingObjectsRow
-		if err := rows.Scan(&i.Key, &i.DeletedAt); err != nil {
+		if err := rows.Scan(&i.Key, &i.DeletedAt, &i.Refs); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
