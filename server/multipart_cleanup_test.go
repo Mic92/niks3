@@ -5,13 +5,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -304,4 +309,221 @@ func interceptedS3Client(
 	ok(t, err)
 
 	return c
+}
+
+// createUploadProxy forwards requests to S3, except multipart upload
+// creation for two keys: failKey's is refused once holdKey's has been
+// created in S3, and the response to holdKey's creation is held until the
+// caller gives up on it or half a second has passed. With refuseAborts it
+// also refuses every multipart upload abort.
+type createUploadProxy struct {
+	target           *url.URL
+	holdKey, failKey string
+	refuseAborts     bool
+	created          chan struct{}
+	once             sync.Once
+}
+
+func (p *createUploadProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	proxy := httputil.NewSingleHostReverseProxy(p.target)
+
+	if p.refuseAborts && r.Method == http.MethodDelete && r.URL.Query().Has("uploadId") {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+			`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+
+		return
+	}
+
+	if r.Method != http.MethodPost || !r.URL.Query().Has("uploads") {
+		proxy.ServeHTTP(w, r)
+
+		return
+	}
+
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/"+p.holdKey):
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, r)
+		p.once.Do(func() { close(p.created) })
+
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		maps.Copy(w.Header(), rec.Header())
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	case strings.HasSuffix(r.URL.Path, "/"+p.failKey):
+		select {
+		case <-p.created:
+		case <-time.After(5 * time.Second):
+		}
+
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+			`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+	default:
+		proxy.ServeHTTP(w, r)
+	}
+}
+
+// A pending-closure request that fails while creating its multipart uploads
+// must leave no upload in S3 without a row to find it by. Here one NAR's
+// upload cannot be created while S3 is creating the other's, and the failure
+// cancels the sibling request after S3 has carried it out. The row must be
+// recorded even so, not only when the upload can be aborted at once: with
+// aborts refused, the row is all that lets cleanup abort the upload later.
+func TestPendingClosureFailureTracksEveryUpload(t *testing.T) {
+	t.Parallel()
+
+	for _, refuseAborts := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refuse aborts=%v", refuseAborts), func(t *testing.T) {
+			t.Parallel()
+			testPendingClosureFailureTracksEveryUpload(t, refuseAborts)
+		})
+	}
+}
+
+func testPendingClosureFailureTracksEveryUpload(t *testing.T, refuseAborts bool) {
+	t.Helper()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	ctx := t.Context()
+
+	hash := strings.Repeat("r", 32)
+	holdKey := "nar/" + strings.Repeat("s", 52) + ".nar.zst"
+	failKey := "nar/" + strings.Repeat("v", 52) + ".nar.zst"
+
+	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
+	ok(t, err)
+
+	proxyServer := httptest.NewServer(&createUploadProxy{
+		target: target, holdKey: holdKey, failKey: failKey, refuseAborts: refuseAborts, created: make(chan struct{}),
+	})
+	defer proxyServer.Close()
+
+	proxyURL, err := url.Parse(proxyServer.URL)
+	ok(t, err)
+
+	direct := service.MinioClient
+	service.MinioClient = testRustfsServer.ClientWithEndpoint(t, proxyURL.Host)
+
+	w := postPendingClosureJSON(t, service, `{"closure":"`+hash+`.narinfo","objects":[`+
+		`{"key":"`+hash+`.narinfo","type":"narinfo","refs":["`+holdKey+`","`+failKey+`"]},`+
+		`{"key":"`+holdKey+`","type":"nar","refs":[],"nar_size":104857600},`+
+		`{"key":"`+failKey+`","type":"nar","refs":[],"nar_size":104857600}]}`)
+
+	service.MinioClient = direct
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("pending closure created although an upload could not be: %s", w.Body.String())
+	}
+
+	for upload := range direct.ListIncompleteUploads(ctx, service.Bucket, "nar/", true) {
+		ok(t, upload.Err)
+
+		var rows int
+		ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM multipart_uploads WHERE upload_id = $1", upload.UploadID).Scan(&rows))
+
+		if rows == 0 {
+			t.Errorf("multipart upload %s of %s is open in S3 with no row to find it by", upload.UploadID, upload.Key)
+		}
+	}
+
+	if refuseAborts {
+		// Nothing could be aborted, so the closure stays for cleanup to retry
+		// through the rows.
+		return
+	}
+
+	assertNoPendingClosure(t, service)
+}
+
+// assertNoPendingClosure fails the test if a pending closure is left behind.
+func assertNoPendingClosure(t *testing.T, service *server.Service) {
+	t.Helper()
+
+	var pending int
+	ok(t, service.Pool.QueryRow(t.Context(), "SELECT count(*) FROM pending_closures").Scan(&pending))
+
+	if pending != 0 {
+		t.Errorf("%d pending closure(s) left behind by the failed request", pending)
+	}
+}
+
+// refuseSecondCreateProxy forwards requests to S3 and refuses the second
+// multipart upload creation it sees.
+type refuseSecondCreateProxy struct {
+	target  *url.URL
+	creates atomic.Int32
+}
+
+func (p *refuseSecondCreateProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Query().Has("uploads") && p.creates.Add(1) == 2 {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+			`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+
+		return
+	}
+
+	httputil.NewSingleHostReverseProxy(p.target).ServeHTTP(w, r)
+}
+
+// A pending-closure request that fails after it opened some of its multipart
+// uploads never reaches the client, which will not commit the closure or
+// use the uploads. Both must go: the uploads aborted, the closure dropped.
+func TestPendingClosureFailureAbortsItsUploads(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	// One creation at a time, so the first upload is open and recorded
+	// when the second is refused.
+	service.S3Concurrency = 1
+
+	ctx := t.Context()
+
+	hash := strings.Repeat("w", 32)
+	narA := "nar/" + strings.Repeat("x", 52) + ".nar.zst"
+	narB := "nar/" + strings.Repeat("y", 52) + ".nar.zst"
+
+	target, err := url.Parse(fmt.Sprintf("http://localhost:%d", testRustfsServer.port))
+	ok(t, err)
+
+	proxyServer := httptest.NewServer(&refuseSecondCreateProxy{target: target})
+	defer proxyServer.Close()
+
+	proxyURL, err := url.Parse(proxyServer.URL)
+	ok(t, err)
+
+	direct := service.MinioClient
+	service.MinioClient = testRustfsServer.ClientWithEndpoint(t, proxyURL.Host)
+
+	w := postPendingClosureJSON(t, service, `{"closure":"`+hash+`.narinfo","objects":[`+
+		`{"key":"`+hash+`.narinfo","type":"narinfo","refs":["`+narA+`","`+narB+`"]},`+
+		`{"key":"`+narA+`","type":"nar","refs":[],"nar_size":104857600},`+
+		`{"key":"`+narB+`","type":"nar","refs":[],"nar_size":104857600}]}`)
+
+	service.MinioClient = direct
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("pending closure created although an upload could not be: %s", w.Body.String())
+	}
+
+	assertNoPendingClosure(t, service)
+
+	for upload := range direct.ListIncompleteUploads(ctx, service.Bucket, "nar/", true) {
+		ok(t, upload.Err)
+		t.Errorf("multipart upload %s of %s left open by the failed request", upload.UploadID, upload.Key)
+	}
 }

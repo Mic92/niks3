@@ -43,12 +43,16 @@ pkgs.buildGoModule {
     # all CPUs, which exhausts process limits on shared builders.
     export GOMAXPROCS=$NIX_BUILD_CORES
 
-    go test -c -p "$NIX_BUILD_CORES" ./client -o client.test
-    go test -c -p "$NIX_BUILD_CORES" ./server -o server.test
-    go test -c -p "$NIX_BUILD_CORES" ./server/oidc -o server-oidc.test
-    go test -c -p "$NIX_BUILD_CORES" ./hook -o hook.test
-    go test -c -p "$NIX_BUILD_CORES" ./server/signing -o server-signing.test
-    go test -c -p "$NIX_BUILD_CORES" ./cmd/niks3-openbao-signer -o openbao-signer.test
+    # With the race detector: several of the defects these tests guard
+    # against are data races that only -race reports.
+    go test -c -race -p "$NIX_BUILD_CORES" ./client -o client.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./server -o server.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./server/oidc -o server-oidc.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./server/signing -o server-signing.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./hook -o hook.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./ratelimit -o ratelimit.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./cmd/niks3-hook -o cmd-niks3-hook.test
+    go test -c -race -p "$NIX_BUILD_CORES" ./cmd/niks3-openbao-signer -o openbao-signer.test
 
     runHook postBuild
   '';
@@ -63,6 +67,8 @@ pkgs.buildGoModule {
     install -D hook.test $out/bin/niks3-hook.test
     install -D server-signing.test $out/bin/niks3-server-signing.test
     install -D openbao-signer.test $out/bin/niks3-openbao-signer.test
+    install -D ratelimit.test $out/bin/niks3-ratelimit.test
+    install -D cmd-niks3-hook.test $out/bin/niks3-cmd-niks3-hook.test
 
     # Remove Go compiler reference to reduce closure size
     if command -v remove-references-to >/dev/null; then

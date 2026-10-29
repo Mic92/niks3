@@ -150,10 +150,7 @@ func createPendingClosureInner(
 
 	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, verifyS3)
 	if err != nil {
-		// The client gets no response and never commits, so drop the rows.
-		if delErr := pg.New(pool).DeletePendingClosure(context.WithoutCancel(ctx), pendingClosure.ID); delErr != nil {
-			slog.Warn("failed to drop pending closure after error", "id", pendingClosure.ID, "error", delErr)
-		}
+		s.dropPendingClosure(ctx, pendingClosure.ID)
 
 		return nil, err
 	}
@@ -163,6 +160,37 @@ func createPendingClosureInner(
 		startedAt:      pendingClosure.StartedAt.Time,
 		pendingObjects: uploadObjects,
 	}, nil
+}
+
+// dropPendingClosure removes a pending closure whose request failed. The
+// client gets no response and never commits it, and its rows would shield
+// objects from GC until cleanup. The multipart uploads it opened are aborted
+// first, since dropping the closure cascades their rows; if one cannot be,
+// the closure stays and cleanup retries through the row.
+func (s *Service) dropPendingClosure(ctx context.Context, id int64) {
+	ctx = context.WithoutCancel(ctx)
+	queries := pg.New(s.Pool)
+
+	uploads, err := queries.GetClosureMultipartUploads(ctx, id)
+	if err != nil {
+		slog.Warn("failed to list multipart uploads of failed pending closure, keeping it", "id", id, "error", err)
+
+		return
+	}
+
+	coreClient := minio.Core{Client: s.MinioClient}
+
+	for _, upload := range uploads {
+		if !s.abortMultipartUpload(ctx, coreClient, upload.ObjectKey, upload.UploadID) {
+			slog.Warn("keeping failed pending closure for cleanup to retry the abort", "id", id)
+
+			return
+		}
+	}
+
+	if err := queries.DeletePendingClosure(ctx, id); err != nil {
+		slog.Warn("failed to drop pending closure after error", "id", id, "error", err)
+	}
 }
 
 // insertPendingClosure records the closure and a pending row for each of its
@@ -421,6 +449,8 @@ func (s *Service) createPendingClosure(
 	pendingObjects := make(map[string]PendingObject, len(pendingClosure.pendingObjects))
 
 	if err := s.createPendingObjects(ctx, pendingClosure.id, pendingClosure.pendingObjects, objectsMap, pendingObjects); err != nil {
+		s.dropPendingClosure(ctx, pendingClosure.id)
+
 		return nil, err
 	}
 

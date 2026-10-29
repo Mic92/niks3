@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -136,6 +137,96 @@ func TestServerQueueError(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// The socket is writable by the build users. A request must be bounded in
+// size, and a path that is not a store path must be refused before it
+// reaches the queue, where the worker would stat and push it every round.
+func TestServerRefusesOversizedAndNonStoreRequests(t *testing.T) {
+	t.Parallel()
+
+	socketPath := testSocketPath(t, "test.sock")
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	var queued atomic.Int32
+
+	srv := hook.NewServer(ln, func(_ []string) error {
+		queued.Add(1)
+
+		return nil
+	})
+	srv.StoreDir = "/nix/store"
+	srv.MaxRequestBytes = 4096
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = srv.Serve(ctx)
+	}()
+
+	const hash = "0123456789abcdfghijklmnpqrsvwxyz"
+
+	for _, p := range []string{
+		"/etc/shadow",
+		"/nix/store",
+		"/nix/store/",
+		"/nix/store/../../etc/shadow",
+		"/nix/store/" + hash + "-hello/bin/sh",
+		"nix/store/" + hash + "-hello",
+		"/nix/storeX/" + hash + "-hello",
+		// Directly below the store but not store paths. Each exists or
+		// fails Lstat with something other than "not found", so the
+		// worker would keep it queued and retry it for good.
+		"/nix/store/.links",
+		"/nix/store/aaa-hello",
+		"/nix/store/" + hash,
+		"/nix/store/" + hash + "-",
+		"/nix/store/" + strings.Replace(hash, "a", "e", 1) + "-hello",
+		"/nix/store/" + hash + "-hel\x00lo",
+		"/nix/store/" + hash + "-hel/lo",
+		"/nix/store/" + hash + "-" + strings.Repeat("x", 212),
+	} {
+		if err := hook.SendPaths(socketPath, []string{p}); err == nil {
+			t.Errorf("%q was accepted as a store path", p)
+		}
+	}
+
+	if err := hook.SendPaths(socketPath, []string{
+		"/nix/store/" + hash + "-hello-2.12.1",
+		"/nix/store/" + strings.Repeat("0", 32) + "-world.drv",
+		"/nix/store/" + strings.Repeat("z", 32) + "-" + strings.Repeat("A+-._?=", 30) + "x",
+	}); err != nil {
+		t.Errorf("store paths refused: %v", err)
+	}
+
+	// A request that streams past the limit is cut off and answered with an
+	// error rather than buffered whole.
+	huge := make([]string, 0, 200)
+	for i := range 200 {
+		huge = append(huge, "/nix/store/"+strconv.Itoa(i)+"-"+strings.Repeat("x", 100))
+	}
+
+	if err := hook.SendPaths(socketPath, huge); err == nil {
+		t.Error("oversized request was accepted")
+	}
+
+	cancel()
+	<-done
+
+	if n := queued.Load(); n != 1 {
+		t.Errorf("queue called %d times, want 1 (the valid request only)", n)
+	}
 }
 
 // TestGetListenerSocketActivation tests the systemd socket activation path.
