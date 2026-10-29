@@ -41,7 +41,8 @@ SELECT
     (CASE
         WHEN o.first_deleted_at IS NULL THEN NULL
         ELSE ct.now - o.first_deleted_at
-    END)::interval AS deleted_at
+    END)::interval AS deleted_at,
+    o.refs AS refs
 FROM objects AS o, ct
 WHERE key = any($1::varchar [])
 FOR KEY SHARE OF o;

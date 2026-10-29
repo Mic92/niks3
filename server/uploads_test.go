@@ -432,6 +432,80 @@ func TestService_verifyS3Integrity(t *testing.T) {
 	}
 }
 
+// TestService_verifyS3ReuploadsNarinfoOfLostNAR commits a closure, has S3
+// lose NARs, and pushes it again with verify_s3. The narinfo and its listing
+// go up again exactly when S3 lost a NAR recorded for the narinfo that the
+// push does not carry; the lost NAR may be the one the narinfo names.
+func TestService_verifyS3ReuploadsNarinfoOfLostNAR(t *testing.T) {
+	t.Parallel()
+
+	nar := func(id string) string { return narKeyFor("dadb44fdadb44fdadb44fdadb44f" + id) }
+
+	for _, tc := range []struct {
+		name     string
+		recorded []string // NARs committed with the narinfo, in order
+		lost     []string // NARs S3 loses afterwards
+		pushed   string   // NAR the verifying push carries
+		stale    bool
+	}{
+		{name: "lost, other NAR", recorded: []string{"0001"}, lost: []string{"0001"}, pushed: "1001", stale: true},
+		{name: "intact, other NAR", recorded: []string{"0002"}, pushed: "1002"},
+		// The narinfo names the NAR committed first.
+		{name: "named one of two lost", recorded: []string{"0003", "1003"}, lost: []string{"0003"}, pushed: "2003", stale: true},
+		{name: "named one of two lost, other pushed", recorded: []string{"0004", "1004"}, lost: []string{"0004"}, pushed: "1004", stale: true},
+		// The push carries the lost NAR, so S3 has it again afterwards.
+		{name: "lost, same NAR pushed", recorded: []string{"0005"}, lost: []string{"0005"}, pushed: "0005"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			service := createTestService(t)
+			defer service.Close()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			closure := "dadb44fdadb44fdadb44fdadb44f" + tc.recorded[0]
+			narinfoKey, lsKey := closure+".narinfo", closure+".ls"
+			request := func(narKey string) map[string]any {
+				return map[string]any{
+					"closure": narinfoKey,
+					"objects": []map[string]any{
+						{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey, lsKey}},
+						{"key": narKey, "type": "nar", "refs": []string{}},
+						{"key": lsKey, "type": "listing", "refs": []string{}},
+					},
+				}
+			}
+
+			for _, id := range tc.recorded {
+				resp := createPendingClosure(t, service, request(nar(id)))
+				narinfos := uploadPendingObjects(ctx, t, service, resp, closure, nar(id))
+				// The client uploads the narinfo it signed: here any bytes, so S3 has it.
+				if po, pending := resp.PendingObjects[narinfoKey]; pending {
+					handlePresignedUpload(ctx, t, po.PresignedURL)
+				}
+
+				commitPendingClosure(t, service, resp.ID, narinfos)
+			}
+
+			for _, id := range tc.lost {
+				ok(t, service.MinioClient.RemoveObject(ctx, service.Bucket, nar(id), minio.RemoveObjectOptions{}))
+			}
+
+			req := request(nar(tc.pushed))
+			req["verify_s3"] = true
+			resp := createPendingClosure(t, service, req)
+
+			for _, key := range []string{narinfoKey, lsKey} {
+				if _, pending := resp.PendingObjects[key]; pending != tc.stale {
+					t.Errorf("%s pending: %v, want %v (pending: %v)", key, pending, tc.stale, resp.PendingObjects)
+				}
+			}
+		})
+	}
+}
+
 // TestCompleteMultipartUnregistered ensures complete refuses an upload that
 // was never registered, so clients cannot finalize multipart uploads outside
 // the pending-closure book-keeping.
