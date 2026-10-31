@@ -261,3 +261,29 @@ func TestQueueRemoveLargeClosure(t *testing.T) {
 		t.Errorf("expected empty queue, got %d", count)
 	}
 }
+
+func TestQueueSingleOwnerAcrossModes(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	q, err := hook.OpenQueue(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+
+	for _, open := range []func(string) (*hook.Queue, error){hook.OpenQueue, hook.OpenQueueWithRoots} {
+		if other, err := open(dbPath); err == nil {
+			_ = other.Close()
+			t.Fatal("second queue owner accepted")
+		}
+	}
+
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err = hook.OpenQueueWithRoots(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

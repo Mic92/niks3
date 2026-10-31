@@ -83,7 +83,23 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
 - Authentication via API tokens (Bearer auth)
 - OIDC authentication for CI/CD systems (GitHub Actions, GitLab CI)
 - S3 credentials via static keys (`--s3-access-key` / `--s3-secret-key`) or IAM (`--s3-use-iam` for IRSA, EC2 instance profiles, ECS task roles)
-- [Automatic upload](https://github.com/Mic92/niks3/wiki/Auto-Upload) via post-build-hook with crash-safe SQLite queue
+- [Automatic upload](https://github.com/Mic92/niks3/wiki/Auto-Upload) via post-build-hook with a SQLite queue and optional local GC roots
+
+### Retaining queued outputs
+
+Use `niks3-hook serve --retain-paths`, or set `services.niks3-auto-upload.retainPaths = true` on NixOS or nix-darwin.
+A queue entry stores a path; a GC root protects its files and dependencies.
+The daemon creates both before it acknowledges the request. Failed uploads keep their roots.
+It removes roots after the worker removes queue entries, including size-policy skips. This does not guarantee publication.
+
+Roots persist beside the database in `<db-path>.roots`. Keep both at the same location and on the producer's host.
+Startup restores pending roots and removes abandoned roots. Missing files or unknown directory entries stop startup.
+Every queue permits one owner; a registration command can hold that lock after the daemon exits.
+To disable retention, stop producers, drain the queue, stop the daemon, and remove the empty roots directory.
+
+Retention has no disk or backlog limit. Use trusted producers and monitor free space.
+The sender remains best-effort; large batches can exceed its timeout. Lost stores and manual root deletion are not recoverable.
+Retention accepts output paths, not derivations or selectors, and requires `nix-store` with access to the same store.
 
 ## Choosing an S3 Provider
 
