@@ -51,6 +51,8 @@ in
       description = "Path to the unix stream socket, created by the daemon itself.";
     };
 
+    retainPaths = lib.mkEnableOption "Nix GC roots for queued outputs (unbounded disk use)";
+
     batchSize = lib.mkOption {
       type = lib.types.int;
       default = 50;
@@ -144,6 +146,7 @@ in
             "--db-path"
             dbPath
           ]
+          ++ lib.optional cfg.retainPaths "--retain-paths"
           ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
           ++ lib.optional cfg.debug "--debug"
           ++ lib.optionals cfg.mtls.enable [

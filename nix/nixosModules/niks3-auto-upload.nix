@@ -46,6 +46,8 @@ in
       description = "Path to the unix stream socket.";
     };
 
+    retainPaths = lib.mkEnableOption "Nix GC roots for queued outputs (unbounded disk use)";
+
     batchSize = lib.mkOption {
       type = lib.types.int;
       default = 50;
@@ -127,6 +129,7 @@ in
       after = [ "network.target" ];
       requires = [ "niks3-auto-upload.socket" ];
       path = [ config.nix.package ];
+      environment = lib.mkIf cfg.retainPaths { NIX_REMOTE = "daemon"; };
 
       serviceConfig = {
         Type = "simple";
@@ -153,6 +156,7 @@ in
               "--db-path"
               "/var/lib/niks3-hook/upload-queue.db"
             ]
+            ++ lib.optional cfg.retainPaths "--retain-paths"
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
             ++ lib.optionals cfg.mtls.enable [
