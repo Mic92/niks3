@@ -54,6 +54,8 @@ func printServeHelp() {
 	fmt.Fprintf(os.Stderr, "  --socket string\n        Unix socket path (default: %s)\n", hook.DefaultSocketPath)
 	fmt.Fprintln(os.Stderr, "  --db-path string")
 	fmt.Fprintln(os.Stderr, "        SQLite database path (default: /var/lib/niks3-hook/upload-queue.db)")
+	fmt.Fprintln(os.Stderr, "  --retain-paths")
+	fmt.Fprintln(os.Stderr, "        Keep queued outputs alive until queue entries are removed (unbounded disk use)")
 	fmt.Fprintln(os.Stderr, "  --batch-size int")
 	fmt.Fprintln(os.Stderr, "        Paths per upload batch (default: 50)")
 	fmt.Fprintln(os.Stderr, "  --idle-exit-timeout string")
@@ -136,6 +138,7 @@ func runServe() error {
 	cf := cmdutil.AddCommonFlags(fs)
 	socket := fs.String("socket", hook.DefaultSocketPath, "Unix socket path")
 	dbPath := fs.String("db-path", "/var/lib/niks3-hook/upload-queue.db", "SQLite database path")
+	retainPaths := fs.Bool("retain-paths", false, "Retain queued outputs using Nix GC roots")
 	batchSize := fs.Int("batch-size", 50, "Paths per upload batch")
 	idleExitTimeout := fs.String("idle-exit-timeout", "60s", "Exit after no activity; \"0\" to disable")
 	drainTimeout := fs.Duration("drain-timeout", 0, "Give up draining on shutdown after this long; 0 = unbounded")
@@ -161,7 +164,11 @@ func runServe() error {
 	}
 
 	// Open the SQLite queue.
-	queue, err := hook.OpenQueue(*dbPath)
+	openQueue := hook.OpenQueue
+	if *retainPaths {
+		openQueue = hook.OpenQueueWithRoots
+	}
+	queue, err := openQueue(*dbPath)
 	if err != nil {
 		return fmt.Errorf("opening queue: %w", err)
 	}

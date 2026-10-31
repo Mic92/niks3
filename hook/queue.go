@@ -3,10 +3,13 @@ package hook
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	// Pure-Go SQLite driver (no CGO required).
 	_ "modernc.org/sqlite"
@@ -14,15 +17,58 @@ import (
 
 // Queue wraps a SQLite database for persisting store paths that need uploading.
 type Queue struct {
-	db *sql.DB
+	db    *sql.DB
+	mu    sync.Mutex
+	owner *os.File
+	roots string
 }
 
 // OpenQueue opens (or creates) the SQLite database at dbPath.
-// Parent directories are created automatically.
+// Parent directories are created automatically. Only one owner may open a queue.
 func OpenQueue(dbPath string) (*Queue, error) {
+	return openQueue(dbPath, false)
+}
+
+// OpenQueueWithRoots retains queued outputs using native Nix garbage collector roots.
+func OpenQueueWithRoots(dbPath string) (*Queue, error) {
+	return openQueue(dbPath, true)
+}
+
+func openQueue(dbPath string, retain bool) (*Queue, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
+
+	dbPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving queue path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(dbPath); err == nil {
+		dbPath = resolved
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("resolving queue path: %w", err)
+	} else {
+		parent, err := filepath.EvalSymlinks(filepath.Dir(dbPath))
+		if err != nil {
+			return nil, fmt.Errorf("resolving queue directory: %w", err)
+		}
+		dbPath = filepath.Join(parent, filepath.Base(dbPath))
+	}
+	owner, err := os.OpenFile(dbPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening queue owner lock: %w", err)
+	}
+	if err := syscall.Flock(int(owner.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = owner.Close()
+
+		return nil, fmt.Errorf("queue already owned: %w", err)
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = owner.Close()
+		}
+	}()
 
 	// Pragmas go in the DSN so they apply to every pooled connection; a one-off
 	// ExecContext only configures the single connection serving that call,
@@ -52,39 +98,30 @@ func OpenQueue(dbPath string) (*Queue, error) {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
 
-	return &Queue{db: db}, nil
+	q := &Queue{db: db, owner: owner}
+	if err := q.openRoots(dbPath, retain); err != nil {
+		_ = db.Close()
+
+		return nil, err
+	}
+	success = true
+
+	return q, nil
 }
 
 // Enqueue inserts store paths into the queue, silently ignoring duplicates.
 func (q *Queue) Enqueue(paths []string) error {
-	if len(paths) == 0 {
-		return nil
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.owner == nil {
+		return errors.New("queue is closed")
 	}
-
-	ctx := context.Background()
-
-	tx, err := q.db.BeginTx(ctx, nil)
+	err := q.retain(paths)
+	if err == nil {
+		err = q.enqueue(paths)
+	}
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO upload_queue (store_path) VALUES (?)")
-	if err != nil {
-		return fmt.Errorf("prepare statement: %w", err)
-	}
-
-	defer func() { _ = stmt.Close() }()
-
-	for _, p := range paths {
-		if _, err := stmt.ExecContext(ctx, p); err != nil {
-			return fmt.Errorf("inserting path %q: %w", p, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return errors.Join(err, q.releaseUnqueued(paths))
 	}
 
 	return nil
@@ -129,6 +166,9 @@ const removeChunk = 1000
 
 // Remove deletes the given store paths from the queue.
 func (q *Queue) Remove(paths []string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	removed := paths
 	if len(paths) == 0 {
 		return nil
 	}
@@ -162,7 +202,7 @@ func (q *Queue) Remove(paths []string) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	return nil
+	return q.release(removed)
 }
 
 // Retry moves paths whose upload failed to the back of the queue so that one
@@ -205,8 +245,47 @@ func (q *Queue) Count() (int, error) {
 
 // Close closes the underlying database connection.
 func (q *Queue) Close() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.owner != nil {
+		defer func() { _ = q.owner.Close(); q.owner = nil }()
+	}
 	if err := q.db.Close(); err != nil {
 		return fmt.Errorf("closing database: %w", err)
+	}
+
+	return nil
+}
+
+func (q *Queue) enqueue(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO upload_queue (store_path) VALUES (?)")
+	if err != nil {
+		return fmt.Errorf("prepare statement: %w", err)
+	}
+
+	defer func() { _ = stmt.Close() }()
+
+	for _, p := range paths {
+		if _, err := stmt.ExecContext(ctx, p); err != nil {
+			return fmt.Errorf("inserting path %q: %w", p, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil
