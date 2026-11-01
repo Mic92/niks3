@@ -626,14 +626,12 @@ func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey,
 	coreClient := minio.Core{Client: s.MinioClient}
 
 	for _, uploadID := range uploadIDs {
-		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); err != nil {
-			if minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
-				// Keep the row so cleanupPendingClosures can retry.
-				slog.Warn("Failed to abort redundant multipart upload, keeping its row",
-					"object_key", objectKey, "upload_id", uploadID, "error", err)
+		if err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID); !abortSucceeded(err) {
+			// Keep the row so cleanupPendingClosures can retry.
+			slog.Warn("Failed to abort redundant multipart upload, keeping its row",
+				"object_key", objectKey, "upload_id", uploadID, "error", err)
 
-				continue
-			}
+			continue
 		}
 
 		if err := queries.DeleteMultipartUpload(ctx, uploadID); err != nil {

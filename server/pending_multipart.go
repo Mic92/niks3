@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strconv"
 
@@ -134,11 +135,24 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	}, nil
 }
 
+// abortSucceeded reports whether AbortMultipartUpload left the upload gone.
+// minio-go expects 204, but Garage answers a successful abort with 200, and an
+// upload that no longer exists needs no abort.
+func abortSucceeded(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	errResp := minio.ToErrorResponse(err)
+
+	return errResp.Code == minio.NoSuchUpload || errResp.StatusCode == http.StatusOK
+}
+
 // abortMultipartUpload aborts an upload we cannot hand out. Failures are logged.
 // An upload that no longer exists is fine.
 func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) {
 	err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
-	if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
+	if !abortSucceeded(err) {
 		slog.Warn("Failed to abort multipart upload", "key", objectKey, "upload_id", uploadID, "error", err)
 	}
 }
