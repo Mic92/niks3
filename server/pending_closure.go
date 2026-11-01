@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -148,7 +149,7 @@ func createPendingClosureInner(
 		return nil, err
 	}
 
-	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, verifyS3)
+	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, objectsMap, verifyS3)
 	if err != nil {
 		// The client gets no response and never commits, so drop the rows.
 		if delErr := pg.New(pool).DeletePendingClosure(context.WithoutCancel(ctx), pendingClosure.ID); delErr != nil {
@@ -223,11 +224,13 @@ func insertPendingClosure(
 }
 
 // objectsToUpload returns the pending rows the client must upload: objects
-// the database does not consider live, and with verifyS3 those S3 lacks.
+// the database does not consider live and, with verifyS3, those missing from
+// S3 or pointing at a NAR missing from S3.
 func (s *Service) objectsToUpload(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	allObjects []pg.InsertPendingObjectsParams,
+	objectsMap map[string]objectWithRefs,
 	verifyS3 bool,
 ) ([]pg.InsertPendingObjectsParams, error) {
 	keys := make([]string, 0, len(allObjects))
@@ -254,6 +257,10 @@ func (s *Service) objectsToUpload(
 		if err := s.dropMissingFromS3(ctx, present); err != nil {
 			return nil, err
 		}
+
+		if err := s.dropStaleNarinfos(ctx, present, existingObjects, objectsMap); err != nil {
+			return nil, err
+		}
 	}
 
 	if s.testHookAfterPresenceCheck != nil {
@@ -269,6 +276,62 @@ func (s *Service) objectsToUpload(
 	}
 
 	return uploadObjects, nil
+}
+
+// dropStaleNarinfos marks for re-upload narinfos (and their listings) that may point
+// at a NAR S3 has lost. The database records every NAR ever pushed for a
+// store path in the narinfo's refs, but the narinfo in S3 names only one of
+// them, and we cannot tell which without reading it. So any lost NAR marks
+// the narinfo as stale. NARs carried by this push are skipped because they
+// will be in S3 again afterwards.
+func (s *Service) dropStaleNarinfos(
+	ctx context.Context,
+	present map[string]bool,
+	existingObjects []pg.GetExistingObjectsRow,
+	objectsMap map[string]objectWithRefs,
+) error {
+	narsByNarinfo := make(map[string][]string)
+
+	var nars []string
+
+	for _, obj := range existingObjects {
+		if !present[obj.Key] || objectsMap[obj.Key].Type != objectTypeNarinfo {
+			continue
+		}
+
+		for _, ref := range obj.Refs {
+			if _, pushed := objectsMap[ref]; !pushed && narRe.MatchString(ref) {
+				narsByNarinfo[obj.Key] = append(narsByNarinfo[obj.Key], ref)
+				nars = append(nars, ref)
+			}
+		}
+	}
+
+	if len(nars) == 0 {
+		return nil
+	}
+
+	missing, err := s.checkS3ObjectsExist(ctx, nars)
+	if err != nil {
+		return fmt.Errorf("failed to verify recorded NARs in S3: %w", err)
+	}
+
+	for narinfo, refs := range narsByNarinfo {
+		if !slices.ContainsFunc(refs, func(nar string) bool { return missing[nar] }) {
+			continue
+		}
+
+		slog.Warn("Narinfo references a NAR missing from S3, will re-upload", "narinfo", narinfo)
+		delete(present, narinfo)
+
+		for _, ref := range objectsMap[narinfo].Refs {
+			if objectsMap[ref].Type == objectTypeListing {
+				delete(present, ref)
+			}
+		}
+	}
+
+	return nil
 }
 
 // dropMissingFromS3 removes from present the keys S3 does not have.
