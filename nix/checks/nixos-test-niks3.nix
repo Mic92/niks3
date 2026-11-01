@@ -185,6 +185,7 @@ testers.nixosTest {
         authTokenFile = toString apiTokenFile;
         batchSize = 5;
         idleExitTimeout = 5;
+        retainPaths = true;
       };
     };
   };
@@ -563,6 +564,35 @@ testers.nixosTest {
     # The daemon runs as a dynamic user. Its queue must not be owned by root.
     builder.succeed("test $(stat -c %u /var/lib/private/niks3-hook/upload-queue.db) -ne 0")
 
+    roots = "/var/lib/private/niks3-hook/upload-queue.db.roots"
+    builder.succeed(f"test -z \"$(ls -A {roots})\"")
+
     print("Post-build-hook pipeline test passed!")
+
+    # ============================================
+    # retainPaths: queued paths survive GC until uploaded
+    # ============================================
+
+    server.systemctl("stop niks3.service")
+    builder.succeed("""
+    cat > /tmp/retain-drv.nix << 'EOF'
+    derivation {
+      name = "retain-test";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "echo retained > $out" ];
+    }
+    EOF
+    """)
+    retained = builder.succeed("nix-build /tmp/retain-drv.nix --no-out-link").strip()
+    builder.succeed(f"test -n \"$(ls -A {roots})\"")
+    builder.fail(f"nix-store --delete {retained}")
+
+    server.systemctl("start niks3.service")
+    server.wait_for_unit("niks3.service")
+    builder.wait_until_succeeds(f"test -z \"$(ls -A {roots})\"", timeout=120)
+    builder.succeed(f"nix-store --delete {retained}")
+
+    print("retainPaths test passed!")
   '';
 }
