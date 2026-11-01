@@ -203,42 +203,68 @@ type NarinfoMetadata struct {
 
 // getValidMultipartUpload validates the object key and upload ID of a
 // multipart request and looks up the tracked upload, so clients cannot
-// operate on uploads outside the pending-closure book-keeping. On failure it
-// writes an error response and returns false.
-func (s *Service) getValidMultipartUpload(w http.ResponseWriter, r *http.Request, objectKey, uploadID string) (pg.MultipartUpload, bool) {
+// operate on uploads outside the pending-closure book-keeping. With
+// forCompletion it also claims the upload, which fails once a peer claimed it
+// for abort. Returns the upload's pending closure ID. On failure it writes an
+// error response and returns false.
+func (s *Service) getValidMultipartUpload(
+	w http.ResponseWriter,
+	r *http.Request,
+	objectKey, uploadID string,
+	forCompletion bool,
+) (int64, bool) {
 	if objectKey == "" {
 		http.Error(w, "missing object_key", http.StatusBadRequest)
 
-		return pg.MultipartUpload{}, false
+		return 0, false
 	}
 
 	// Multipart uploads are only ever created for NAR objects.
 	if !IsValidUploadKey(objectKey, objectTypeNar) {
 		http.Error(w, fmt.Sprintf("invalid object key %q", objectKey), http.StatusBadRequest)
 
-		return pg.MultipartUpload{}, false
+		return 0, false
 	}
 
 	if uploadID == "" {
 		http.Error(w, "missing upload_id", http.StatusBadRequest)
 
-		return pg.MultipartUpload{}, false
+		return 0, false
 	}
 
 	queries := pg.New(s.Pool)
 
-	upload, err := queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
-		UploadID:  uploadID,
-		ObjectKey: objectKey,
-	})
+	var (
+		pendingClosureID int64
+		err              error
+	)
+
+	if forCompletion {
+		var upload pg.MultipartUpload
+
+		upload, err = queries.ClaimMultipartUploadForCompletion(r.Context(), pg.ClaimMultipartUploadForCompletionParams{
+			UploadID:  uploadID,
+			ObjectKey: objectKey,
+		})
+		pendingClosureID = upload.PendingClosureID
+	} else {
+		var upload pg.GetMultipartUploadRow
+
+		upload, err = queries.GetMultipartUpload(r.Context(), pg.GetMultipartUploadParams{
+			UploadID:  uploadID,
+			ObjectKey: objectKey,
+		})
+		pendingClosureID = upload.PendingClosureID
+	}
+
 	if err != nil {
 		slog.Error("Failed to get multipart upload", "error", err, "upload_id", uploadID, "object_key", objectKey)
 		http.Error(w, "multipart upload not found", http.StatusNotFound)
 
-		return pg.MultipartUpload{}, false
+		return 0, false
 	}
 
-	return upload, true
+	return pendingClosureID, true
 }
 
 // RequestMorePartsHandler handles POST /api/multipart/request-parts endpoint.
@@ -274,7 +300,7 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Verify the upload exists and belongs to a valid pending closure
-	upload, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID)
+	pendingClosureID, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID, false)
 	if !ok {
 		return
 	}
@@ -284,7 +310,7 @@ func (s *Service) RequestMorePartsHandler(w http.ResponseWriter, r *http.Request
 		"object_key", req.ObjectKey,
 		"start_part_number", req.StartPartNumber,
 		"num_parts", req.NumParts,
-		"pending_closure_id", upload.PendingClosureID)
+		"pending_closure_id", pendingClosureID)
 
 	// Generate presigned URLs for the requested parts
 	partURLs, err := s.generatePartURLs(r.Context(), req.ObjectKey, req.UploadID, req.StartPartNumber, req.NumParts)
@@ -328,7 +354,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 
 	// Verify the upload is registered before touching S3, so clients cannot
 	// finalize multipart uploads outside the pending-closure book-keeping.
-	upload, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID)
+	pendingClosureID, ok := s.getValidMultipartUpload(w, r, req.ObjectKey, req.UploadID, true)
 	if !ok {
 		return
 	}
@@ -391,7 +417,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// re-offering this NAR and leak an orphaned multipart upload each time.
 	// On error fail the request before dropping the tracking row, so a retry
 	// re-attempts the idempotent registration.
-	if err := s.registerCompletedObject(r.Context(), upload.PendingClosureID, req.ObjectKey); err != nil {
+	if err := s.registerCompletedObject(r.Context(), pendingClosureID, req.ObjectKey); err != nil {
 		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
 		http.Error(w, "failed to register completed object", http.StatusInternalServerError)
 
@@ -577,12 +603,13 @@ func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool,
 }
 
 // abortRedundantMultipartUploads aborts multipart uploads other pending_closures
-// opened for objectKey, excluding keepUploadID. Best-effort: the winning upload
-// already succeeded, and a failed abort keeps its row for cleanupPendingClosures.
+// opened for objectKey, excluding keepUploadID and uploads a peer is completing.
+// Best-effort: the winning upload already succeeded, and a failed abort keeps
+// its row for cleanupPendingClosures.
 func (s *Service) abortRedundantMultipartUploads(ctx context.Context, objectKey, keepUploadID string) {
 	queries := pg.New(s.Pool)
 
-	uploadIDs, err := queries.GetRedundantMultipartUploads(ctx, pg.GetRedundantMultipartUploadsParams{
+	uploadIDs, err := queries.ClaimRedundantMultipartUploads(ctx, pg.ClaimRedundantMultipartUploadsParams{
 		ObjectKey: objectKey,
 		UploadID:  keepUploadID,
 	})

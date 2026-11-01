@@ -181,3 +181,109 @@ func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 		t.Error("errored multipart upload left open after its row was dropped")
 	}
 }
+
+// postSharedNarClosure opens a pending closure whose only NAR is narKey and
+// returns that NAR's multipart upload.
+func postSharedNarClosure(t *testing.T, service *server.Service, narinfoKey, narKey string) server.PendingObject {
+	t.Helper()
+
+	resp := createPendingClosure(t, service, map[string]any{
+		"closure": narinfoKey,
+		"objects": []map[string]any{
+			{"key": narinfoKey, "type": "narinfo", "refs": []string{narKey}},
+			{"key": narKey, "type": "nar", "refs": []string{}, "nar_size": 100 * 1024 * 1024},
+		},
+	})
+
+	nar := resp.PendingObjects[narKey]
+	if nar.MultipartInfo == nil || nar.MultipartInfo.UploadID == "" {
+		t.Fatalf("expected multipart upload for %s", narKey)
+	}
+
+	return nar
+}
+
+// TestRedundantAbortSkipsCompletingUpload covers a peer completing its upload
+// while another completion aborts duplicates. On Garage an abort racing a
+// completion deletes the object the completion just wrote, leaving narinfos
+// that point at a missing NAR, so an upload being completed must not be
+// aborted.
+func TestRedundantAbortSkipsCompletingUpload(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	narKey := narKeyFor("gggggggggggggggggggggggggggggg04")
+	winner := postSharedNarClosure(t, service, "gggggggggggggggggggggggggggggg60.narinfo", narKey)
+	peer := postSharedNarClosure(t, service, "gggggggggggggggggggggggggggggg70.narinfo", narKey)
+	peerUploadID := peer.MultipartInfo.UploadID
+
+	// The peer's completion request has claimed its upload but not reached S3 yet.
+	_, err := service.Pool.Exec(ctx, "UPDATE multipart_uploads SET completing = true WHERE upload_id = $1", peerUploadID)
+	ok(t, err)
+
+	handleMultipartUpload(ctx, t, narKey, winner, service)
+
+	coreClient := minio.Core{Client: service.MinioClient}
+	if _, err := coreClient.ListObjectParts(ctx, service.Bucket, narKey, peerUploadID, 0, 10); err != nil {
+		t.Fatalf("upload being completed by a peer was aborted: %v", err)
+	}
+
+	var aborting bool
+	ok(t, service.Pool.QueryRow(ctx, "SELECT aborting FROM multipart_uploads WHERE upload_id = $1", peerUploadID).Scan(&aborting))
+
+	if aborting {
+		t.Error("upload being completed by a peer was claimed for abort")
+	}
+
+	// The peer's completion goes through and leaves the NAR in place.
+	handleMultipartUpload(ctx, t, narKey, peer, service)
+
+	_, err = service.MinioClient.StatObject(ctx, service.Bucket, narKey, minio.StatObjectOptions{})
+	ok(t, err)
+}
+
+// TestCompleteRefusedAfterAbortClaim covers the opposite order: once a peer
+// claimed an upload for abort, completing it must fail before reaching S3, so
+// the client treats the NAR as superseded instead of racing the abort.
+func TestCompleteRefusedAfterAbortClaim(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	service := createTestService(t)
+	defer service.Close()
+
+	narKey := narKeyFor("gggggggggggggggggggggggggggggg05")
+	winner := postSharedNarClosure(t, service, "gggggggggggggggggggggggggggggg80.narinfo", narKey)
+	loser := postSharedNarClosure(t, service, "gggggggggggggggggggggggggggggg90.narinfo", narKey)
+
+	completeBody, err := json.Marshal(map[string]any{
+		"object_key": narKey,
+		"upload_id":  loser.MultipartInfo.UploadID,
+		"parts":      []map[string]any{{"part_number": 1, "etag": "deadbeef"}},
+	})
+	ok(t, err)
+
+	refused := checkStatusCode(http.StatusNotFound)
+
+	// Between claiming the loser for abort and aborting it in S3.
+	service.SetTestHookBeforeRedundantAbort(func() {
+		testRequest(t, &TestRequest{
+			method:        "POST",
+			path:          "/api/multipart/complete",
+			body:          completeBody,
+			handler:       service.CompleteMultipartUploadHandler,
+			checkResponse: &refused,
+		})
+	})
+
+	handleMultipartUpload(ctx, t, narKey, winner, service)
+
+	service.SetTestHookBeforeRedundantAbort(nil)
+}

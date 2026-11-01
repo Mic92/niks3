@@ -210,12 +210,23 @@ WHERE pc.started_at < sqlc.arg(cutoff)::timestamp;
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
 
--- name: GetRedundantMultipartUploads :many
--- Upload IDs other pending_closures opened for object_key, used to abort
--- duplicates once one upload of the NAR completes.
-SELECT upload_id
-FROM multipart_uploads
-WHERE object_key = $1 AND upload_id <> $2;
+-- name: ClaimRedundantMultipartUploads :many
+-- Claims the uploads other pending_closures opened for object_key so they can
+-- be aborted once one upload of the NAR completes. Skips uploads a peer is
+-- completing: on some S3 backends (Garage) an abort racing a completion
+-- deletes the freshly completed object.
+UPDATE multipart_uploads
+SET aborting = true
+WHERE object_key = $1 AND upload_id <> $2 AND NOT completing
+RETURNING upload_id;
+
+-- name: ClaimMultipartUploadForCompletion :one
+-- Fails once a peer claimed the upload for abort, so the client treats it as
+-- superseded instead of racing the abort.
+UPDATE multipart_uploads
+SET completing = true
+WHERE upload_id = $1 AND object_key = $2 AND NOT aborting
+RETURNING *;
 
 -- name: GetMultipartUpload :one
 SELECT pending_closure_id, object_key, upload_id

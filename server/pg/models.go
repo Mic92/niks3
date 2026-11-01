@@ -17,6 +17,8 @@ type MultipartUpload struct {
 	PendingClosureID int64  `json:"pending_closure_id"`
 	ObjectKey        string `json:"object_key"`
 	UploadID         string `json:"upload_id"`
+	Completing       bool   `json:"completing"`
+	Aborting         bool   `json:"aborting"`
 }
 
 type Object struct {

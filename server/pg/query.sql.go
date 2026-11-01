@@ -11,6 +11,69 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimMultipartUploadForCompletion = `-- name: ClaimMultipartUploadForCompletion :one
+UPDATE multipart_uploads
+SET completing = true
+WHERE upload_id = $1 AND object_key = $2 AND NOT aborting
+RETURNING pending_closure_id, object_key, upload_id, completing, aborting
+`
+
+type ClaimMultipartUploadForCompletionParams struct {
+	UploadID  string `json:"upload_id"`
+	ObjectKey string `json:"object_key"`
+}
+
+// Fails once a peer claimed the upload for abort, so the client treats it as
+// superseded instead of racing the abort.
+func (q *Queries) ClaimMultipartUploadForCompletion(ctx context.Context, arg ClaimMultipartUploadForCompletionParams) (MultipartUpload, error) {
+	row := q.db.QueryRow(ctx, claimMultipartUploadForCompletion, arg.UploadID, arg.ObjectKey)
+	var i MultipartUpload
+	err := row.Scan(
+		&i.PendingClosureID,
+		&i.ObjectKey,
+		&i.UploadID,
+		&i.Completing,
+		&i.Aborting,
+	)
+	return i, err
+}
+
+const claimRedundantMultipartUploads = `-- name: ClaimRedundantMultipartUploads :many
+UPDATE multipart_uploads
+SET aborting = true
+WHERE object_key = $1 AND upload_id <> $2 AND NOT completing
+RETURNING upload_id
+`
+
+type ClaimRedundantMultipartUploadsParams struct {
+	ObjectKey string `json:"object_key"`
+	UploadID  string `json:"upload_id"`
+}
+
+// Claims the uploads other pending_closures opened for object_key so they can
+// be aborted once one upload of the NAR completes. Skips uploads a peer is
+// completing: on some S3 backends (Garage) an abort racing a completion
+// deletes the freshly completed object.
+func (q *Queries) ClaimRedundantMultipartUploads(ctx context.Context, arg ClaimRedundantMultipartUploadsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, claimRedundantMultipartUploads, arg.ObjectKey, arg.UploadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var upload_id string
+		if err := rows.Scan(&upload_id); err != nil {
+			return nil, err
+		}
+		items = append(items, upload_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT $1::timestamp AS time
@@ -310,9 +373,15 @@ type GetMultipartUploadParams struct {
 	ObjectKey string `json:"object_key"`
 }
 
-func (q *Queries) GetMultipartUpload(ctx context.Context, arg GetMultipartUploadParams) (MultipartUpload, error) {
+type GetMultipartUploadRow struct {
+	PendingClosureID int64  `json:"pending_closure_id"`
+	ObjectKey        string `json:"object_key"`
+	UploadID         string `json:"upload_id"`
+}
+
+func (q *Queries) GetMultipartUpload(ctx context.Context, arg GetMultipartUploadParams) (GetMultipartUploadRow, error) {
 	row := q.db.QueryRow(ctx, getMultipartUpload, arg.UploadID, arg.ObjectKey)
-	var i MultipartUpload
+	var i GetMultipartUploadRow
 	err := row.Scan(&i.PendingClosureID, &i.ObjectKey, &i.UploadID)
 	return i, err
 }
@@ -471,39 +540,6 @@ func (q *Queries) GetPresentObjects(ctx context.Context, dollar_1 []string) ([]s
 			return nil, err
 		}
 		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getRedundantMultipartUploads = `-- name: GetRedundantMultipartUploads :many
-SELECT upload_id
-FROM multipart_uploads
-WHERE object_key = $1 AND upload_id <> $2
-`
-
-type GetRedundantMultipartUploadsParams struct {
-	ObjectKey string `json:"object_key"`
-	UploadID  string `json:"upload_id"`
-}
-
-// Upload IDs other pending_closures opened for object_key, used to abort
-// duplicates once one upload of the NAR completes.
-func (q *Queries) GetRedundantMultipartUploads(ctx context.Context, arg GetRedundantMultipartUploadsParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, getRedundantMultipartUploads, arg.ObjectKey, arg.UploadID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var upload_id string
-		if err := rows.Scan(&upload_id); err != nil {
-			return nil, err
-		}
-		items = append(items, upload_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
