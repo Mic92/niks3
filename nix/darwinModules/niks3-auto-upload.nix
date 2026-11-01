@@ -51,7 +51,19 @@ in
       description = "Path to the unix stream socket, created by the daemon itself.";
     };
 
-    retainPaths = lib.mkEnableOption "Nix GC roots for queued outputs (unbounded disk use)";
+    retainPaths = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Keep queued store paths alive until they are uploaded by adding a
+        Nix GC root for each queue entry. Otherwise garbage collection can
+        delete a path before the upload happens.
+
+        Paths stay rooted while uploads keep failing, so disk usage is
+        unbounded while the server is unreachable.
+        See <https://github.com/Mic92/niks3/wiki/Auto-Upload>.
+      '';
+    };
 
     batchSize = lib.mkOption {
       type = lib.types.int;
