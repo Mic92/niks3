@@ -46,20 +46,6 @@ in
       description = "Path to the unix stream socket.";
     };
 
-    retainPaths = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Keep queued store paths alive until they are uploaded by adding a
-        Nix GC root for each queue entry. Otherwise garbage collection can
-        delete a path before the upload happens.
-
-        Paths stay rooted while uploads keep failing, so disk usage is
-        unbounded while the server is unreachable.
-        See <https://github.com/Mic92/niks3/wiki/Auto-Upload>.
-      '';
-    };
-
     batchSize = lib.mkOption {
       type = lib.types.int;
       default = 50;
@@ -144,8 +130,10 @@ in
       environment = {
         # DynamicUser has HOME=/, which nix cannot write its eval cache to.
         XDG_CACHE_HOME = "%C/niks3-hook";
-      }
-      // lib.optionalAttrs cfg.retainPaths { NIX_REMOTE = "daemon"; };
+        # GC roots are registered through nix-daemon because ProtectSystem
+        # keeps /nix/var read-only.
+        NIX_REMOTE = "daemon";
+      };
 
       serviceConfig = {
         Type = "simple";
@@ -172,7 +160,6 @@ in
               "--db-path"
               "/var/lib/niks3-hook/upload-queue.db"
             ]
-            ++ lib.optional cfg.retainPaths "--retain-paths"
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
             ++ lib.optionals cfg.mtls.enable [

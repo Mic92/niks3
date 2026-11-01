@@ -15,10 +15,6 @@ import (
 func (q *Queue) openRoots(dbPath string, retain bool) error {
 	rootDir := dbPath + ".roots"
 	if !retain {
-		if _, err := os.Lstat(rootDir); !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("queue roots exist or cannot be inspected; reopen with --retain-paths: %s", rootDir)
-		}
-
 		return nil
 	}
 	if err := os.MkdirAll(rootDir, 0o700); err != nil {

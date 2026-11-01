@@ -185,7 +185,6 @@ testers.nixosTest {
         authTokenFile = toString apiTokenFile;
         batchSize = 5;
         idleExitTimeout = 5;
-        retainPaths = true;
       };
     };
   };
@@ -570,7 +569,7 @@ testers.nixosTest {
     print("Post-build-hook pipeline test passed!")
 
     # ============================================
-    # retainPaths: queued paths survive GC until uploaded
+    # Queued paths survive GC until uploaded
     # ============================================
 
     server.systemctl("stop niks3.service")
@@ -593,6 +592,6 @@ testers.nixosTest {
     builder.wait_until_succeeds(f"test -z \"$(ls -A {roots})\"", timeout=120)
     builder.succeed(f"nix-store --delete {retained}")
 
-    print("retainPaths test passed!")
+    print("GC root test passed!")
   '';
 }
