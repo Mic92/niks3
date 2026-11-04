@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
@@ -13,6 +14,10 @@ import (
 
 const (
 	multipartPartSize = 10 * 1024 * 1024 // 10MB parts
+
+	// multipartCreateTimeout bounds the creation of a multipart upload once
+	// its request no longer ends with the request that asked for it.
+	multipartCreateTimeout = 2 * time.Minute
 )
 
 // useSimpleUpload reports whether a NAR of the given uncompressed size should
@@ -90,8 +95,16 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 		return PendingObject{}, fmt.Errorf("rate limiter: %w", err)
 	}
 
-	// Initiate multipart upload
-	uploadID, err := coreClient.NewMultipartUpload(ctx, s.Bucket, objectKey, minio.PutObjectOptions{
+	// Initiate multipart upload and record it. Both run to their end even if
+	// ctx is cancelled meanwhile, by a sibling in the errgroup failing or by
+	// the client going away: a request cut short after S3 carried it out
+	// leaves an upload whose ID nobody learns, and an upload whose row was
+	// never written can only be aborted here, once. With the row, a failed
+	// abort is retried through it. The timeout bounds work nobody waits for.
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), multipartCreateTimeout)
+	defer cancelCreate()
+
+	uploadID, err := coreClient.NewMultipartUpload(createCtx, s.Bucket, objectKey, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	if err != nil {
@@ -104,25 +117,27 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 
 	s.S3RateLimiter.RecordSuccess()
 
-	// Store upload ID in database
-	// A cancelled ctx is the usual reason to get here, and the abort would fail on it.
-	abortCtx := context.WithoutCancel(ctx)
-
-	if err := pg.New(s.Pool).InsertMultipartUpload(ctx, pg.InsertMultipartUploadParams{
+	if err := pg.New(s.Pool).InsertMultipartUpload(createCtx, pg.InsertMultipartUploadParams{
 		PendingClosureID: pendingClosureID,
 		ObjectKey:        objectKey,
 		UploadID:         uploadID,
 	}); err != nil {
-		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
+		// No row, so this is the only chance to abort it, and createCtx may
+		// be the deadline the insert ran out of.
+		s.abortMultipartUpload(context.WithoutCancel(ctx), coreClient, objectKey, uploadID)
 
 		return PendingObject{}, fmt.Errorf("failed to store multipart upload: %w", err)
+	}
+
+	// From here on the row is the upload's handle: the caller drops the
+	// pending closure on any error and aborts the upload through it.
+	if err := ctx.Err(); err != nil {
+		return PendingObject{}, fmt.Errorf("creating multipart upload: %w", err)
 	}
 
 	// Generate presigned URLs for each part (starting from part 1)
 	partURLs, err := s.generatePartURLs(ctx, objectKey, uploadID, 1, numParts)
 	if err != nil {
-		s.abortMultipartUpload(abortCtx, coreClient, objectKey, uploadID)
-
 		return PendingObject{}, err
 	}
 
@@ -134,13 +149,17 @@ func (s *Service) createMultipartUpload(ctx context.Context, pendingClosureID in
 	}, nil
 }
 
-// abortMultipartUpload aborts an upload we cannot hand out. Failures are logged.
-// An upload that no longer exists is fine.
-func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) {
+// abortMultipartUpload aborts an upload we cannot hand out and reports whether
+// it is gone. Failures are logged. An upload that no longer exists is fine.
+func (s *Service) abortMultipartUpload(ctx context.Context, coreClient minio.Core, objectKey, uploadID string) bool {
 	err := coreClient.AbortMultipartUpload(ctx, s.Bucket, objectKey, uploadID)
 	if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchUpload {
 		slog.Warn("Failed to abort multipart upload", "key", objectKey, "upload_id", uploadID, "error", err)
+
+		return false
 	}
+
+	return true
 }
 
 // generatePartURLs generates presigned URLs for multipart upload parts.

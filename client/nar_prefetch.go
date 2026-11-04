@@ -1,11 +1,13 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // NAR output order is fixed by the format, so writes must stay sequential.
@@ -56,7 +58,11 @@ type prefetcher struct {
 	work    chan *prefetchedFile // unordered, consumed by readers
 	wg      sync.WaitGroup
 	closing sync.Once
+	stopped atomic.Bool // the writer failed: queue nothing more, read nothing more
 }
+
+// errPrefetchStopped marks a file left unread because the dump was abandoned.
+var errPrefetchStopped = errors.New("prefetch stopped: NAR dump abandoned")
 
 func newPrefetcher(workers int) *prefetcher {
 	if workers <= 0 {
@@ -94,6 +100,13 @@ func (p *prefetcher) enqueue(path string, size uint64) *prefetchedFile {
 	return pf
 }
 
+// stop abandons the rest of the tree once the writer has failed: files not
+// yet queued are not queued, and queued files not yet read are skipped. The
+// writer consumes nothing more, so reading them only delays the error.
+func (p *prefetcher) stop() {
+	p.stopped.Store(true)
+}
+
 // release returns the pooled buffer held by a consumed file.
 func (p *prefetcher) release(pf *prefetchedFile) {
 	if pf.buf != nil {
@@ -123,6 +136,12 @@ func (p *prefetcher) worker() {
 
 func (p *prefetcher) readFile(pf *prefetchedFile) {
 	defer close(pf.done)
+
+	if p.stopped.Load() {
+		pf.err = errPrefetchStopped
+
+		return
+	}
 
 	f, err := os.Open(pf.path)
 	if err != nil {

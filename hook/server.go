@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,12 +22,24 @@ import (
 //	-ldflags "-X github.com/Mic92/niks3/hook.DefaultSocketPath=/custom/path"
 var DefaultSocketPath = "/run/niks3/upload-to-cache.sock" //nolint:gochecknoglobals // ldflags override
 
+// Response status values.
+const (
+	statusOK    = "ok"
+	statusError = "error"
+)
+
 // QueueFunc is called by the server to persist paths. It must return nil on success.
 type QueueFunc func(paths []string) error
 
 // DefaultConnTimeout bounds one connection, so a stalled client cannot keep
 // Serve from returning on shutdown.
 const DefaultConnTimeout = 30 * time.Second
+
+// DefaultMaxRequestBytes bounds one request. Nix hands the hook a build's
+// output paths, a few hundred bytes each; a request larger than this is not
+// one Nix sent. Without a bound the JSON decoder buffers whatever a client
+// streams, and the socket is writable by the build users.
+const DefaultMaxRequestBytes = 16 << 20
 
 // Server listens on a unix stream socket and accepts path submissions.
 type Server struct {
@@ -34,15 +49,23 @@ type Server struct {
 
 	// ConnTimeout is the deadline for handling one connection.
 	ConnTimeout time.Duration
+	// MaxRequestBytes is the most a client may send in one request.
+	MaxRequestBytes int64
+	// StoreDir, if set, is the Nix store directory every queued path must
+	// be a direct child of. Anything else is refused: the worker would stat
+	// and try to push it every round, and the hook is not a way to make the
+	// daemon read arbitrary files.
+	StoreDir string
 }
 
 // NewServer creates a Server that accepts connections on listener and calls
 // queueFunc for each batch of paths received.
 func NewServer(listener net.Listener, queueFunc QueueFunc) *Server {
 	return &Server{
-		listener:    listener,
-		queueFunc:   queueFunc,
-		ConnTimeout: DefaultConnTimeout,
+		listener:        listener,
+		queueFunc:       queueFunc,
+		ConnTimeout:     DefaultConnTimeout,
+		MaxRequestBytes: DefaultMaxRequestBytes,
 	}
 }
 
@@ -101,29 +124,98 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = conn.SetDeadline(time.Now().Add(s.ConnTimeout))
 	}
 
+	var body io.Reader = conn
+	if s.MaxRequestBytes > 0 {
+		body = io.LimitReader(conn, s.MaxRequestBytes)
+	}
+
 	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		slog.Error("Failed to decode request", "error", err)
-		writeResponse(conn, Response{Status: "error", Message: "invalid request"})
+		writeResponse(conn, Response{Status: statusError, Message: "invalid request"})
 
 		return
 	}
 
 	if len(req.Paths) == 0 {
-		writeResponse(conn, Response{Status: "ok"})
+		writeResponse(conn, Response{Status: statusOK})
 
 		return
 	}
 
+	for _, p := range req.Paths {
+		if !s.validPath(p) {
+			slog.Error("Refusing path outside the store", "path", p, "store", s.StoreDir)
+			writeResponse(conn, Response{Status: statusError, Message: "not a store path: " + p})
+
+			return
+		}
+	}
+
 	if err := s.queueFunc(req.Paths); err != nil {
 		slog.Error("Failed to queue paths", "error", err, "count", len(req.Paths))
-		writeResponse(conn, Response{Status: "error", Message: err.Error()})
+		writeResponse(conn, Response{Status: statusError, Message: err.Error()})
 
 		return
 	}
 
 	slog.Debug("Queued paths", "count", len(req.Paths))
-	writeResponse(conn, Response{Status: "ok"})
+	writeResponse(conn, Response{Status: statusOK})
+}
+
+// validPath reports whether p is a store path under s.StoreDir: absolute,
+// clean, exactly one component below the store directory, and that component
+// a store path name.
+func (s *Server) validPath(p string) bool {
+	if s.StoreDir == "" {
+		return true
+	}
+
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+		return false
+	}
+
+	rel, err := filepath.Rel(s.StoreDir, p)
+	if err != nil {
+		return false
+	}
+
+	return isStorePathName(rel)
+}
+
+// Store path names as Nix defines them (StorePath in libstore/path.cc): a
+// hash part in Nix's base-32 alphabet, a dash, and a name of limited length
+// drawn from a small set of characters.
+const (
+	storeHashLen     = 32
+	storeMaxNameLen  = 211
+	nixBase32Chars   = "0123456789abcdfghijklmnpqrsvwxyz"
+	storeNameSymbols = "+-._?="
+)
+
+// isStorePathName reports whether base is a valid store path base name.
+// Anything else directly below the store directory, such as .links, would
+// be queued for good: it exists (or cannot even be stat'ed) and never
+// becomes a valid path the push could upload.
+func isStorePathName(base string) bool {
+	if len(base) < storeHashLen+2 || len(base) > storeHashLen+1+storeMaxNameLen || base[storeHashLen] != '-' {
+		return false
+	}
+
+	for _, c := range base[:storeHashLen] {
+		if !strings.ContainsRune(nixBase32Chars, c) {
+			return false
+		}
+	}
+
+	for _, c := range base[storeHashLen+1:] {
+		isAlnum := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if !isAlnum && !strings.ContainsRune(storeNameSymbols, c) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func writeResponse(conn net.Conn, resp Response) {

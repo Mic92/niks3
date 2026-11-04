@@ -84,6 +84,12 @@ packages
         echo "Running OpenBao signer tests..."
         niks3-openbao-signer.test -test.v
 
+        echo "Running niks3-hook command tests..."
+        niks3-cmd-niks3-hook.test -test.v
+
+        echo "Running rate limiter tests..."
+        niks3-ratelimit.test -test.v
+
         touch $out
       '';
 }
