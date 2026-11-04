@@ -14,6 +14,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mic92/niks3/api"
@@ -262,25 +263,46 @@ func checkResponse(resp *http.Response, acceptedStatuses ...int) error {
 	return &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
 }
 
+// partLease returns a part buffer to its pool when the last user stops. The
+// transport can drop a body and not close it. If this occurs, the buffer does
+// not go back to the pool and the garbage collector removes it.
+type partLease struct {
+	holders atomic.Int64
+	release func()
+}
+
+func newPartLease(release func()) *partLease {
+	l := &partLease{release: release}
+	l.holders.Store(1)
+
+	return l
+}
+
+func (l *partLease) done() {
+	if l.holders.Add(-1) == 0 {
+		l.release()
+	}
+}
+
 type trackedBody struct {
 	io.Reader
 
 	once sync.Once
-	done *sync.WaitGroup
+	done func()
 }
 
 func (b *trackedBody) Close() error {
-	b.once.Do(b.done.Done)
+	b.once.Do(b.done)
 
 	return nil
 }
 
-// putBytes counts each body in inFlight until the transport closes it.
-func (c *Client) putBytes(ctx context.Context, url string, data []byte, inFlight *sync.WaitGroup) (*http.Response, error) {
+// putBytes holds lease for each body until the transport closes the body.
+func (c *Client) putBytes(ctx context.Context, url string, data []byte, lease *partLease) (*http.Response, error) {
 	newBody := func() io.ReadCloser {
-		inFlight.Add(1)
+		lease.holders.Add(1)
 
-		return &trackedBody{Reader: bytes.NewReader(data), done: inFlight}
+		return &trackedBody{Reader: bytes.NewReader(data), done: lease.done}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, newBody())

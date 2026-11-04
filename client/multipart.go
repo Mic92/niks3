@@ -291,12 +291,10 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 				defer func() { <-slots }()
 
 				// The transport may read the body after an early response.
-				var inFlight sync.WaitGroup
+				lease := newPartLease(release)
+				defer lease.done()
 
-				etag, err := c.uploadPart(gctx, partURL, partData, &inFlight)
-				inFlight.Wait()
-				release()
-
+				etag, err := c.uploadPart(gctx, partURL, partData, lease)
 				if err != nil {
 					return fmt.Errorf("uploading part %d: %w", partNumber, err)
 				}
@@ -345,8 +343,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 }
 
 // uploadPart uploads a single part and returns the ETag.
-func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte, inFlight *sync.WaitGroup) (string, error) {
-	resp, err := c.putBytes(ctx, partURL, data, inFlight)
+func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte, lease *partLease) (string, error) {
+	resp, err := c.putBytes(ctx, partURL, data, lease)
 	if err != nil {
 		return "", err
 	}

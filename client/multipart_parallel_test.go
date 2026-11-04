@@ -180,3 +180,52 @@ func TestUploadMultipart_FailedPartBufferNotReused(t *testing.T) {
 		t.Fatalf("err = %v, want the 503 of part 1", err)
 	}
 }
+
+// dropRetriedBody gets a body from GetBody and does not close it. net/http does
+// this when a GOAWAY refuses a stream and no connection is available.
+type dropRetriedBody struct {
+	http.RoundTripper
+}
+
+func (t dropRetriedBody) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPut {
+		if _, err := r.GetBody(); err != nil {
+			return nil, err //nolint:wrapcheck // test transport
+		}
+	}
+
+	return t.RoundTripper.RoundTrip(r) //nolint:wrapcheck // test transport
+}
+
+func TestUploadMultipart_ReturnsAfterDroppedBody(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"etag"`)
+	}))
+	defer srv.Close()
+
+	c, err := client.NewTestClientForServer(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.HTTPClient().Transport = dropRetriedBody{srv.Client().Transport}
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- c.UploadMultipart(context.Background(), strings.NewReader("part"),
+			&client.MultipartUploadInfo{UploadID: "upload", PartURLs: []string{srv.URL + "/part/1"}},
+			"nar/abc.nar.zst", client.MultipartPartSize)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("upload: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upload did not return after the dropped body")
+	}
+}
