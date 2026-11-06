@@ -131,3 +131,8 @@ func (s *Service) SetTestHookAfterSweepSelect(f func()) {
 func (s *Service) SetTestHookBeforeProxyGet(f func()) {
 	s.testHookBeforeProxyGet = f
 }
+
+// AbortSucceeded exposes abortSucceeded for tests.
+func AbortSucceeded(err error) bool {
+	return abortSucceeded(err)
+}
