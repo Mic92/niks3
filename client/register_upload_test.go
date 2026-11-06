@@ -14,14 +14,9 @@ import (
 func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 	t.Parallel()
 
-	var (
-		received atomic.Int32
-		stop     = make(chan struct{})
-	)
+	stop := make(chan struct{})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		received.Add(1)
-
 		select {
 		case <-stop:
 		case <-r.Context().Done():
@@ -35,27 +30,11 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const bound = time.Second
+	c.SetRegistrationTimeout(100 * time.Millisecond)
 
-	c.SetRegistrationTimeout(bound)
-
-	pushCtx, cancelPush := context.WithCancel(t.Context())
-	start := time.Now()
-
-	const registrations = 3
-	for range registrations {
-		c.RegisterUploadedObject(pushCtx, "abc.narinfo")
+	for range 3 {
+		c.RegisterUploadedObject(t.Context(), "abc.narinfo")
 	}
-
-	for received.Load() < registrations {
-		if time.Since(start) > 10*time.Second {
-			t.Fatalf("server saw %d registrations, want %d", received.Load(), registrations)
-		}
-
-		time.Sleep(time.Millisecond)
-	}
-
-	cancelPush()
 
 	done := make(chan struct{})
 
@@ -70,8 +49,31 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("WaitRegistrations did not return: registrations against a silent server are unbounded")
 	}
+}
 
-	if elapsed := time.Since(start); elapsed < bound {
-		t.Errorf("registrations ended after %v, before their bound: cancelled with the push", elapsed)
+func TestRegisterUploadedObject_OutlivesPush(t *testing.T) {
+	t.Parallel()
+
+	var received atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c, err := client.NewTestClientForServer(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pushCtx, cancelPush := context.WithCancel(t.Context())
+	cancelPush()
+
+	c.RegisterUploadedObject(pushCtx, "abc.narinfo")
+	c.WaitRegistrations()
+
+	if n := received.Load(); n != 1 {
+		t.Fatalf("server saw %d registrations after the push was cancelled, want 1", n)
 	}
 }
