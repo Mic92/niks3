@@ -60,40 +60,6 @@ func formatBytes(bytes uint64) string {
 	return fmt.Sprintf("%.1f%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// uploadBufferPool pools default-sized part buffers to reduce allocations.
-// Larger NARs get a one-off buffer (rare, not worth pooling).
-var uploadBufferPool = sync.Pool{ //nolint:gochecknoglobals // sync.Pool should be global
-	New: func() any {
-		buf := make([]byte, multipartPartSize)
-
-		return &buf
-	},
-}
-
-// partBufferPool lets tests replace the pool.
-type partBufferPool interface {
-	Get() any
-	Put(x any)
-}
-
-// getPartBuffer takes a buffer from pool, or from uploadBufferPool if nil.
-func getPartBuffer(pool partBufferPool, partSize int) ([]byte, func()) {
-	if partSize > multipartPartSize {
-		return make([]byte, partSize), func() {}
-	}
-
-	if pool == nil {
-		pool = &uploadBufferPool
-	}
-
-	ptr, ok := pool.Get().(*[]byte)
-	if !ok {
-		return make([]byte, multipartPartSize), func() {}
-	}
-
-	return *ptr, func() { pool.Put(ptr) }
-}
-
 // ErrUploadSuperseded means a concurrent closure already finished the same NAR
 // and our upload was aborted server-side. The blob exists, so callers skip it.
 var ErrUploadSuperseded = errors.New("multipart upload superseded by a concurrent upload")
@@ -263,11 +229,10 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 				return nil
 			}
 
-			buffer, release := getPartBuffer(c.partBuffers, partSize)
+			buffer := make([]byte, partSize)
 
 			n, err := io.ReadFull(r, buffer)
 			if n == 0 {
-				release()
 				<-slots
 
 				if errors.Is(err, io.EOF) {
@@ -279,7 +244,6 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 
 			last := errors.Is(err, io.ErrUnexpectedEOF)
 			if err != nil && !last {
-				release()
 				<-slots
 
 				return fmt.Errorf("reading part %d: %w", partNumber, err)
@@ -290,13 +254,7 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 			g.Go(func() error {
 				defer func() { <-slots }()
 
-				// The transport may read the body after an early response.
-				var inFlight sync.WaitGroup
-
-				etag, err := c.uploadPart(gctx, partURL, partData, &inFlight)
-				inFlight.Wait()
-				release()
-
+				etag, err := c.uploadPart(gctx, partURL, partData)
 				if err != nil {
 					return fmt.Errorf("uploading part %d: %w", partNumber, err)
 				}
@@ -345,8 +303,8 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 }
 
 // uploadPart uploads a single part and returns the ETag.
-func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte, inFlight *sync.WaitGroup) (string, error) {
-	resp, err := c.putBytes(ctx, partURL, data, inFlight)
+func (c *Client) uploadPart(ctx context.Context, partURL string, data []byte) (string, error) {
+	resp, err := c.putBytes(ctx, partURL, data)
 	if err != nil {
 		return "", err
 	}

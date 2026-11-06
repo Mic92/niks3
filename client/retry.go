@@ -225,14 +225,11 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 
 	for attempt := 0; ; attempt++ {
 		if err := waitForLimiter(ctx, limiter); err != nil {
-			if attempt == 0 {
-				closeUnsentBody(req)
-			}
-
 			return nil, err
 		}
 
-		if attempt > 0 && req.GetBody != nil {
+		// Reset body for retry attempts using GetBody
+		if req.GetBody != nil {
 			body, err := req.GetBody()
 			if err != nil {
 				return nil, fmt.Errorf("getting request body for retry: %w", err)
@@ -300,13 +297,6 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, limiter *ra
 	}
 }
 
-// closeUnsentBody closes a body the transport never got.
-func closeUnsentBody(req *http.Request) {
-	if req.Body != nil {
-		_ = req.Body.Close()
-	}
-}
-
 // retryBackoff picks the delay before the next attempt. An active rate limiter
 // paces throttle responses (429/503), so only Retry-After adds a delay there.
 // Everything else backs off exponentially.
@@ -332,8 +322,6 @@ func (c *Client) retryBackoff(attempt int, resp *http.Response, limiter *ratelim
 // doOnce executes a single HTTP request without retries, with rate limiting feedback.
 func (c *Client) doOnce(ctx context.Context, req *http.Request, limiter *ratelimit.AdaptiveRateLimiter) (*http.Response, error) {
 	if err := waitForLimiter(ctx, limiter); err != nil {
-		closeUnsentBody(req)
-
 		return nil, err
 	}
 
