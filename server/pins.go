@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -104,9 +103,7 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 	// overwrites the S3 object anyway, and the orphan S3 object is harmless.
 	pinKey := "pins/" + name
 
-	_, err = s.MinioClient.PutObject(r.Context(), s.Bucket, pinKey,
-		bytes.NewReader([]byte(req.StorePath)), int64(len(req.StorePath)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
+	err = s.putSmallObject(r.Context(), pinKey, []byte(req.StorePath), "text/plain")
 	if err != nil {
 		slog.Error("Failed to write pin to S3", "key", pinKey, "error", err)
 		http.Error(w, "failed to write pin to S3: "+err.Error(), http.StatusInternalServerError)

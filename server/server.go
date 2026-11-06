@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -630,9 +629,7 @@ func (s *Service) InitializeBucket(ctx context.Context) error {
 		return fmt.Errorf("uploading nix-cache-info: %w", err)
 	}
 
-	_, err := s.MinioClient.PutObject(ctx, s.Bucket, "nix-cache-info",
-		strings.NewReader(cacheInfo), int64(len(cacheInfo)),
-		minio.PutObjectOptions{ContentType: "text/plain"})
+	err := s.putSmallObject(ctx, "nix-cache-info", []byte(cacheInfo), "text/plain")
 	if err != nil {
 		if isRateLimitError(err) {
 			s.S3RateLimiter.RecordThrottle()
@@ -732,9 +729,7 @@ func (s *Service) uploadLandingPage(ctx context.Context) {
 		return
 	}
 
-	_, err = s.MinioClient.PutObject(ctx, s.Bucket, "index.html",
-		bytes.NewReader([]byte(landingHTML)), int64(len(landingHTML)),
-		minio.PutObjectOptions{ContentType: "text/html; charset=utf-8"})
+	err = s.putSmallObject(ctx, "index.html", []byte(landingHTML), "text/html; charset=utf-8")
 	if err != nil {
 		if isRateLimitError(err) {
 			s.S3RateLimiter.RecordThrottle()
