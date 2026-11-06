@@ -136,3 +136,8 @@ func (s *Service) SetTestHookBeforeProxyGet(f func()) {
 func AbortSucceeded(err error) bool {
 	return abortSucceeded(err)
 }
+
+// EnsureAbortUploadsRule exposes ensureAbortUploadsRule for tests.
+func (s *Service) EnsureAbortUploadsRule(ctx context.Context) {
+	s.ensureAbortUploadsRule(ctx)
+}

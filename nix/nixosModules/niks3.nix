@@ -267,6 +267,8 @@ let
   ++ [
     "--cache-priority"
     (toString cfg.priority)
+    "--abort-incomplete-uploads-days"
+    (toString cfg.abortIncompleteUploadsDays)
   ]
   ++ lib.concatMap (f: [
     "--sign-key-path"
@@ -531,6 +533,18 @@ in
       description = ''
         Priority advertised in nix-cache-info. Lower is preferred by Nix;
         cache.nixos.org uses 40.
+      '';
+    };
+
+    abortIncompleteUploadsDays = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 2;
+      description = ''
+        Install a bucket lifecycle rule that aborts multipart uploads under
+        nar/ after this many days, as a backstop for niks3's own cleanup.
+        Needs s3:GetLifecycleConfiguration and s3:PutLifecycleConfiguration;
+        without them niks3 logs a warning on startup. 0 disables the rule
+        and the warning.
       '';
     };
 

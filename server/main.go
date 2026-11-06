@@ -176,6 +176,23 @@ func validateTLSOptions(opts *options) error {
 	return nil
 }
 
+// registerBucketFlags registers the flags for what the server writes to and
+// serves from the bucket.
+func registerBucketFlags(opts *options) {
+	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
+		"Priority advertised in nix-cache-info. Lower is preferred (cache.nixos.org uses 40)")
+	flag.IntVar(&opts.AbortIncompleteUploadsDays, "abort-incomplete-uploads-days",
+		getEnvOrDefaultInt("NIKS3_ABORT_INCOMPLETE_UPLOADS_DAYS", defaultAbortIncompleteUploadsDays),
+		"Install a bucket lifecycle rule aborting multipart uploads after this many days. 0 disables it")
+	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
+		getEnvOrDefaultBool("NIKS3_ENABLE_READ_PROXY", false),
+		"Serve cache objects by proxying reads from S3 (for private buckets)")
+	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
+		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
+		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
+			"streaming them. Requires --enable-read-proxy. 0 disables")
+}
+
 func parseArgs() (*options, error) {
 	var opts options
 
@@ -241,15 +258,7 @@ func parseArgs() (*options, error) {
 		"CA bundle for native mTLS client cert verification. Subjects are checked against --mtls-bound-subject")
 	flag.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
 		"Maximum uncompressed NAR size accepted for upload (e.g. 2G, 512M). Empty or 0 means unlimited")
-	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
-		"Priority advertised in nix-cache-info. Lower is preferred (cache.nixos.org uses 40)")
-	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
-		getEnvOrDefaultBool("NIKS3_ENABLE_READ_PROXY", false),
-		"Serve cache objects by proxying reads from S3 (for private buckets)")
-	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
-		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
-		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
-			"streaming them. Requires --enable-read-proxy. 0 disables")
+	registerBucketFlags(&opts)
 	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefaultBool("NIKS3_DEBUG", false),
 		"Enable debug logging (may leak sensitive information)")
 
