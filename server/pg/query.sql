@@ -210,13 +210,6 @@ WHERE pc.started_at < sqlc.arg(cutoff)::timestamp;
 DELETE FROM multipart_uploads
 WHERE upload_id = $1;
 
--- name: GetRedundantMultipartUploads :many
--- Upload IDs other pending_closures opened for object_key, used to abort
--- duplicates once one upload of the NAR completes.
-SELECT upload_id
-FROM multipart_uploads
-WHERE object_key = $1 AND upload_id <> $2;
-
 -- name: GetMultipartUpload :one
 SELECT pending_closure_id, object_key, upload_id
 FROM multipart_uploads

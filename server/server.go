@@ -151,8 +151,6 @@ type Service struct {
 	testHookAfterSweepSelect func()
 	// testHookBeforeProxyGet runs between the proxy's Stat and GET.
 	testHookBeforeProxyGet func()
-	// testHookBeforeRedundantAbort runs before peers' uploads are aborted.
-	testHookBeforeRedundantAbort func()
 }
 
 // Close closes the database connection pool.

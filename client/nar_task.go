@@ -2,10 +2,8 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -21,17 +19,12 @@ func (c *Client) uploadNARWithListing(
 		return fmt.Errorf("missing PathInfo for NAR %s", narTask.key)
 	}
 
-	var (
-		listingUpload  errgroup.Group
-		listingStarted atomic.Bool
-	)
+	var listingUpload errgroup.Group
 
 	onListing := func(listing *NarListing) {
 		if lsTask == nil || listing == nil {
 			return
 		}
-
-		listingStarted.Store(true)
 
 		listingUpload.Go(func() error {
 			if err := c.UploadListingToPresignedURL(ctx, lsTask.obj.PresignedURL, listing); err != nil {
@@ -49,17 +42,7 @@ func (c *Client) uploadNARWithListing(
 	listingErr := listingUpload.Wait()
 
 	if err != nil {
-		if !errors.Is(err, ErrUploadSuperseded) {
-			return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
-		}
-
-		slog.Debug("Skipping NAR superseded by concurrent upload", "key", narTask.key)
-
-		// The listing is keyed by store path, and the abort usually cut the
-		// dump short before it produced ours.
-		if lsTask != nil && !listingStarted.Load() {
-			return c.uploadMetadataOnly(ctx, lsTask, pathInfo)
-		}
+		return fmt.Errorf("uploading NAR %s: %w", narTask.key, err)
 	}
 
 	return listingErr //nolint:wrapcheck // wrapped in the task
