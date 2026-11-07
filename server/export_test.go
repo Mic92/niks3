@@ -141,3 +141,8 @@ func AbortSucceeded(err error) bool {
 func (s *Service) EnsureAbortUploadsRule(ctx context.Context) {
 	s.ensureAbortUploadsRule(ctx)
 }
+
+// RetryableCompletionError exposes retryableCompletionError for tests.
+func RetryableCompletionError(err error) bool {
+	return retryableCompletionError(err)
+}

@@ -29,7 +29,45 @@ const (
 	// maxAPIRequestBody bounds small JSON endpoints (complete, request-parts).
 	// Worst case: complete with 10,000 parts (S3 hard max) ≈ 700 kB. 12× headroom.
 	maxAPIRequestBody = 8 << 20
+
+	// completeMultipartMaxRetries bounds the CompleteMultipartUpload retry
+	// loop. With the backoff below that is ~16s of waiting before giving up.
+	completeMultipartMaxRetries = 6
+
+	// completeMultipartRetryBackoff is the initial backoff, doubled each retry.
+	completeMultipartRetryBackoff = 250 * time.Millisecond
 )
+
+// retryableCompletionError reports whether a failed CompleteMultipartUpload
+// can plausibly succeed if it is simply tried again.
+//
+// Only server-side faults qualify. A 4xx is the store's verdict on this
+// request — NoSuchUpload, InvalidPart — and will be the same verdict next
+// time. Throttling is excluded because S3RateLimiter owns that signal, and a
+// retry loop here would race the limiter's own backoff with the caller's
+// request budget.
+func retryableCompletionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	if isRateLimitError(err) {
+		return false
+	}
+
+	// A transport-level failure reaches here without an S3 error code at all;
+	// those are exactly the blips worth another attempt.
+	resp := minio.ToErrorResponse(err)
+	if resp.Code == "" {
+		return true
+	}
+
+	return resp.StatusCode >= http.StatusInternalServerError
+}
 
 // PendingClosureWriteTimeout is one minute plus one S3 call per object at the
 // rate limiter's floor, so a throttled push still gets its response.
@@ -352,15 +390,40 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// Create Core client for multipart operations
 	coreClient := minio.Core{Client: s.MinioClient}
 
-	// Wait for rate limiter
-	if err := s.S3RateLimiter.Wait(r.Context()); err != nil {
-		http.Error(w, fmt.Sprintf("rate limiter context canceled: %v", err), http.StatusServiceUnavailable)
+	// Complete the multipart upload, retrying transient failures with backoff.
+	// A store that answers reads at less than full quorum — Garage with
+	// consistency_mode = "degraded", say — can fail to see parts that are
+	// already durable, and rejects the completion with "No data was uploaded".
+	// The parts are not lost; the replica serving the completion is behind.
+	// Retrying lets it converge instead of failing a push that has already
+	// uploaded every byte — which, because a later push skips objects niks3
+	// believes are cached, nothing would heal.
+	var err error
 
-		return
+	for attempt := 0; ; attempt++ {
+		if waitErr := s.S3RateLimiter.Wait(r.Context()); waitErr != nil {
+			http.Error(w, fmt.Sprintf("rate limiter context canceled: %v", waitErr), http.StatusServiceUnavailable)
+
+			return
+		}
+
+		_, err = coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
+		if attempt >= completeMultipartMaxRetries || !retryableCompletionError(err) {
+			break
+		}
+
+		slog.Warn("CompleteMultipartUpload failed; retrying",
+			"error", err, "object_key", req.ObjectKey, "upload_id", req.UploadID, "attempt", attempt+1)
+
+		select {
+		case <-r.Context().Done():
+			http.Error(w, fmt.Sprintf("request canceled: %v", r.Context().Err()), http.StatusServiceUnavailable)
+
+			return
+		case <-time.After(completeMultipartRetryBackoff << attempt):
+		}
 	}
 
-	// Complete multipart upload
-	_, err := coreClient.CompleteMultipartUpload(r.Context(), s.Bucket, req.ObjectKey, req.UploadID, completeParts, minio.PutObjectOptions{})
 	if err != nil {
 		// The completion may have succeeded despite the error (lost response, or
 		// a retry hitting an already-finalized upload). Accept it if the object
