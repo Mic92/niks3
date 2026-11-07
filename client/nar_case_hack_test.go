@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,5 +74,26 @@ func TestDumpPathCaseHackCollision(t *testing.T) {
 	_, err := client.DumpPathWithListing(&bytes.Buffer{}, root)
 	if err == nil {
 		t.Fatal("expected file name collision")
+	}
+}
+
+// TestCaseHackPathIsRefusedWithoutStrip covers the pusher that does not strip
+// the marker: nix refuses to restore a NAR whose entry names carry it, on
+// every platform and whatever the consumer set use-case-hack to, so
+// serializing one only produces an object no client can use.
+//
+//nolint:paralleltest // flips the useCaseHack global
+func TestCaseHackPathIsRefusedWithoutStrip(t *testing.T) {
+	root := caseHackDir(t, "README", "readme~nix~case~hack~1")
+
+	saved := client.SetUseCaseHack(false)
+	t.Cleanup(func() { client.SetUseCaseHack(saved) })
+
+	if _, err := client.DumpPathWithListing(&bytes.Buffer{}, root); !errors.Is(err, client.ErrCaseHackPath) {
+		t.Errorf("DumpPathWithListing err = %v, want ErrCaseHackPath", err)
+	}
+
+	if _, err := client.GenerateListingOnly(root); !errors.Is(err, client.ErrCaseHackPath) {
+		t.Errorf("GenerateListingOnly err = %v, want ErrCaseHackPath", err)
 	}
 }

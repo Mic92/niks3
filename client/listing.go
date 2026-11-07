@@ -74,6 +74,10 @@ func generateDirectoryListing(path string) (NarListingEntry, error) {
 
 	for _, entry := range entries {
 		name := entry.Name()
+		if err := checkCaseHackName(path, name); err != nil {
+			return NarListingEntry{}, err
+		}
+
 		// Strip case hack suffix on macOS (must match NAR serialization)
 		narName := stripCaseHackSuffix(name)
 

@@ -52,6 +52,32 @@ var (
 	targetEncoded          = encodeStaticString("target")
 )
 
+// ErrCaseHackPath marks a store path that would serialize to a NAR no nix
+// client can restore.
+//
+// Nix refuses to unpack a NAR whose entry names carry the case-collision
+// marker, whatever the consumer's use-case-hack setting:
+//
+//	error: NAR contains invalid file name 'readme~nix~case~hack~1'
+//
+// When use-case-hack is on the marker is stripped during the walk and never
+// reaches the NAR. When it is off — every non-darwin pusher — a store path
+// that picked the names up elsewhere (copied or substituted from a
+// case-insensitive store) is serialized verbatim, and the result is a NAR
+// that every consumer rejects.
+var ErrCaseHackPath = errors.New("path contains case-hack markers; rebuild on a case-sensitive store")
+
+// checkCaseHackName fails the NAR walk on an entry whose name would reach the
+// NAR with the case-collision marker intact. Stripping handles the name when
+// useCaseHack is on, so this only guards the passthrough case.
+func checkCaseHackName(dir, name string) error {
+	if useCaseHack || !strings.Contains(name, caseHackSuffix) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s/%s", ErrCaseHackPath, dir, name)
+}
+
 // stripCaseHackSuffix undoes Nix's macOS case hack: everything from the
 // first marker on is dropped, as in libutil's dumpPath.
 func stripCaseHackSuffix(name string) string {
@@ -393,6 +419,10 @@ func walkDirectory(path, name string) (*narNode, error) {
 
 	for _, entry := range entries {
 		entryName := entry.Name()
+		if err := checkCaseHackName(path, entryName); err != nil {
+			return nil, err
+		}
+
 		narName := stripCaseHackSuffix(entryName)
 		childPath := filepath.Join(path, entryName)
 

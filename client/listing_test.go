@@ -13,10 +13,17 @@ import (
 
 // TestCaseHackSuffix verifies that case hack suffix handling in NAR
 // serialization and listing generation matches nix-store behavior.
-// On macOS, the ~nix~case~hack~ suffix is stripped. On other platforms,
-// it is preserved as-is.
+//
+// Only platforms that strip the suffix (macOS) can serialize such a path at
+// all: elsewhere the name would reach the NAR intact and no nix client would
+// restore it, so the walk refuses instead. TestCaseHackPathIsRefused covers
+// that half.
 func TestCaseHackSuffix(t *testing.T) {
 	t.Parallel()
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("case hack suffixes are only stripped where nix enables use-case-hack by default")
+	}
 
 	// Create temporary directory structure (same input on all platforms)
 	tmpDir := t.TempDir()
@@ -79,22 +86,12 @@ func TestCaseHackSuffix(t *testing.T) {
 		t.Fatalf("Expected 2 entries, got %d", len(entries))
 	}
 
-	// Determine expected name based on platform
-	expectedName := "README~nix~case~hack~"
-	unexpectedName := "README"
-
-	if runtime.GOOS == "darwin" {
-		expectedName = "README"
-		unexpectedName = "README~nix~case~hack~"
+	if _, ok := entries["README"]; !ok {
+		t.Error("Expected 'README' entry")
 	}
 
-	// Verify case hack handling matches platform
-	if _, ok := entries[expectedName]; !ok {
-		t.Errorf("Expected '%s' entry", expectedName)
-	}
-
-	if _, ok := entries[unexpectedName]; ok {
-		t.Errorf("Should not have '%s' entry", unexpectedName)
+	if _, ok := entries["README~nix~case~hack~"]; ok {
+		t.Error("Should not have 'README~nix~case~hack~' entry")
 	}
 
 	// Normal file should be unchanged on all platforms
