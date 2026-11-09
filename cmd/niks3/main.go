@@ -50,8 +50,8 @@ func printPushHelp() {
 	fmt.Fprintf(os.Stderr, "  --batch-size int\n        With --stdin: max paths per push (default: %d)\n", client.DefaultStreamBatchSize)
 	fmt.Fprintf(os.Stderr, "  --parallel-pushes int\n        With --stdin: pushes running at once, each with up to\n        --max-concurrent-uploads NAR uploads (default: %d)\n", client.DefaultStreamParallel)
 	fmt.Fprintln(os.Stderr, "  --retry-timeout duration")
-	fmt.Fprintln(os.Stderr, "        With --stdin: keep retrying a failing request for this long, e.g. 2m,")
-	fmt.Fprintln(os.Stderr, "        to outlast a server restart (default: a few seconds)")
+	fmt.Fprintln(os.Stderr, "        Keep retrying a failing request for this long, e.g. 2m, to outlast")
+	fmt.Fprintln(os.Stderr, "        a server restart or a lagging S3 replica (default: a few seconds)")
 	fmt.Fprintln(os.Stderr, "  --server-url string")
 	fmt.Fprintln(os.Stderr, "        Server URL (can also use NIKS3_SERVER_URL env var)")
 	fmt.Fprintln(os.Stderr, cmdutil.AuthTokenHelp)
@@ -114,7 +114,7 @@ func run() error {
 		fromStdin := pushCmd.Bool("stdin", false, "Stream store paths from stdin")
 		batchSize := pushCmd.Int("batch-size", client.DefaultStreamBatchSize, "Max paths per push with --stdin")
 		parallelPushes := pushCmd.Int("parallel-pushes", client.DefaultStreamParallel, "Concurrent pushes with --stdin")
-		retryTimeout := pushCmd.Duration("retry-timeout", 0, "Keep retrying a failing request for this long with --stdin")
+		retryTimeout := pushCmd.Duration("retry-timeout", 0, "Keep retrying a failing request for this long")
 		tf := cmdutil.AddTLSFlags(pushCmd)
 
 		ts, err := cmdutil.ParseCommand(pushCmd, cf, tf, os.Args[2:], printPushHelp)
@@ -140,7 +140,7 @@ func run() error {
 			return errors.New("--pin requires exactly one store path")
 		}
 
-		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *verifyS3Integrity, *pinName, *cf.Debug, tf)
+		return pushCommand(*cf.ServerURL, ts, paths, *maxConcurrent, *retryTimeout, *verifyS3Integrity, *pinName, *cf.Debug, tf)
 
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
@@ -203,7 +203,7 @@ func run() error {
 	}
 }
 
-func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, verifyS3Integrity bool, pinName string, debug bool, tf cmdutil.TLSFlags) error {
+func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxConcurrent int, retryTimeout time.Duration, verifyS3Integrity bool, pinName string, debug bool, tf cmdutil.TLSFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -218,6 +218,7 @@ func pushCommand(serverURL string, ts client.TokenSource, paths []string, maxCon
 
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
+	c.Retry.Timeout = retryTimeout
 
 	defer c.WaitRegistrations()
 
