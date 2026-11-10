@@ -210,6 +210,8 @@ type PathInfo struct {
 	Deriver    *string         `json:"deriver,omitempty"`
 	Signatures []string        `json:"signatures,omitempty"`
 	CA         *ContentAddress `json:"ca,omitempty"`
+	// Ultimate is true for paths built by this store rather than substituted.
+	Ultimate bool `json:"ultimate,omitempty"`
 }
 
 // RealisationInfo represents Nix realisation information for CA derivations.

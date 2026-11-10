@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mic92/niks3/server/signing"
 	minio "github.com/minio/minio-go/v7"
 )
 
@@ -280,6 +281,9 @@ func parseArgs() (*options, error) {
 	}
 
 	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
+	flag.Var((*stringSliceFlag)(&opts.UpstreamPublicKeys), "upstream-public-key",
+		"Public key (name:base64) besides the server's own whose signed paths clients may push. "+
+			"When set, clients refuse paths that are neither built locally, content-addressed, nor signed by a server or upstream key. Repeat for multiple keys")
 	flag.StringVar(&opts.SignProgram, "sign-program", getEnvOrDefault("NIKS3_SIGN_PROGRAM", ""),
 		"Executable for signing narinfo batches (requires --sign-public-key)")
 	flag.StringVar(&opts.SignPublicKey, "sign-public-key", getEnvOrDefault("NIKS3_SIGN_PUBLIC_KEY", ""),
@@ -298,6 +302,10 @@ func parseArgs() (*options, error) {
 
 	if opts.S3BucketLookup, err = parseBucketLookup(s3BucketLookup); err != nil {
 		return nil, err
+	}
+
+	if _, err := signing.ParsePublicKeys(opts.UpstreamPublicKeys); err != nil {
+		return nil, fmt.Errorf("--upstream-public-key: %w", err)
 	}
 
 	if opts.MaxNarSize, err = ParseSize(maxNarSize); err != nil {

@@ -32,6 +32,7 @@ func TestCacheConfigHandler(t *testing.T) {
 		name     string
 		cacheURL string
 		keys     []signing.Signer
+		upstream []string
 		query    string
 		want     api.CacheConfig
 	}{
@@ -69,6 +70,18 @@ func TestCacheConfigHandler(t *testing.T) {
 			},
 		},
 		{
+			name:     "upstream keys advertised",
+			cacheURL: "https://cache.example.com",
+			keys:     []signing.Signer{key},
+			upstream: []string{"upstream-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+			want: api.CacheConfig{
+				SubstituterURL:     "https://cache.example.com",
+				PublicKeys:         []string{testSigningPublic},
+				Pushes:             true,
+				UpstreamPublicKeys: []string{"upstream-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+			},
+		},
+		{
 			name:     "issuer requested but no OIDC validator",
 			cacheURL: "https://cache.example.com",
 			keys:     []signing.Signer{key},
@@ -89,6 +102,8 @@ func TestCacheConfigHandler(t *testing.T) {
 			s := &server.Service{
 				CacheURL:    tt.cacheURL,
 				SigningKeys: tt.keys,
+
+				UpstreamPublicKeys: tt.upstream,
 				// OIDCValidator: nil — issuer→audience wiring is covered by
 				// oidc.TestAudienceForIssuer; constructing a Validator
 				// requires live discovery.

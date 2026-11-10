@@ -93,6 +93,12 @@ type CacheConfig struct {
 	// matching provider is configured.
 	OIDCAudience string `json:"oidc_audience,omitempty"`
 
+	// UpstreamPublicKeys lists keys besides PublicKeys whose signed paths the
+	// server accepts. When non-empty, clients refuse to push a path that is
+	// neither ultimate, content-addressed, nor signed by a key in
+	// PublicKeys or UpstreamPublicKeys. Older servers omit it.
+	UpstreamPublicKeys []string `json:"upstream_public_keys,omitempty"`
+
 	// MaxNarSize is the maximum uncompressed NAR size in bytes the server
 	// accepts. Clients skip closures containing larger paths. 0 means unlimited.
 	MaxNarSize uint64 `json:"max_nar_size,omitempty"`
