@@ -304,7 +304,7 @@ func parseArgs() (*options, error) {
 		return nil, err
 	}
 
-	if _, err := signing.ParsePublicKeys(opts.UpstreamPublicKeys); err != nil {
+	if err := signing.ValidatePublicKeys(opts.UpstreamPublicKeys); err != nil {
 		return nil, fmt.Errorf("--upstream-public-key: %w", err)
 	}
 

@@ -1,12 +1,14 @@
 package client
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/Mic92/niks3/api"
-	"github.com/Mic92/niks3/server/signing"
 )
 
 // untrustedPaths returns the paths the server's signing policy refuses: when
@@ -19,7 +21,7 @@ func untrustedPaths(cfg *api.CacheConfig, pathInfos map[string]*PathInfo) ([]str
 		return nil, nil
 	}
 
-	keys, err := signing.ParsePublicKeys(slices.Concat(cfg.PublicKeys, cfg.UpstreamPublicKeys))
+	keys, err := parsePublicKeys(slices.Concat(cfg.PublicKeys, cfg.UpstreamPublicKeys))
 	if err != nil {
 		return nil, fmt.Errorf("parsing server trust policy: %w", err)
 	}
@@ -31,22 +33,12 @@ func untrustedPaths(cfg *api.CacheConfig, pathInfos map[string]*PathInfo) ([]str
 			continue
 		}
 
-		narHash, err := ConvertHashToNix32(info.NarHash.String())
+		fingerprint, err := narinfoFingerprint(path, info)
 		if err != nil {
-			return nil, fmt.Errorf("converting NAR hash of %s: %w", path, err)
+			return nil, err
 		}
 
-		ok, err := keys.Verifies(&signing.NarInfo{
-			StorePath:  path,
-			NarHash:    narHash,
-			NarSize:    info.NarSize,
-			References: info.References,
-		}, info.Signatures)
-		if err != nil {
-			return nil, fmt.Errorf("verifying %s: %w", path, err)
-		}
-
-		if !ok {
+		if !signedByAny(keys, fingerprint, info.Signatures) {
 			untrusted = append(untrusted, path)
 		}
 	}
@@ -54,6 +46,56 @@ func untrustedPaths(cfg *api.CacheConfig, pathInfos map[string]*PathInfo) ([]str
 	slices.Sort(untrusted)
 
 	return untrusted, nil
+}
+
+func parsePublicKeys(keys []string) (map[string]ed25519.PublicKey, error) {
+	parsed := make(map[string]ed25519.PublicKey, len(keys))
+
+	for _, key := range keys {
+		name, encoded, ok := strings.Cut(key, ":")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("public key %q is not name:base64", key)
+		}
+
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("public key %s is not a base64 Ed25519 key", name)
+		}
+
+		parsed[name] = raw
+	}
+
+	return parsed, nil
+}
+
+// narinfoFingerprint is the message Nix signs: 1;path;narHash;narSize;refs.
+func narinfoFingerprint(path string, info *PathInfo) ([]byte, error) {
+	narHash, err := ConvertHashToNix32(info.NarHash.String())
+	if err != nil {
+		return nil, fmt.Errorf("converting NAR hash of %s: %w", path, err)
+	}
+
+	refs := slices.Sorted(slices.Values(info.References))
+
+	return []byte("1;" + path + ";" + narHash + ";" + strconv.FormatUint(info.NarSize, 10) + ";" + strings.Join(refs, ",")), nil
+}
+
+func signedByAny(keys map[string]ed25519.PublicKey, fingerprint []byte, signatures []string) bool {
+	for _, signature := range signatures {
+		name, encoded, _ := strings.Cut(signature, ":")
+
+		key, ok := keys[name]
+		if !ok {
+			continue
+		}
+
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err == nil && ed25519.Verify(key, fingerprint, raw) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // UntrustedPathsError reports closure paths the server's signing policy refuses.

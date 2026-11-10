@@ -7,7 +7,7 @@ import (
 	"github.com/Mic92/niks3/server/signing"
 )
 
-func TestParsePublicKeysRejectsMalformed(t *testing.T) {
+func TestValidatePublicKeys(t *testing.T) {
 	t.Parallel()
 
 	for _, key := range []string{
@@ -16,12 +16,12 @@ func TestParsePublicKeysRejectsMalformed(t *testing.T) {
 		"short-test-1:AAAA",
 		"bad-test-1:!!!",
 	} {
-		if _, err := signing.ParsePublicKeys([]string{key}); err == nil {
-			t.Errorf("ParsePublicKeys(%q) succeeded", key)
+		if err := signing.ValidatePublicKeys([]string{key}); err == nil {
+			t.Errorf("ValidatePublicKeys(%q) succeeded", key)
 		}
 	}
 
-	if _, err := signing.ParsePublicKeys([]string{"good-test-1:" + strings.Repeat("A", 43) + "="}); err != nil {
+	if err := signing.ValidatePublicKeys([]string{"good-test-1:" + strings.Repeat("A", 43) + "="}); err != nil {
 		t.Errorf("valid key: %v", err)
 	}
 }

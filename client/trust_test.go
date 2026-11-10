@@ -5,11 +5,12 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/client"
-	"github.com/Mic92/niks3/server/signing"
 )
 
 type testKey struct {
@@ -35,12 +36,7 @@ func (k testKey) sign(t *testing.T, info *client.PathInfo, as string) string {
 		t.Fatal(err)
 	}
 
-	fingerprint, err := signing.GenerateFingerprint(&signing.NarInfo{
-		StorePath: info.Path, NarHash: narHash, NarSize: info.NarSize, References: info.References,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fingerprint := []byte("1;" + info.Path + ";" + narHash + ";" + strconv.FormatUint(info.NarSize, 10) + ";" + strings.Join(info.References, ","))
 
 	return as + ":" + base64.StdEncoding.EncodeToString(ed25519.Sign(k.priv, fingerprint))
 }
