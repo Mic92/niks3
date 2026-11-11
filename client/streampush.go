@@ -78,8 +78,33 @@ func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher
 	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize, testHookTaken: func(string) {}}
 }
 
-// Run returns after EOF on `in`, or once ctx is canceled, when every path it
-// has read was reported on `out`.
+type streamJob struct {
+	id     uint64
+	paths  []string
+	whole  bool   // a request line: all or nothing
+	reject string // why the line cannot be pushed
+}
+
+func parseStreamRequest(line string) streamJob {
+	var req StreamRequest
+	if err := json.Unmarshal([]byte(line), &req); err != nil || len(req.Paths) == 0 {
+		return streamJob{paths: []string{line}, reject: "bad request line"}
+	}
+
+	return streamJob{id: req.ID, paths: req.Paths, whole: true}
+}
+
+func (j streamJob) failed(msg string) []StreamResult {
+	results := make([]StreamResult, 0, len(j.paths))
+	for _, p := range j.paths {
+		results = append(results, StreamResult{ID: j.id, Path: p, Status: streamStatusError, Message: msg})
+	}
+
+	return results
+}
+
+// Run returns after EOF on `in`, or once ctx is canceled, when every line it
+// has taken was answered on `out`. Once canceled it starts no push.
 func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	lines := make(chan string, s.batchSize*s.parallel)
 	readErr := make(chan error, 1)
@@ -91,8 +116,15 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 		sc.Buffer(nil, maxRequestLine)
 
 		for sc.Scan() {
-			if p := strings.TrimSpace(sc.Text()); p != "" {
-				lines <- p
+			p := strings.TrimSpace(sc.Text())
+			if p == "" {
+				continue
+			}
+
+			select {
+			case lines <- p:
+			case <-ctx.Done():
+				return
 			}
 		}
 
@@ -105,116 +137,28 @@ func (s *StreamPusher) Run(ctx context.Context, in io.Reader, out io.Writer) err
 	)
 
 	enc := json.NewEncoder(out)
-	report := func(results []StreamResult) {
-		outMu.Lock()
-		defer outMu.Unlock()
+	jobs := make(chan streamJob)
 
-		for _, r := range results {
-			if err := enc.Encode(r); err != nil {
-				slog.Error("Failed to write result", "error", err)
-			}
-		}
-	}
-
-	slots := make(chan struct{}, s.parallel)
-
-	// start runs job on a slot the caller already holds.
-	start := func(job func() []StreamResult) {
+	for range s.parallel {
 		wg.Go(func() {
-			defer func() { <-slots }()
+			for j := range jobs {
+				results := s.answer(ctx, j)
 
-			report(job())
+				outMu.Lock()
+
+				for _, r := range results {
+					if err := enc.Encode(r); err != nil {
+						slog.Error("Failed to write result", "error", err)
+					}
+				}
+
+				outMu.Unlock()
+			}
 		})
 	}
 
-	// submit waits for a slot, then runs job.
-	submit := func(job func() []StreamResult) {
-		slots <- struct{}{}
-
-		start(job)
-	}
-
-	batch := make([]string, 0, s.batchSize)
-	takeBatch := func() []string {
-		b := batch
-		batch = make([]string, 0, s.batchSize)
-
-		return b
-	}
-
-	flush := func() {
-		if len(batch) > 0 {
-			b := takeBatch()
-
-			submit(func() []StreamResult { return s.upload(ctx, b) })
-		}
-	}
-
-	take := func(line string) {
-		defer s.testHookTaken(line)
-
-		if strings.HasPrefix(line, "{") {
-			flush()
-			submit(func() []StreamResult { return s.uploadRequest(ctx, line) })
-
-			return
-		}
-
-		batch = append(batch, line)
-		if len(batch) == s.batchSize {
-			flush()
-		}
-	}
-
-loop:
-	for {
-		if len(batch) == 0 {
-			select {
-			case line, ok := <-lines:
-				if !ok {
-					break loop
-				}
-
-				take(line)
-			case <-ctx.Done():
-				break loop
-			}
-
-			continue
-		}
-
-		// Input that is already waiting joins the batch first.
-		select {
-		case line, ok := <-lines:
-			if !ok {
-				break loop
-			}
-
-			take(line)
-
-			continue
-		default:
-		}
-
-		// Keep growing the batch until a slot is free, or busy pushes split the input.
-		select {
-		case line, ok := <-lines:
-			if !ok {
-				break loop
-			}
-
-			take(line)
-		case <-ctx.Done():
-			break loop
-		case slots <- struct{}{}:
-			b := takeBatch()
-
-			start(func() []StreamResult { return s.upload(ctx, b) })
-		}
-	}
-
-	flush()
-
+	s.feed(ctx, lines, jobs)
+	close(jobs)
 	wg.Wait()
 
 	// The reader may be stuck in a read that nobody ends.
@@ -227,6 +171,81 @@ loop:
 	}
 
 	return nil
+}
+
+// Paths gather into one batch until a push is idle to receive it.
+func (s *StreamPusher) feed(ctx context.Context, lines <-chan string, jobs chan<- streamJob) {
+	var batch []string
+
+	flush := func() {
+		if len(batch) > 0 {
+			jobs <- streamJob{paths: batch}
+			batch = nil
+		}
+	}
+	defer flush()
+
+	take := func(line string) {
+		defer s.testHookTaken(line)
+
+		if strings.HasPrefix(line, "{") {
+			flush()
+			jobs <- parseStreamRequest(line)
+
+			return
+		}
+
+		batch = append(batch, line)
+		if len(batch) == s.batchSize {
+			flush()
+		}
+	}
+
+	for {
+		// Input that is already waiting joins the batch first.
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return
+			}
+
+			take(line)
+
+			continue
+		default:
+		}
+
+		var idle chan<- streamJob
+		if len(batch) > 0 {
+			idle = jobs
+		}
+
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return
+			}
+
+			take(line)
+		case idle <- streamJob{paths: batch}:
+			batch = nil
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *StreamPusher) answer(ctx context.Context, j streamJob) []StreamResult {
+	switch {
+	case j.reject != "":
+		return j.failed(j.reject)
+	case ctx.Err() != nil:
+		return j.failed(ctx.Err().Error())
+	case j.whole:
+		return s.uploadRequest(ctx, j)
+	default:
+		return s.upload(ctx, j.paths)
+	}
 }
 
 func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult {
@@ -245,23 +264,16 @@ func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult 
 }
 
 // All or nothing: the outputs of one build must not be published partially.
-func (s *StreamPusher) uploadRequest(ctx context.Context, line string) []StreamResult {
-	var req StreamRequest
-	if err := json.Unmarshal([]byte(line), &req); err != nil || len(req.Paths) == 0 {
-		return []StreamResult{{ID: 0, Path: line, Status: streamStatusError, Message: "bad request line"}}
+func (s *StreamPusher) uploadRequest(ctx context.Context, j streamJob) []StreamResult {
+	if _, err := s.push(ctx, j.paths); err != nil {
+		slog.Error("Upload failed", "error", err, "count", len(j.paths))
+
+		return j.failed(err.Error())
 	}
 
-	status, msg := streamStatusOK, ""
-
-	if _, err := s.push(ctx, req.Paths); err != nil {
-		slog.Error("Upload failed", "error", err, "count", len(req.Paths))
-
-		status, msg = streamStatusError, err.Error()
-	}
-
-	results := make([]StreamResult, 0, len(req.Paths))
-	for _, p := range req.Paths {
-		results = append(results, s.result(req.ID, p, status, msg))
+	results := make([]StreamResult, 0, len(j.paths))
+	for _, p := range j.paths {
+		results = append(results, s.result(j.id, p, streamStatusOK, ""))
 	}
 
 	return results

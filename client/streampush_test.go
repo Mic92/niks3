@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Mic92/niks3/client"
@@ -473,6 +476,81 @@ func TestClientSignaturesByStorePath(t *testing.T) {
 	if got := c.Signatures("/nix/store/h2-b"); got != nil {
 		t.Errorf("unsigned path: %v", got)
 	}
+}
+
+// A driver waits for one answer per line, also after a signal.
+func TestStreamPushAnswersEveryLineWhenCanceled(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+
+		var pushes, late atomic.Int32
+
+		push := func(ctx context.Context, paths []string) ([]string, error) {
+			pushes.Add(1)
+
+			if ctx.Err() != nil {
+				late.Add(1)
+			}
+
+			<-ctx.Done()
+
+			return paths, ctx.Err()
+		}
+
+		inR, inW := io.Pipe()
+		defer inW.Close()
+
+		var out bytes.Buffer
+
+		done := make(chan error, 1)
+
+		go func() { done <- client.NewStreamPusher(push, 1, 2).Run(ctx, inR, &out) }()
+
+		// a and b are being pushed, the request waits, e is read but not taken.
+		go func() {
+			_, _ = io.WriteString(inW, "/nix/store/a\n/nix/store/b\n"+
+				`{"id":7,"paths":["/nix/store/c","/nix/store/d"]}`+"\n/nix/store/e\n")
+		}()
+
+		synctest.Wait()
+
+		if n := pushes.Load(); n != 1 {
+			t.Fatalf("%d pushes in flight, want 1", n)
+		}
+
+		cancel()
+
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run: %v, want context.Canceled", err)
+		}
+
+		if n := late.Load(); n != 0 {
+			t.Errorf("%d pushes started after the cancellation", n)
+		}
+
+		got := map[string]uint64{}
+
+		for line := range strings.Lines(out.String()) {
+			var r result
+
+			if err := json.Unmarshal([]byte(line), &r); err != nil {
+				t.Fatalf("bad output line %q: %v", line, err)
+			}
+
+			if _, dup := got[r.Path]; dup || r.Status != "error" {
+				t.Errorf("%s: status %s, answered twice: %v", r.Path, r.Status, dup)
+			}
+
+			got[r.Path] = r.ID
+		}
+
+		want := map[string]uint64{"/nix/store/a": 0, "/nix/store/b": 0, "/nix/store/c": 7, "/nix/store/d": 7, "/nix/store/e": 0}
+		if !maps.Equal(got, want) {
+			t.Errorf("answers by request ID = %v, want %v", got, want)
+		}
+	})
 }
 
 // The caller keeps stdin open for the life of the process, so a signal has to end Run.
