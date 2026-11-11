@@ -88,13 +88,16 @@ let
               boundClaims = lib.mkOption {
                 type = lib.types.attrsOf (lib.types.listOf lib.types.str);
                 default = { };
+                description = "Claims that must all match for this rule. Values may use the globs * and ?.";
               };
               boundSubject = lib.mkOption {
                 type = lib.types.listOf lib.types.str;
                 default = [ ];
+                description = "If set, the sub claim must match one of these patterns. Patterns may use the globs * and ?.";
               };
               scopes = lib.mkOption {
                 type = lib.types.nonEmptyListOf scopeType;
+                description = "Scopes this rule grants when it matches.";
               };
               pins = lib.mkOption {
                 type = lib.types.listOf lib.types.str;
