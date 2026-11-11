@@ -62,8 +62,6 @@ type StreamPusher struct {
 	Signatures func(path string) []string
 	// Skipped, if set, tells why a pushed path was left out, or "".
 	Skipped func(path string) string
-	// testHookTaken runs once Run has taken a line.
-	testHookTaken func(line string)
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -75,7 +73,7 @@ func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher
 		batchSize = DefaultStreamBatchSize
 	}
 
-	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize, testHookTaken: func(string) {}}
+	return &StreamPusher{push: push, parallel: parallel, batchSize: batchSize}
 }
 
 type streamJob struct {
@@ -186,8 +184,6 @@ func (s *StreamPusher) feed(ctx context.Context, lines <-chan string, jobs chan<
 	defer flush()
 
 	take := func(line string) {
-		defer s.testHookTaken(line)
-
 		if strings.HasPrefix(line, "{") {
 			flush()
 			jobs <- parseStreamRequest(line)

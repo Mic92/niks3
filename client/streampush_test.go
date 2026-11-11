@@ -139,95 +139,69 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 func TestStreamPushBatchesUnderLoad(t *testing.T) {
 	t.Parallel()
 
-	// The hook sequences the test: sleeping left the order to the scheduler.
-	waitTaken := func(t *testing.T, taken <-chan string, want string) bool {
-		t.Helper()
-
-		select {
-		case got := <-taken:
-			if got != want {
-				t.Errorf("took %s, want %s", got, want)
-			}
-
-			return got == want
-		case <-time.After(testwait.Hung):
-			t.Errorf("%s was never taken: the batch was fixed while the push was busy", want)
-
-			return false
-		}
-	}
-
 	for _, oneAtATime := range []bool{false, true} {
 		t.Run(fmt.Sprintf("oneAtATime=%v", oneAtATime), func(t *testing.T) {
 			t.Parallel()
 
-			started := make(chan struct{})
-			release := make(chan struct{})
-
-			var (
-				mu      sync.Mutex
-				batches [][]string
-			)
-
-			push := func(_ context.Context, paths []string) ([]string, error) {
-				mu.Lock()
-
-				batches = append(batches, slices.Clone(paths))
-				first := len(batches) == 1
-
-				mu.Unlock()
-
-				if first {
-					close(started)
-					<-release
-				}
-
-				return paths, nil
-			}
-
-			taken := make(chan string, 4)
-
-			s := client.NewStreamPusher(push, 1, 10)
-			s.SetTestHookTaken(func(line string) { taken <- line })
-
-			results := runPusher(t, s, func(w io.Writer) {
-				defer close(release)
-
-				_, _ = io.WriteString(w, "/nix/store/first\n")
-
-				if !waitTaken(t, taken, "/nix/store/first") {
-					return
-				}
-
-				<-started
-
-				lines := []string{"/nix/store/x", "/nix/store/y", "/nix/store/z"}
-				if !oneAtATime {
-					_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
-				}
-
-				for _, p := range lines {
-					if oneAtATime {
-						_, _ = io.WriteString(w, p+"\n")
-					}
-
-					if !waitTaken(t, taken, p) {
-						return
-					}
-				}
-			})
-
-			if len(results) != 4 {
-				t.Fatalf("got %d results, want 4", len(results))
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-
-			if len(batches) != 2 || len(batches[1]) != 3 {
-				t.Errorf("batches = %v, want [first] then [x y z]", batches)
-			}
+			synctest.Test(t, func(t *testing.T) { testBatchesUnderLoad(t, oneAtATime) })
 		})
+	}
+}
+
+func testBatchesUnderLoad(t *testing.T, oneAtATime bool) {
+	t.Helper()
+
+	release := make(chan struct{})
+
+	var batches [][]string
+
+	push := func(ctx context.Context, paths []string) ([]string, error) {
+		batches = append(batches, slices.Clone(paths))
+		if len(batches) == 1 {
+			<-release
+		}
+
+		return paths, ctx.Err()
+	}
+
+	inR, inW := io.Pipe()
+	done := make(chan error, 1)
+
+	var out bytes.Buffer
+
+	go func() { done <- client.NewStreamPusher(push, 1, 10).Run(t.Context(), inR, &out) }()
+
+	write := func(s string) {
+		_, _ = io.WriteString(inW, s)
+
+		synctest.Wait()
+	}
+
+	write("/nix/store/first\n")
+
+	lines := []string{"/nix/store/x\n", "/nix/store/y\n", "/nix/store/z\n"}
+	if !oneAtATime {
+		lines = []string{strings.Join(lines, "")}
+	}
+
+	for _, l := range lines {
+		write(l)
+	}
+
+	close(release)
+
+	_ = inW.Close()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	if n := strings.Count(out.String(), "\n"); n != 4 {
+		t.Errorf("got %d results, want 4", n)
+	}
+
+	if len(batches) != 2 || len(batches[1]) != 3 {
+		t.Errorf("batches = %v, want [first] then [x y z]", batches)
 	}
 }
 

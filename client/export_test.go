@@ -101,8 +101,3 @@ func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj
 func (c *Client) SetRegistrationTimeout(d time.Duration) {
 	c.registrationTimeout = d
 }
-
-// SetTestHookTaken makes Run call f once it has taken line.
-func (s *StreamPusher) SetTestHookTaken(f func(line string)) {
-	s.testHookTaken = f
-}
