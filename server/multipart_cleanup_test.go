@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -22,7 +23,7 @@ func TestMultipartCleanup(t *testing.T) {
 	service := createTestService(t)
 	defer service.Close()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	// Create a pending closure with multipart upload
@@ -222,7 +223,7 @@ func TestPendingCleanupUsesOneCutoff(t *testing.T) {
 		return next.RoundTrip(r)
 	})
 
-	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cleanupCtx, cancel := context.WithTimeout(ctx, testwait.Hung)
 	defer cancel()
 
 	w := httptest.NewRecorder()

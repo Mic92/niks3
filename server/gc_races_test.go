@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/minio/minio-go/v7"
@@ -315,7 +316,7 @@ func TestCreatePendingClosureVerifyS3FailureReleasesConnection(t *testing.T) {
 
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Hung):
 			t.Errorf("Pool.Close() hangs: a connection with an open transaction was never released")
 		}
 	}()
@@ -536,7 +537,7 @@ func TestSweepSkipsRowsLockedByPush(t *testing.T) {
 		if st.State != "succeeded" {
 			t.Fatalf("GC failed: %s", st.Error)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		ok(t, tx.Commit(ctx))
 		<-done
 		t.Fatal("the sweep waits for a row a push holds instead of skipping it")
@@ -695,7 +696,7 @@ func TestPushWaitsForSweepHoldingRow(t *testing.T) {
 		if code != http.StatusOK {
 			t.Errorf("status=%d", code)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("push still blocked after the sweep committed")
 	}
 }
@@ -705,7 +706,7 @@ func TestPushWaitsForSweepHoldingRow(t *testing.T) {
 func waitForLockWaiter(t *testing.T, service *server.Service) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Hung)
 
 	for {
 		var waiting int
@@ -785,7 +786,7 @@ func TestCommitRacingPendingCleanupKeepsObjects(t *testing.T) {
 		if st.State != "succeeded" {
 			t.Fatalf("GC failed: %s", st.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Hung):
 		ok(t, holder.Rollback(ctx))
 		t.Fatal("the cleanup waits for a closure being committed instead of skipping it")
 	}

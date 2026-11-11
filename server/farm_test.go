@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -68,18 +69,18 @@ func (l *leadStream) next() api.LeadStatus {
 		}
 
 		return st
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		l.t.Fatal("timeout waiting for lead status")
 	}
 
 	return api.LeadStatus{}
 }
 
-// until skips heartbeats until the stream says lead, for at most ten seconds.
+// until skips heartbeats until the stream says lead.
 func (l *leadStream) until(lead bool) api.LeadStatus {
 	l.t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Hung)
 
 	for time.Now().Before(deadline) {
 		if st := l.next(); st.Lead == lead {
@@ -313,7 +314,7 @@ func TestLeadEndsOnShutdown(t *testing.T) {
 
 	select {
 	case <-a.done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("stream survived shutdown")
 	}
 }

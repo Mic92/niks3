@@ -24,6 +24,7 @@ pkgs.buildGoModule {
       common.srcs.hook
       common.srcs.ratelimit
       common.srcs.server
+      common.srcs.testwait
       common.srcs.cmd-niks3
       common.srcs.cmd-niks3-server
       common.srcs.cmd-niks3-hook

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 func TestUploadMultipart_PartsInParallel(t *testing.T) {
@@ -143,7 +144,7 @@ func TestUploadMultipart_ReturnsAfterDroppedBody(t *testing.T) {
 		if err != nil {
 			t.Fatalf("upload: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("the upload did not return after the dropped body")
 	}
 }

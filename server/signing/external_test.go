@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server/signing"
 )
 
@@ -277,7 +278,7 @@ wait "$child"
 		done <- err
 	}()
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testwait.Hung)
 	var pid int
 	for pid == 0 {
 		data, err := os.ReadFile(program + ".pid")

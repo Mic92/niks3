@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/pg"
@@ -49,7 +49,7 @@ func createTestService(tb testing.TB) *server.Service {
 
 	connectionString := createTestDatabase(tb)
 
-	ctx, cancel := context.WithTimeout(tb.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(tb.Context(), testwait.Hung)
 	defer cancel()
 
 	pool, err := pg.Connect(ctx, connectionString)
@@ -62,7 +62,7 @@ func createTestService(tb testing.TB) *server.Service {
 
 	// Waiting for the lock must not use up the creation budget.
 	testBucketMu.Lock()
-	bucketCtx, bucketCancel := context.WithTimeout(tb.Context(), 10*time.Second)
+	bucketCtx, bucketCancel := context.WithTimeout(tb.Context(), testwait.Hung)
 	err = minioClient.MakeBucket(bucketCtx, bucketName, minio.MakeBucketOptions{})
 	bucketCancel()
 	testBucketMu.Unlock()
@@ -199,7 +199,7 @@ func testRequest(t *testing.T, req *TestRequest) *httptest.ResponseRecorder {
 
 	rr := httptest.NewRecorder()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, req.method, req.path, bytes.NewBuffer(req.body))

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
@@ -46,7 +47,7 @@ func TestRegisterUploadedObject_BoundedAgainstSilentServer(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("WaitRegistrations did not return: registrations against a silent server are unbounded")
 	}
 }

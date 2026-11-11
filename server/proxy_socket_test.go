@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
 )
@@ -43,9 +44,9 @@ func TestProxyHeadersOnlyTrustedOnSocket(t *testing.T) {
 		done <- server.ServeProxySocketForTest(ctx, mux, tcp, unixLn, "X-SSL-Client-Verify", "X-SSL-Client-Dn")
 	}()
 
-	tcpClient := &http.Client{Timeout: 5 * time.Second}
+	tcpClient := &http.Client{Timeout: testwait.Hung}
 	unixClient := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: testwait.Hung,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
@@ -92,7 +93,7 @@ func TestProxyHeadersOnlyTrustedOnSocket(t *testing.T) {
 	select {
 	case err := <-done:
 		ok(t, err)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("servers did not stop")
 	}
 }

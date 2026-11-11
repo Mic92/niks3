@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server"
 	"github.com/klauspost/compress/zstd"
@@ -523,7 +524,7 @@ func TestReadProxyConditionalGet(t *testing.T) {
 	}
 
 	// Conditional GET with matching ETag → 304
-	ctx2, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx2, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, ts.URL+"/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", nil)

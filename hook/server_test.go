@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/hook"
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 // TestServerClientIntegration tests the full server+client flow: multiple
@@ -255,7 +256,7 @@ func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("Serve did not return while a client held an idle connection")
 	}
 }

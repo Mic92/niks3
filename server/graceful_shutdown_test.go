@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 )
 
@@ -71,7 +72,7 @@ func TestGracefulShutdownDrainsInflight(t *testing.T) {
 	case <-requestStarted:
 	case body := <-respCh:
 		t.Fatalf("request did not reach handler: %q", body)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("request never reached handler")
 	}
 
@@ -88,7 +89,7 @@ func TestGracefulShutdownDrainsInflight(t *testing.T) {
 		if body != "done" {
 			t.Fatalf("in-flight request was not drained cleanly, got %q", body)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("in-flight request did not complete")
 	}
 

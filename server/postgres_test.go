@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 var (
@@ -87,8 +89,7 @@ func startPostgresServer(ctx context.Context) (*postgresServer, error) {
 		}
 	}()
 
-	// A loaded builder has taken five seconds.
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline) && ctx.Err() == nil; {
+	for deadline := time.Now().Add(testwait.Hung); time.Now().Before(deadline) && ctx.Err() == nil; {
 		waitForPostgres := exec.CommandContext(ctx, "pg_isready", "-h", tempDir, "-U", "postgres")
 		waitForPostgres.Stdout = os.Stdout
 		waitForPostgres.Stderr = os.Stderr

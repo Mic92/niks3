@@ -15,6 +15,7 @@ let
     cmdutil = ../../cmdutil;
     hook = ../../hook;
     ratelimit = ../../ratelimit;
+    testwait = ../../internal/testwait;
     server = ../../server;
     cmd-niks3 = ../../cmd/niks3;
     cmd-niks3-server = ../../cmd/niks3-server;

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/minio/minio-go/v7"
 )
@@ -18,7 +18,7 @@ import (
 func TestSharedNarBothUploadsComplete(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	service := createTestService(t)
@@ -68,7 +68,7 @@ func TestSharedNarBothUploadsComplete(t *testing.T) {
 func TestCompleteMultipartUpload_ErrorButObjectExists(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	service := createTestService(t)

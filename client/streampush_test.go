@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 type result struct {
@@ -79,7 +80,7 @@ func runPusher(t *testing.T, s *client.StreamPusher, feed func(w io.Writer)) []r
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("Run did not return after stdin EOF")
 	}
 
@@ -146,7 +147,7 @@ func TestStreamPushBatchesUnderLoad(t *testing.T) {
 			}
 
 			return got == want
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Hung):
 			t.Errorf("%s was never taken: the batch was fixed while the push was busy", want)
 
 			return false
@@ -491,7 +492,7 @@ func TestStreamPushStopsWhenCanceled(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Run: %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("Run still waits for input")
 	}
 }

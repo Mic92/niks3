@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/signing"
 )
@@ -239,7 +240,7 @@ func TestPush_RootsAreLockedInByteOrder(t *testing.T) {
 		done <- err
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Hung)
 
 	for {
 		var waiting int

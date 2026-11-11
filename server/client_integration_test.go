@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/client"
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
 	"github.com/klauspost/compress/zstd"
@@ -813,7 +814,7 @@ func TestPinProtectsFromGC(t *testing.T) {
 	select {
 	case err := <-gcDone:
 		ok(t, err)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("GC blocked behind the pin request's row lock")
 	}
 

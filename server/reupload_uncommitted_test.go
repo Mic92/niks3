@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -17,7 +17,7 @@ import (
 func TestCompletedNarNotReofferedAcrossClosures(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	service := createTestService(t)
@@ -80,7 +80,7 @@ func TestCompletedNarNotReofferedAcrossClosures(t *testing.T) {
 func TestPresignedUploadRegisteredBeforeCommit(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	service := createTestService(t)

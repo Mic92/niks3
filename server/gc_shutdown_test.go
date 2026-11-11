@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 )
 
@@ -66,7 +67,7 @@ func TestGCEndsOnShutdown(t *testing.T) {
 				case <-blocked:
 				case st := <-gcDone:
 					t.Fatalf("GC finished before reaching the blocking point: state=%s", st.State)
-				case <-time.After(10 * time.Second):
+				case <-time.After(testwait.Hung):
 					t.Fatal("GC never reached the blocking point")
 				}
 
@@ -78,8 +79,8 @@ func TestGCEndsOnShutdown(t *testing.T) {
 				if st.State != api.GCTaskStateFailed {
 					t.Fatalf("GC ran to completion after shutdown: state=%s", st.State)
 				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("GC still running 5s after shutdown")
+			case <-time.After(testwait.Hung):
+				t.Fatal("GC still running after shutdown")
 			}
 
 			release()
@@ -93,7 +94,7 @@ func TestGCEndsOnShutdown(t *testing.T) {
 
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Hung):
 				t.Fatal("Pool.Close() hangs after GC was cancelled by shutdown")
 			}
 		})

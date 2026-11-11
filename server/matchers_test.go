@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
 )
@@ -36,7 +37,7 @@ func httpOkDepth(tb testing.TB, rr *httptest.ResponseRecorder) {
 func waitForGC(tb testing.TB, service *server.Service) api.GCTaskStatus {
 	tb.Helper()
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Hung)
 
 	for {
 		status, found := service.GCTasks.Get()

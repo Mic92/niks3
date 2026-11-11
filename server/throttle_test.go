@@ -13,8 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/Mic92/niks3/internal/testwait"
 	"github.com/Mic92/niks3/server"
 )
 
@@ -96,7 +96,7 @@ func TestCompleteMultipartUploadHandler_RateLimitTriggersThrottle(t *testing.T) 
 		t.Skip("rustfs server not started")
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Hung)
 	defer cancel()
 
 	// Create a throttling proxy in front of RustFS

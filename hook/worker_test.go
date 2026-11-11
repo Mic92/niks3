@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/hook"
+	"github.com/Mic92/niks3/internal/testwait"
 )
 
 // writeTestFile creates a file simulating an existing store path.
@@ -79,7 +80,7 @@ func startWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int)
 
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Hung):
 			t.Fatal("timeout waiting for worker to stop")
 		}
 	}
@@ -89,7 +90,7 @@ func startWorker(t *testing.T, q *hook.Queue, push hook.PushFunc, batchSize int)
 func waitForCount(t *testing.T, q *hook.Queue, n int) {
 	t.Helper()
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testwait.Hung)
 
 	for {
 		if count, _ := q.Count(); count == n {
@@ -148,7 +149,7 @@ func drainWorkerTimeout(
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Hung):
 		t.Fatal("timeout waiting for drain to finish")
 	}
 }
