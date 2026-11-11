@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Mic92/niks3/client"
@@ -146,5 +149,50 @@ func TestUploadMultipart_ReturnsAfterDroppedBody(t *testing.T) {
 		}
 	case <-time.After(testwait.Hung):
 		t.Fatal("the upload did not return after the dropped body")
+	}
+}
+
+// The server registers a NAR when its multipart upload completes, so a dump
+// that failed must not complete, whatever its error wraps.
+func TestUploadMultipart_FailedProducerIsNotCompleted(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		data string
+		err  error
+	}{
+		"inside a part":      {"12345", fmt.Errorf("reading file: %w", io.ErrUnexpectedEOF)},
+		"on a part boundary": {"1234", fmt.Errorf("reading file: %w", io.EOF)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var completed atomic.Int32
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					completed.Add(1)
+				}
+
+				w.Header().Set("ETag", `"etag"`)
+			}))
+			defer srv.Close()
+
+			c, err := client.NewTestClientForServer(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = c.UploadMultipart(t.Context(), io.MultiReader(strings.NewReader(tc.data), iotest.ErrReader(tc.err)),
+				&client.MultipartUploadInfo{UploadID: "upload", PartURLs: []string{srv.URL + "/1", srv.URL + "/2"}},
+				"nar/abc.nar.zst", 4)
+			if !errors.Is(err, tc.err) {
+				t.Errorf("upload: %v, want %v", err, tc.err)
+			}
+
+			if n := completed.Load(); n != 0 {
+				t.Errorf("%d completions of a truncated upload", n)
+			}
+		})
 	}
 }

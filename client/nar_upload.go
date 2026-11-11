@@ -91,67 +91,30 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 
 // compressAndMultipartUploadNAR streams a compressed NAR through a multipart upload.
 func (c *Client) compressAndMultipartUploadNAR(ctx context.Context, storePath string, narSize uint64, multipartInfo *MultipartUploadInfo, objectKey string, onListing func(*NarListing)) error {
-	// Create a pipe for streaming: NAR serialization -> zstd compression -> hash/size tracking
-	pr, pw := io.Pipe()
-
-	// Receives the error of the compression goroutine
-	errChan := make(chan error, 1)
-
-	// Start compression in goroutine
-	go func() {
-		defer func() {
-			if err := pw.Close(); err != nil {
-				slog.Error("Failed to close pipe writer", "error", err)
-			}
-		}()
-
-		// Get encoder from pool and reset it to write to pipe
+	produce := func(w io.Writer) error {
 		encoder, ok := zstdEncoderPool.Get().(*zstd.Encoder)
 		if !ok {
-			pw.CloseWithError(errors.New("failed to get zstd encoder from pool"))
-
-			errChan <- errors.New("failed to get zstd encoder from pool")
-
-			return
+			return errors.New("failed to get zstd encoder from pool")
 		}
 		defer zstdEncoderPool.Put(encoder)
 
-		encoder.Reset(pw)
+		encoder.Reset(w)
 
-		defer func() {
-			if err := encoder.Close(); err != nil {
-				slog.Error("Failed to close zstd encoder", "error", err)
-			}
-		}()
-
-		// Serialize NAR with listing directly to the compressed stream
 		listing, err := DumpPathWithListing(encoder, storePath)
 		if err != nil {
-			pw.CloseWithError(fmt.Errorf("serializing NAR: %w", err))
+			_ = encoder.Close()
 
-			errChan <- err
-
-			return
+			return fmt.Errorf("serializing NAR: %w", err)
 		}
 
 		onListing(listing)
 
-		errChan <- nil
-	}()
-
-	err := c.uploadMultipart(ctx, pr, multipartInfo, objectKey, partSizeForNAR(narSize))
-	// If upload failed, signal compressor to stop and wait for it to exit
-	if err != nil {
-		_ = pw.CloseWithError(err)
-
-		// Drain to prevent a goroutine leak. The dump usually only fails
-		// because of the closed pipe.
-		if dumpErr := <-errChan; dumpErr != nil {
-			slog.Debug("NAR dump stopped after upload failure", "error", dumpErr)
+		if err := encoder.Close(); err != nil {
+			return fmt.Errorf("closing zstd encoder: %w", err)
 		}
 
-		return err
+		return nil
 	}
 
-	return <-errChan
+	return c.uploadMultipart(ctx, produce, multipartInfo, objectKey, partSizeForNAR(narSize))
 }
