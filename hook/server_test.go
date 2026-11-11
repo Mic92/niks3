@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Mic92/niks3/hook"
@@ -266,6 +267,13 @@ func TestServerStalledClientDoesNotBlockShutdown(t *testing.T) {
 func TestServerBacksOffOnAcceptErrors(t *testing.T) {
 	t.Parallel()
 
+	// In the bubble's clock a shutdown that does not wait takes no time.
+	synctest.Test(t, testServerBacksOffOnAcceptErrors)
+}
+
+func testServerBacksOffOnAcceptErrors(t *testing.T) {
+	t.Helper()
+
 	ln := &failingListener{closed: make(chan struct{}), eighth: make(chan struct{})}
 	srv := hook.NewServer(ln, func(_ []string) error { return nil })
 
@@ -278,7 +286,7 @@ func TestServerBacksOffOnAcceptErrors(t *testing.T) {
 	start := time.Now()
 	<-done
 
-	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+	if elapsed := time.Since(start); elapsed != 0 {
 		t.Errorf("Serve took %v to return: shutdown waited out the backoff", elapsed)
 	}
 
