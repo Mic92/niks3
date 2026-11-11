@@ -75,19 +75,21 @@ func (l *leadStream) next() api.LeadStatus {
 	return api.LeadStatus{}
 }
 
-// until skips heartbeats until want matches, for at most ten seconds.
-func (l *leadStream) until(want api.LeadStatus) {
+// until skips heartbeats until the stream says lead, for at most ten seconds.
+func (l *leadStream) until(lead bool) api.LeadStatus {
 	l.t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
 
 	for time.Now().Before(deadline) {
-		if l.next() == want {
-			return
+		if st := l.next(); st.Lead == lead {
+			return st
 		}
 	}
 
-	l.t.Fatalf("never saw %+v", want)
+	l.t.Fatalf("never saw lead: %v", lead)
+
+	return api.LeadStatus{}
 }
 
 func (l *leadStream) close() {
@@ -104,12 +106,12 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 	a := openLead(t, s)
 	defer a.close()
 
-	a.until(api.LeadStatus{Lead: true})
+	a.until(true)
 
 	b := openLead(t, s)
 	defer b.close()
 
-	b.until(api.LeadStatus{Lead: false})
+	b.until(false)
 
 	// Still exactly one leader a few beats later.
 	for range 3 {
@@ -127,14 +129,14 @@ func TestLeadElectsOneAndHandsOver(t *testing.T) {
 	released := time.Now()
 
 	a.close()
-	b.until(api.LeadStatus{Lead: true})
+	b.until(true)
 
 	if since, bound := time.Since(released), server.LeadHeartbeat()+server.LeadPingTimeout(); since < bound {
 		t.Fatalf("b announced leadership %s after a released it, within a heartbeat and a ping timeout (%s)", since, bound)
 	}
 
 	c := openLead(t, s)
-	c.until(api.LeadStatus{Lead: false})
+	c.until(false)
 	c.close()
 	b.close()
 }
@@ -173,10 +175,10 @@ func TestLeadIncumbentWinsAfterRestart(t *testing.T) { //nolint:paralleltest // 
 	server.RestartedNow(10 * server.LeadHeartbeat())
 
 	standby := openLeadAs(t, s, false)
-	standby.until(api.LeadStatus{Lead: false})
+	standby.until(false)
 
 	incumbent := openLeadAs(t, s, true)
-	incumbent.until(api.LeadStatus{Lead: true})
+	incumbent.until(true)
 
 	for range 12 {
 		if st := standby.next(); st.Lead {
@@ -185,7 +187,7 @@ func TestLeadIncumbentWinsAfterRestart(t *testing.T) { //nolint:paralleltest // 
 	}
 
 	incumbent.close()
-	standby.until(api.LeadStatus{Lead: true})
+	standby.until(true)
 	standby.close()
 }
 
@@ -206,6 +208,44 @@ func TestLeadIncumbentAnnouncesAtOnce(t *testing.T) {
 	}
 }
 
+// A scheduler tags what it tells its workers with the generation it leads in,
+// so they can tell a leader from the one before it.
+func TestLeadGenerationGrowsWithEveryGrant(t *testing.T) {
+	t.Parallel()
+
+	s := createTestService(t)
+	defer s.Close()
+
+	a := openLead(t, s)
+	first := a.until(true).Generation
+
+	b := openLead(t, s)
+	defer b.close()
+
+	if st := b.until(false); st.Generation != 0 {
+		t.Fatalf("a standby was told generation %d", st.Generation)
+	}
+
+	if again := a.next().Generation; again != first {
+		t.Fatalf("generation changed from %d to %d while a led", first, again)
+	}
+
+	a.close()
+
+	second := b.until(true).Generation
+	b.close()
+
+	// The same scheduler coming back is a new grant too.
+	c := openLeadAs(t, s, true)
+	defer c.close()
+
+	third := c.until(true).Generation
+
+	if first == 0 || second <= first || third <= second {
+		t.Fatalf("generations %d, %d, %d do not grow", first, second, third)
+	}
+}
+
 func TestLeadEndsOnShutdown(t *testing.T) {
 	t.Parallel()
 
@@ -216,7 +256,7 @@ func TestLeadEndsOnShutdown(t *testing.T) {
 	s.Streams = streams
 
 	a := openLead(t, s)
-	a.until(api.LeadStatus{Lead: true})
+	a.until(true)
 	stop()
 
 	select {
@@ -327,12 +367,12 @@ func TestLeadEndsWhenItsConnectionHangs(t *testing.T) { //nolint:paralleltest //
 	// Unblock a leader stuck on the dead connection before waiting for it.
 	defer proxy.close()
 
-	a.until(api.LeadStatus{Lead: true})
+	a.until(true)
 
 	b := openLead(t, s)
 	defer b.close()
 
-	b.until(api.LeadStatus{Lead: false})
+	b.until(false)
 
 	proxy.cut.Store(true)
 
@@ -347,7 +387,7 @@ func TestLeadEndsWhenItsConnectionHangs(t *testing.T) { //nolint:paralleltest //
 		t.Fatal("leader's session was not terminated")
 	}
 
-	b.until(api.LeadStatus{Lead: true})
+	b.until(true)
 
 	select {
 	case <-a.done:

@@ -28,23 +28,43 @@ const leadPingTimeoutFloor = time.Second
 // otherwise hang it for about fifteen minutes, with the stream still open.
 func leadPingTimeout() time.Duration { return max(leadHeartbeat/2, leadPingTimeoutFloor) }
 
-// tryLead takes the session advisory lock on a dedicated connection, so the
-// lock lives exactly as long as that connection. A nil conn means someone
-// else leads.
-func tryLead(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Conn, error) {
+// lead is the farm lead as one stream holds it.
+type lead struct {
+	// conn holds the session advisory lock, so the lock lives exactly as
+	// long as this connection.
+	conn *pgxpool.Conn
+	// generation is drawn with the lock: whoever takes the lock later draws
+	// a higher one.
+	generation uint64
+}
+
+// tryLead takes the lock on a dedicated connection. Nil means someone else
+// leads.
+func tryLead(ctx context.Context, pool *pgxpool.Pool) (*lead, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err //nolint:wrapcheck
 	}
 
-	var got bool
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", farmLeadLockKey).Scan(&got); err != nil || !got {
-		conn.Release()
+	var generation *uint64
+
+	err = conn.QueryRow(ctx,
+		"SELECT CASE WHEN pg_try_advisory_lock($1) THEN nextval('farm_lead_generation') END",
+		farmLeadLockKey).Scan(&generation)
+	if err != nil {
+		// The lock may have been taken before the query failed.
+		_ = conn.Hijack().Close(context.Background()) //nolint:contextcheck // must close even though ctx is done
 
 		return nil, err //nolint:wrapcheck
 	}
 
-	return conn, nil
+	if generation == nil {
+		conn.Release()
+
+		return nil, nil //nolint:nilnil // not leading is no error
+	}
+
+	return &lead{conn: conn, generation: *generation}, nil
 }
 
 // announceDelay is how long a new lock holder stays quiet. An incumbent comes
@@ -110,38 +130,43 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 
 	var (
-		conn *pgxpool.Conn
+		held *lead
 		// announceAt is the earliest time a new lock holder may say true.
 		announceAt time.Time
 	)
 
 	defer func() { //nolint:contextcheck // must close even though ctx is done
-		if conn != nil {
-			_ = conn.Hijack().Close(context.Background())
+		if held != nil {
+			_ = held.conn.Hijack().Close(context.Background())
 
-			slog.Info("lead: released", "remote", r.RemoteAddr)
+			slog.Info("lead: released", "remote", r.RemoteAddr, "generation", held.generation)
 		}
 	}()
 
 	for {
-		if conn == nil && !time.Now().Before(holdBack) {
+		if held == nil && !time.Now().Before(holdBack) {
 			var err error
-			if conn, err = tryLead(ctx, s.Pool); err != nil {
+			if held, err = tryLead(ctx, s.Pool); err != nil {
 				slog.Error("lead", "error", err)
 
 				return
 			}
 
-			if conn != nil {
+			if held != nil {
 				announceAt = time.Now().Add(announceDelay(req.Incumbent))
 
-				slog.Info("lead: acquired", "remote", r.RemoteAddr)
+				slog.Info("lead: acquired", "remote", r.RemoteAddr, "generation", held.generation)
 			}
-		} else if conn != nil && pingLead(ctx, conn) != nil {
+		} else if held != nil && pingLead(ctx, held.conn) != nil {
 			return
 		}
 
-		if err := enc.Encode(api.LeadStatus{Lead: conn != nil && !time.Now().Before(announceAt)}); err != nil {
+		var status api.LeadStatus
+		if held != nil && !time.Now().Before(announceAt) {
+			status = api.LeadStatus{Lead: true, Generation: held.generation}
+		}
+
+		if err := enc.Encode(status); err != nil {
 			return
 		}
 
