@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 )
 
 // createPendingClosureRequest is the request to create a pending closure.
@@ -62,14 +65,41 @@ type NarinfoMetadata struct {
 
 // CompletePendingClosure marks a closure or push (route) as complete after all objects have been uploaded.
 // This should be called after narinfos have been signed and uploaded.
-func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID string) error {
+//
+// The commit deletes the pending closure, so a retry after a lost response
+// finds nothing and is answered 404. closureKeys (the closure's narinfo key,
+// or for a push the narinfo keys of all its roots) let the client tell that
+// case from a closure the server cleaned up: the commit publishes every root
+// at once, so if all of them are now present, the commit went through. One
+// present root proves nothing for a push: another client may have committed
+// it while the server cleaned this push up.
+func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID string, closureKeys []string) error {
 	reqURL := c.baseURL.JoinPath("api", route, closureID, "complete")
 
-	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent); err != nil {
+	err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), nil, nil, http.StatusOK, http.StatusNoContent)
+	if err == nil {
+		slog.Debug("Completed pending closure", "id", closureID)
+
+		return nil
+	}
+
+	var statusErr *HTTPStatusError
+	if len(closureKeys) == 0 || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
 		return err
 	}
 
-	slog.Debug("Completed pending closure", "id", closureID)
+	present, presentErr := c.presentKeys(ctx, closureKeys)
+	if presentErr != nil {
+		return fmt.Errorf("%w (and checking whether closure %s was committed: %w)", err, closureID, presentErr)
+	}
+
+	for _, key := range closureKeys {
+		if !slices.Contains(present, key) {
+			return err
+		}
+	}
+
+	slog.Debug("Pending closure gone but its roots are present; an earlier commit went through", "id", closureID, "roots", len(closureKeys))
 
 	return nil
 }
