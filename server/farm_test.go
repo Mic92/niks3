@@ -94,6 +94,12 @@ func (l *leadStream) until(lead bool) api.LeadStatus {
 
 func (l *leadStream) close() {
 	l.cancel()
+
+	go func() {
+		for range l.lines {
+		}
+	}()
+
 	<-l.done
 }
 
@@ -191,6 +197,54 @@ func TestLeadIncumbentWinsAfterRestart(t *testing.T) { //nolint:paralleltest // 
 	standby.close()
 }
 
+// The Postgres backend that holds the lead lock, or 0.
+func leadHolder(t *testing.T, s *server.Service) int {
+	t.Helper()
+
+	var pid int
+	ok(t, s.Pool.QueryRow(t.Context(), `
+		SELECT coalesce(max(pid), 0) FROM pg_locks
+		WHERE locktype = 'advisory' AND granted AND objid = $1
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+		server.FarmLeadLockKey&0xffffffff).Scan(&pid))
+
+	return pid
+}
+
+// The standby holds the lock but nobody has heard of it yet.
+func TestLeadUnannouncedStandbyYieldsToIncumbent(t *testing.T) {
+	t.Parallel()
+
+	s := createTestService(t)
+	defer s.Close()
+
+	leader := openLead(t, s)
+	leader.until(true)
+
+	standby := openLead(t, s)
+	defer standby.close()
+
+	standby.until(false)
+
+	was := leadHolder(t, s)
+	leader.close()
+
+	for now := was; now == was || now == 0; now = leadHolder(t, s) {
+		time.Sleep(time.Millisecond)
+	}
+
+	back := openLeadAs(t, s, true)
+	defer back.close()
+
+	back.until(true)
+
+	for range 2 * int(server.LeadPingTimeout()/server.LeadHeartbeat()) {
+		if standby.next().Lead {
+			t.Fatal("the standby leads although the incumbent came back before it said so")
+		}
+	}
+}
+
 // A restart closes every stream of the old process, so the incumbent that
 // takes the lock back has no predecessor to wait out. Waiting anyway made the
 // farm scheduler yield its role on every niks3 restart.
@@ -208,8 +262,6 @@ func TestLeadIncumbentAnnouncesAtOnce(t *testing.T) {
 	}
 }
 
-// A scheduler tags what it tells its workers with the generation it leads in,
-// so they can tell a leader from the one before it.
 func TestLeadGenerationGrowsWithEveryGrant(t *testing.T) {
 	t.Parallel()
 

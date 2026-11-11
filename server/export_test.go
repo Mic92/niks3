@@ -83,6 +83,8 @@ func init() { //nolint:gochecknoinits // fast lead tests
 
 func LeadHeartbeat() time.Duration { return leadHeartbeat }
 
+const FarmLeadLockKey = farmLeadLockKey
+
 func LeadPingTimeout() time.Duration { return leadPingTimeout() }
 
 // SetLeadHeartbeat changes the heartbeat until the returned func restores it.
