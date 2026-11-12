@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Mic92/niks3/server/pg"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // globToLike converts a glob pattern to a SQL LIKE pattern.
@@ -122,4 +126,36 @@ func parsePinReadRules(raw []string) ([]PinReadRule, error) {
 	}
 
 	return rules, nil
+}
+
+// pinScopedMayRead checks if a principal with pin-scoped read access can read a key.
+// It returns true if the key is reachable from one of the principal's readable pins.
+// The principal's readPins are glob patterns that are converted to SQL LIKE patterns.
+func (s *Service) pinScopedMayRead(ctx context.Context, p principal, key string) (bool, error) {
+	if len(p.readPins) == 0 {
+		return false, nil
+	}
+
+	// Convert glob patterns to SQL LIKE patterns
+	likePatterns := make([]string, len(p.readPins))
+	for i, pin := range p.readPins {
+		likePatterns[i] = globToLike(pin)
+	}
+
+	grace := pgtype.Interval{
+		Valid:        true,
+		Microseconds: s.PinReadGrace.Microseconds(),
+	}
+
+	queries := pg.New(s.Pool)
+	can, err := queries.PinMayRead(ctx, pg.PinMayReadParams{
+		Patterns: likePatterns,
+		Key:      key,
+		Grace:    grace,
+	})
+	if err != nil {
+		return false, fmt.Errorf("pin read check failed: %w", err)
+	}
+
+	return can, nil
 }

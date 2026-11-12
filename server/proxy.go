@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mic92/niks3/server/oidc"
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 )
@@ -194,6 +196,13 @@ func IsValidCachePath(path string) bool {
 		return true
 	}
 
+	// Check for pins/<name> pattern
+	if name, ok := strings.CutPrefix(path, "pins/"); ok {
+		if pinNameRegex.MatchString(name) {
+			return true
+		}
+	}
+
 	// Check against known patterns
 	if narinfoRe.MatchString(path) {
 		return true
@@ -244,6 +253,24 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	// Check pin-scoped access (after path validation, before redirect)
+	p, ok := r.Context().Value(principalKey{}).(principal)
+	if ok && len(p.readPins) > 0 {
+		allowed, err := s.pinScopedAllowed(r.Context(), p, key)
+		if err != nil {
+			slog.Error("pin scoped read check failed", "key", key, "error", err)
+
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+
+			return
+		}
+
+		if !allowed {
+			http.NotFound(w, r)
+
+			return
+		}
+	}
 
 	// Only NARs redirect: narinfos need decompressing here and the rest is
 	// too small to be worth an extra round trip.
@@ -271,6 +298,32 @@ func (s *Service) ReadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.handleProxyGet(w, r, key)
+}
+
+// pinScopedAllowed checks if a pin-scoped principal is allowed to read a key.
+// Returns true if allowed, false if denied, error if DB check fails.
+func (s *Service) pinScopedAllowed(ctx context.Context, p principal, key string) (bool, error) {
+	// Allow nix-cache-info
+	if key == "nix-cache-info" {
+		return true, nil
+	}
+
+	// Check pins/<name> pattern
+	if name, ok := strings.CutPrefix(key, "pins/"); ok {
+		if !oidc.GlobMatchAny(p.readPins, name) {
+			return false, nil
+		}
+
+		return true, nil
+	}
+
+	// Check if key is reachable from any pin
+	can, err := s.pinScopedMayRead(ctx, p, key)
+	if err != nil {
+		return false, fmt.Errorf("checking pin-scoped read: %w", err)
+	}
+
+	return can, nil
 }
 
 // redirectToS3 sends the client to a presigned URL for key. Presigning is
