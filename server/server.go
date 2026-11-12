@@ -61,6 +61,11 @@ type options struct {
 	// upload. 0 means unlimited.
 	MaxNarSize uint64
 
+	// UpstreamPublicKeys are the keys besides the server's own whose
+	// signed paths clients may push. Non-empty asks clients to refuse
+	// other paths that are neither built locally nor content-addressed.
+	UpstreamPublicKeys []string
+
 	// CachePriority is advertised in nix-cache-info. Lower wins.
 	CachePriority int
 
@@ -130,6 +135,9 @@ type Service struct {
 	// MaxNarSize is advertised via /api/cache-config and enforced on
 	// pending-closure creation. 0 means unlimited.
 	MaxNarSize uint64
+
+	// UpstreamPublicKeys is advertised via /api/cache-config.
+	UpstreamPublicKeys []string
 
 	// CachePriority is written to nix-cache-info. 0 means defaultCachePriority.
 	CachePriority int
@@ -251,6 +259,7 @@ func runServer(opts *options) error {
 		CacheURL:                   opts.CacheURL,
 		ServerURL:                  opts.ServerURL,
 		MaxNarSize:                 opts.MaxNarSize,
+		UpstreamPublicKeys:         opts.UpstreamPublicKeys,
 		CachePriority:              opts.CachePriority,
 		AbortIncompleteUploadsDays: opts.AbortIncompleteUploadsDays,
 		GCTasks:                    NewGCTaskStore(),

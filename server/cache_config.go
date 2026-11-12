@@ -23,6 +23,8 @@ func (s *Service) CacheConfigHandler(w http.ResponseWriter, r *http.Request) {
 		PublicKeys:     make([]string, 0, len(s.SigningKeys)),
 		MaxNarSize:     s.MaxNarSize,
 		Pushes:         true,
+
+		UpstreamPublicKeys: s.UpstreamPublicKeys,
 	}
 
 	for _, key := range s.SigningKeys {

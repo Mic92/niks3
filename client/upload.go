@@ -580,9 +580,23 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	var maxNarSize uint64
 
 	if cfg, err := c.GetCacheConfig(ctx); err != nil {
-		slog.Warn("Failed to fetch cache config, uploading without size limit", "error", err)
+		var statusErr *HTTPStatusError
+		if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
+			return nil, err
+		}
+
+		slog.Warn("Server has no cache config, uploading without size limit or signing policy", "error", err)
 	} else {
 		maxNarSize = cfg.MaxNarSize
+
+		untrusted, err := untrustedPaths(cfg, pathInfos)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(untrusted) > 0 {
+			return nil, &UntrustedPathsError{Paths: untrusted}
+		}
 	}
 
 	var skipped skippedUploads
