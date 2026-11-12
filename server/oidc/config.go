@@ -257,7 +257,11 @@ func issuerFromTokenFile(path string) (string, error) {
 		return "", fmt.Errorf("reading token: %w", err)
 	}
 
-	parts := strings.Split(strings.TrimSpace(string(data)), ".")
+	return unverifiedIssuer(strings.TrimSpace(string(data)))
+}
+
+func unverifiedIssuer(token string) (string, error) {
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 { //nolint:mnd // header.payload.signature
 		return "", errors.New("not a JWT")
 	}

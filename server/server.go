@@ -696,7 +696,6 @@ func (s *Service) logAuthFailure(token string, oidcErr *oidc.ValidationError) {
 			"token_length", len(token),
 			"oidc_error", oidcErr.Reason,
 			"oidc_provider", oidcErr.Provider,
-			"tried_providers", oidcErr.TriedProviders,
 		)
 		// Log claims if available (helps debug bound_claims/bound_subject mismatches)
 		if oidcErr.Claims != nil {
