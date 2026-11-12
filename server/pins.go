@@ -12,8 +12,12 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-// pinNameRegex validates pin names: alphanumeric, dash, underscore, dot only.
-var pinNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+// pinNamePattern matches a full pin name: alphanumeric, dash, underscore, dot.
+// Shared by pinNameRegex (write side) and pinRe (read proxy).
+const pinNamePattern = `[a-zA-Z0-9._-]+`
+
+// pinNameRegex validates pin names.
+var pinNameRegex = regexp.MustCompile(`^` + pinNamePattern + `$`)
 
 type createPinRequest struct {
 	StorePath string `json:"store_path"`

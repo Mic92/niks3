@@ -38,10 +38,14 @@ func TestIsValidCachePath(t *testing.T) {
 		{"realisation", "realisations/sha256:abc123def456!out.doi", true},
 		{"nix-cache-info", "nix-cache-info", true},
 		{"index.html", "index.html", true},
+		{"pin", "pins/myapp", true},
+		{"pin all alphabet chars", "pins/My-App_1.0", true},
 
 		// Path traversal
 		{"traversal parent", "../etc/passwd", false},
 		{"traversal in middle", "nar/../../../etc/passwd", false},
+		// pinNamePattern accepts "..", so the segment check must reject this.
+		{"pin traversal", "pins/..", false},
 
 		// Wrong nix base32 chars (e, t, u are not in nix base32)
 		{"invalid char e", "26xbg1ndr7hbcncrlf9nhx5is2b25e13.narinfo", false},
@@ -53,6 +57,9 @@ func TestIsValidCachePath(t *testing.T) {
 		{"leading slash", "/26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo", false},
 		{"wrong extension", "26xbg1ndr7hbcncrlf9nhx5is2b25d13.narinfo.bak", false},
 		{"short hash", "abc.narinfo", false},
+		{"pin empty name", "pins/", false},
+		{"pin nested", "pins/a/b", false},
+		{"pin invalid char", "pins/my app", false},
 	}
 
 	for _, tc := range tests {
