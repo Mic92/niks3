@@ -14,6 +14,10 @@ BEGIN
     SELECT roots INTO push_roots FROM pending_closures WHERE id = push_id FOR UPDATE;
 
     IF push_roots IS NULL THEN
+        IF EXISTS (SELECT 1 FROM commit_receipts WHERE pending_closure_id = push_id) THEN
+            RETURN 0;
+        END IF;
+
         RAISE EXCEPTION 'Push does not exist: id=%', push_id;
     END IF;
 

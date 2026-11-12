@@ -147,6 +147,12 @@ deleted_pending_objects AS (
     USING old_closures
     WHERE pending_objects.pending_closure_id = old_closures.id
     RETURNING pending_closure_id
+),
+
+deleted_receipts AS (
+    DELETE FROM commit_receipts
+    USING cutoff_time
+    WHERE commit_receipts.committed_at < cutoff_time.time
 )
 
 -- Delete pending closures older than the specified interval

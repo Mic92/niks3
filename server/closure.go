@@ -346,7 +346,7 @@ func gcLockHeld(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 // This reclaims space from deleted rows and updates query planner statistics.
 // Failures are logged but don't cause the GC to fail.
 func (s *Service) vacuumGCTables(ctx context.Context) {
-	tables := []string{"pending_closures", "pending_objects", "multipart_uploads", "closures", "objects"}
+	tables := []string{"pending_closures", "commit_receipts", "pending_objects", "multipart_uploads", "closures", "objects"}
 	for _, table := range tables {
 		if _, err := s.Pool.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
 			// Log but don't fail - vacuum is nice to have but not critical
