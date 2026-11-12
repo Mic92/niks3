@@ -662,6 +662,18 @@ func TestClientWithDependencies(t *testing.T) {
 
 	runClientAndVerifyUpload(ctx, t, testService, storePath, ts.URL, testAuthToken, nixEnv)
 
+	var logKey string
+
+	ok(t, testService.Pool.QueryRow(ctx, "SELECT key FROM objects WHERE key LIKE 'log/%'").Scan(&logKey))
+
+	if st := testService.RunGCForTest(720*time.Hour, 0, true); st.State != "succeeded" {
+		t.Fatalf("GC failed: %s", st.Error)
+	}
+
+	if !objectInS3(t, testService, logKey) {
+		t.Errorf("build log %s was collected although its closure is live", logKey)
+	}
+
 	testRetrieveWithNixCopy(ctx, t, testService, storePath, nixEnv)
 }
 
