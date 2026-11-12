@@ -71,6 +71,11 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 	return resolveDBConnectionString(flagValue, file, lookupEnv)
 }
 
+// GlobToLike exports globToLike for tests.
+func GlobToLike(pattern string) string {
+	return globToLike(pattern)
+}
+
 // ServerTLSConfig is an export of serverTLSConfig for tests.
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
