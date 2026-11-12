@@ -21,14 +21,16 @@ func allScopes() []oidc.Scope {
 // public unless the operator configured a read rule somewhere, since Nix
 // substituters present no credentials and contents are signed.
 func (s *Service) readGated() bool {
-	return len(s.MTLSBoundSubjectsRead) > 0 || (s.OIDCValidator != nil && s.OIDCValidator.GrantsScope(oidc.ScopeRead))
+	return len(s.MTLSBoundSubjectsRead) > 0 || len(s.MTLSPinReadRules) > 0 || (s.OIDCValidator != nil && s.OIDCValidator.GrantsScope(oidc.ScopeRead))
 }
 
 // principal is the result of authenticating a request.
 type principal struct {
 	scopes []oidc.Scope
-	// pins are the reserved pin patterns this principal may write.
-	pins []string
+	// writePins are the reserved pin patterns this principal may write.
+	writePins []string
+	// readPins are the glob patterns this principal may read (pin-scoped reads).
+	readPins []string
 }
 
 type principalKey struct{}
@@ -36,6 +38,29 @@ type principalKey struct{}
 // adminPrincipal is the principal for mTLS clients and the static API token.
 func adminPrincipal() principal {
 	return principal{scopes: allScopes()}
+}
+
+// pinReadPatterns returns the pin patterns that the mTLS client can read.
+func (s *Service) pinReadPatterns(r *http.Request) []string {
+	subject, ok := s.mtlsSubject(r)
+	if !ok || subject == "" {
+		return nil
+	}
+
+	cn, cnFound := commonName(subject)
+	if !cnFound || !pinNameRegex.MatchString(cn) {
+		return nil
+	}
+
+	var readPins []string
+	for _, rule := range s.MTLSPinReadRules {
+		if oidc.GlobMatch(rule.Subject, subject) {
+			pin := strings.ReplaceAll(rule.Pin, "{cn}", cn)
+			readPins = append(readPins, pin)
+		}
+	}
+
+	return readPins
 }
 
 // authenticate returns the principal for r. The bool is false when no valid
@@ -47,6 +72,13 @@ func (s *Service) authenticate(r *http.Request) (principal, bool) {
 
 	if len(s.MTLSBoundSubjectsRead) > 0 && s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
 		return principal{scopes: []oidc.Scope{oidc.ScopeRead}}, true
+	}
+
+	// Check for pin-scoped reads
+	if len(s.MTLSPinReadRules) > 0 {
+		if readPins := s.pinReadPatterns(r); len(readPins) > 0 {
+			return principal{readPins: readPins}, true
+		}
 	}
 
 	token := requestToken(r)
@@ -82,7 +114,7 @@ func (s *Service) authenticate(r *http.Request) (principal, bool) {
 		scopes = append(slices.Clone(scopes), oidc.ScopeRead)
 	}
 
-	return principal{scopes: scopes, pins: claims.Pins}, true
+	return principal{scopes: scopes, writePins: claims.Pins}, true
 }
 
 // RequireScope wraps next so it only runs for principals holding scope.
@@ -111,6 +143,35 @@ func (s *Service) RequireScope(scope oidc.Scope, next http.HandlerFunc) http.Han
 	}
 }
 
+// RequireRead wraps the read proxy handler. It admits the principals that
+// RequireScope(oidc.ScopeRead) admits, and also pin-scoped principals. A
+// pin-scoped principal has no read scope, so it gets no other read route.
+// The wrapped handler must apply the pin check to such a principal.
+func (s *Service) RequireRead(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.readGated() {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		p, ok := s.authenticate(r)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+			return
+		}
+
+		if len(p.readPins) == 0 && !slices.Contains(p.scopes, oidc.ScopeRead) {
+			http.Error(w, "Forbidden: token lacks scope "+string(oidc.ScopeRead), http.StatusForbidden)
+
+			return
+		}
+
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
+	}
+}
+
 // mayWritePin reports whether the request may create or move pin name.
 // Reserved names need a matching rule or admin; RequireScope already
 // checked write for everything else.
@@ -124,7 +185,7 @@ func (s *Service) mayWritePin(r *http.Request, name string) bool {
 		return false
 	}
 
-	return slices.Contains(p.scopes, oidc.ScopeAdmin) || oidc.GlobMatchAny(p.pins, name)
+	return slices.Contains(p.scopes, oidc.ScopeAdmin) || oidc.GlobMatchAny(p.writePins, name)
 }
 
 // requestToken returns the bearer token, or the password of HTTP Basic auth.
