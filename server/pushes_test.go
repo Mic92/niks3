@@ -436,3 +436,65 @@ func (testSigner) PublicKey() (string, error) {
 func (signer testSigner) Sign(ctx context.Context, infos map[string]*signing.NarInfo) (map[string]string, error) {
 	return signer(ctx, infos)
 }
+
+// A client that lost the answer to its commit sends it again.
+func TestCommitCanBeRepeatedUntilCleanup(t *testing.T) {
+	t.Parallel()
+
+	hash := strings.Repeat("r", 32)
+
+	for name, api := range map[string]struct {
+		create func(*testing.T, *server.Service) string
+		commit func(*server.Service) http.HandlerFunc
+	}{
+		"push": {
+			func(t *testing.T, s *server.Service) string {
+				t.Helper()
+
+				return createPush(t, s, []string{hash + ".narinfo"}, pkgObjects(hash)).ID
+			},
+			func(s *server.Service) http.HandlerFunc { return s.CompletePushHandler },
+		},
+		"pending closure": {
+			func(t *testing.T, s *server.Service) string {
+				t.Helper()
+
+				return createPendingClosure(t, s, map[string]any{"closure": hash + ".narinfo", "objects": pkgObjects(hash)}).ID
+			},
+			func(s *server.Service) http.HandlerFunc { return s.CommitPendingClosureHandler },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			service := createTestService(t)
+			defer service.Close()
+
+			id := api.create(t, service)
+
+			commit := func(want int) {
+				t.Helper()
+
+				check := checkStatusCode(want)
+				testRequest(t, &TestRequest{
+					method:        "POST",
+					path:          "/complete",
+					handler:       api.commit(service),
+					pathValues:    map[string]string{"id": id},
+					checkResponse: &check,
+				})
+			}
+
+			commit(http.StatusNoContent)
+			commit(http.StatusNoContent)
+
+			testRequest(t, &TestRequest{
+				method:  "DELETE",
+				path:    "/api/pending_closures?older-than=0s",
+				handler: service.CleanupPendingClosuresHandler,
+			})
+
+			commit(http.StatusNotFound)
+		})
+	}
+}

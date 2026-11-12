@@ -18,6 +18,10 @@ BEGIN
     FOR UPDATE;
 
     if closure_key is null then
+        IF EXISTS (SELECT 1 FROM commit_receipts WHERE pending_closure_id = closure_id) THEN
+            RETURN 0;
+        END IF;
+
         RAISE EXCEPTION 'Closure does not exist: id=%', closure_id;
     end if;
 
@@ -58,6 +62,8 @@ BEGIN
 
     -- Delete the pending closure
     DELETE FROM pending_closures WHERE id = closure_id;
+
+    INSERT INTO commit_receipts (pending_closure_id, committed_at) VALUES (closure_id, now);
 
     RETURN folded;
 END;

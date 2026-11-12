@@ -13,6 +13,11 @@ type Closure struct {
 	UpdatedAt pgtype.Timestamp `json:"updated_at"`
 }
 
+type CommitReceipt struct {
+	PendingClosureID int64            `json:"pending_closure_id"`
+	CommittedAt      pgtype.Timestamp `json:"committed_at"`
+}
+
 type MultipartUpload struct {
 	PendingClosureID int64  `json:"pending_closure_id"`
 	ObjectKey        string `json:"object_key"`
