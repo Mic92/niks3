@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/server/pg"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -206,6 +207,14 @@ func (s *Service) runGarbageCollection(task *gcTask, age, pendingAge time.Durati
 	}
 
 	defer release()
+	// Delete pin_objects rows for previous targets whose grace period has expired.
+	grace := s.pinReadGraceInterval()
+	deletedCount, err := pg.New(s.Pool).DeleteExpiredPinObjects(ctx, grace)
+	if err != nil {
+		slog.Error("failed to delete expired pin objects", "error", err)
+	} else if deletedCount > 0 {
+		slog.Info("deleted expired pin objects", "count", deletedCount)
+	}
 
 	task.setPhase(api.GCTaskPhaseCleanupPendingUploads)
 
