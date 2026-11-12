@@ -77,20 +77,18 @@ func (l *leadStream) next() api.LeadStatus {
 }
 
 // until skips heartbeats until the stream says lead.
-func (l *leadStream) until(lead bool) api.LeadStatus {
+func (l *leadStream) until(lead bool) {
 	l.t.Helper()
 
 	deadline := time.Now().Add(testwait.Hung)
 
 	for time.Now().Before(deadline) {
-		if st := l.next(); st.Lead == lead {
-			return st
+		if l.next().Lead == lead {
+			return
 		}
 	}
 
 	l.t.Fatalf("never saw lead: %v", lead)
-
-	return api.LeadStatus{}
 }
 
 func (l *leadStream) close() {
@@ -260,42 +258,6 @@ func TestLeadIncumbentAnnouncesAtOnce(t *testing.T) {
 
 	if st := incumbent.next(); !st.Lead {
 		t.Fatalf("incumbent was told %+v on its first heartbeat, want Lead: true", st)
-	}
-}
-
-func TestLeadGenerationGrowsWithEveryGrant(t *testing.T) {
-	t.Parallel()
-
-	s := createTestService(t)
-	defer s.Close()
-
-	a := openLead(t, s)
-	first := a.until(true).Generation
-
-	b := openLead(t, s)
-	defer b.close()
-
-	if st := b.until(false); st.Generation != 0 {
-		t.Fatalf("a standby was told generation %d", st.Generation)
-	}
-
-	if again := a.next().Generation; again != first {
-		t.Fatalf("generation changed from %d to %d while a led", first, again)
-	}
-
-	a.close()
-
-	second := b.until(true).Generation
-	b.close()
-
-	// The same scheduler coming back is a new grant too.
-	c := openLeadAs(t, s, true)
-	defer c.close()
-
-	third := c.until(true).Generation
-
-	if first == 0 || second <= first || third <= second {
-		t.Fatalf("generations %d, %d, %d do not grow", first, second, third)
 	}
 }
 

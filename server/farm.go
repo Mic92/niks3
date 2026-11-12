@@ -48,8 +48,6 @@ func leadPingTimeout() time.Duration { return max(leadHeartbeat/2, leadPingTimeo
 type lead struct {
 	// The session advisory lock lives exactly as long as this connection.
 	conn *pgxpool.Conn
-	// Drawn with the lock, so a later holder has a higher one.
-	generation uint64
 }
 
 // tryLead takes the lock on a dedicated connection. Nil means someone else
@@ -60,12 +58,11 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool, incumbent bool) (*lead, er
 		return nil, err //nolint:wrapcheck
 	}
 
-	var generation *uint64
+	var locked bool
 
-	err = conn.QueryRow(ctx, `
-		SELECT CASE WHEN NOT $2 AND `+leadClaimed()+` THEN NULL
-		            WHEN pg_try_advisory_lock($1) THEN nextval('farm_lead_generation') END`,
-		farmLeadLockKey, incumbent).Scan(&generation)
+	err = conn.QueryRow(ctx,
+		`SELECT ($2 OR NOT `+leadClaimed()+`) AND pg_try_advisory_lock($1)`,
+		farmLeadLockKey, incumbent).Scan(&locked)
 	if err != nil {
 		// The lock may have been taken before the query failed.
 		_ = conn.Hijack().Close(context.Background()) //nolint:contextcheck // must close even though ctx is done
@@ -73,13 +70,13 @@ func tryLead(ctx context.Context, pool *pgxpool.Pool, incumbent bool) (*lead, er
 		return nil, err //nolint:wrapcheck
 	}
 
-	if generation == nil {
+	if !locked {
 		conn.Release()
 
 		return nil, nil //nolint:nilnil // not leading is no error
 	}
 
-	return &lead{conn: conn, generation: *generation}, nil
+	return &lead{conn: conn}, nil
 }
 
 func (l *lead) release() {
@@ -188,7 +185,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 		if held != nil {
 			held.release()
 
-			slog.Info("lead: released", "remote", r.RemoteAddr, "generation", held.generation)
+			slog.Info("lead: released", "remote", r.RemoteAddr)
 		}
 	}()
 
@@ -222,7 +219,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 				announceAt = time.Now().Add(announceDelay(req.Incumbent))
 				announced = !time.Now().Before(announceAt)
 
-				slog.Info("lead: acquired", "remote", r.RemoteAddr, "generation", held.generation)
+				slog.Info("lead: acquired", "remote", r.RemoteAddr)
 			}
 		case held == nil:
 		case pingLead(ctx, held.conn) != nil:
@@ -236,7 +233,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 			if yield {
 				held.release() //nolint:contextcheck // closes with its own context
 
-				slog.Info("lead: given back to the incumbent", "remote", r.RemoteAddr, "generation", held.generation)
+				slog.Info("lead: given back to the incumbent", "remote", r.RemoteAddr)
 
 				held = nil
 			}
@@ -244,7 +241,7 @@ func (s *Service) LeadHandler(w http.ResponseWriter, r *http.Request) {
 
 		var status api.LeadStatus
 		if held != nil && announced {
-			status = api.LeadStatus{Lead: true, Generation: held.generation}
+			status = api.LeadStatus{Lead: true}
 		}
 
 		if err := enc.Encode(status); err != nil {
