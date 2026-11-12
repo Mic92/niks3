@@ -142,10 +142,7 @@ func (s *Service) pinScopedMayRead(ctx context.Context, p principal, key string)
 		likePatterns[i] = globToLike(pin)
 	}
 
-	grace := pgtype.Interval{
-		Valid:        true,
-		Microseconds: s.PinReadGrace.Microseconds(),
-	}
+	grace := s.pinReadGraceInterval()
 
 	queries := pg.New(s.Pool)
 	can, err := queries.PinMayRead(ctx, pg.PinMayReadParams{
@@ -158,4 +155,12 @@ func (s *Service) pinScopedMayRead(ctx context.Context, p principal, key string)
 	}
 
 	return can, nil
+}
+
+// pinReadGraceInterval returns a pgtype.Interval representing the pin read grace period.
+func (s *Service) pinReadGraceInterval() pgtype.Interval {
+	return pgtype.Interval{
+		Valid:        true,
+		Microseconds: s.PinReadGrace.Microseconds(),
+	}
 }

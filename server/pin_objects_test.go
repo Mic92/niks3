@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Mic92/niks3/api"
 	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
 	"github.com/Mic92/niks3/server/pg"
@@ -588,6 +590,59 @@ func TestPinObjectsSharedTarget(t *testing.T) {
 	ok(t, err)
 	if !canRead {
 		t.Errorf("After delete: PinMayRead([\"host-2\"], a) = false, want true (current target)")
+	}
+}
+
+// TestGCDeletesExpiredPinObjects verifies that GC cleans up expired pin read rows.
+// When a pin moves and grace period expires, GC should delete pin_objects rows
+// for the previous target, but keep rows for the current target and other pins.
+func TestGCDeletesExpiredPinObjects(t *testing.T) {
+	t.Parallel()
+	service := createTestServiceWithAuth(t, staticTokenForTests)
+	defer service.Close()
+	service.PinReadGrace = 1 * time.Hour
+
+	ctx := t.Context()
+
+	aKey := strings.Repeat("a", 32) + ".narinfo"
+	cKey := strings.Repeat("c", 32) + ".narinfo"
+
+	setupGraphObjects(t, service, map[string][]string{
+		aKey: {},
+		cKey: {},
+	}, []string{aKey, cKey})
+
+	// Pin host-1 to a.narinfo
+	pin(t, service, "host-1", strings.Repeat("a", 32))
+
+	// Move pin to c.narinfo
+	pin(t, service, "host-1", strings.Repeat("c", 32))
+
+	// Age moved_at to 2 hours ago (outside 1h grace period)
+	_, err := service.Pool.Exec(ctx,
+		`UPDATE pins SET moved_at = now() - interval '2 hours' WHERE name = 'host-1'`)
+	ok(t, err)
+
+	// Run GC with a long age window to ensure we only test the pin expiry logic
+	status := service.RunGCForTest(24*time.Hour, 24*time.Hour, false)
+	if status.State != api.GCTaskStateSucceeded {
+		t.Errorf("GC failed: %s", status.Error)
+	}
+
+	// Verify that pin_objects rows for a.narinfo are deleted
+	var countA int
+	err = service.Pool.QueryRow(ctx, `SELECT count(*) FROM pin_objects WHERE narinfo_key = $1`, aKey).Scan(&countA)
+	ok(t, err)
+	if countA != 0 {
+		t.Errorf("pin_objects rows for a.narinfo: %d, want 0", countA)
+	}
+
+	// Verify that pin_objects rows for c.narinfo still exist
+	var countC int
+	err = service.Pool.QueryRow(ctx, `SELECT count(*) FROM pin_objects WHERE narinfo_key = $1`, cKey).Scan(&countC)
+	ok(t, err)
+	if countC == 0 {
+		t.Errorf("pin_objects rows for c.narinfo: %d, want > 0", countC)
 	}
 }
 
