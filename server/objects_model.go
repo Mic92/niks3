@@ -47,10 +47,6 @@ func (s *Service) sweepBatch(ctx context.Context, gracePeriod int32, afterKey st
 		return "", nil, nil
 	}
 
-	if s.testHookAfterSweepSelect != nil {
-		s.testHookAfterSweepSelect()
-	}
-
 	unpending, err := pg.New(tx).GetKeysNotPending(ctx, keys)
 	if err != nil {
 		return "", nil, fmt.Errorf("recheck pending objects: %w", err)

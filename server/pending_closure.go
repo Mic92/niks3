@@ -138,10 +138,6 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
-	if s.testHookBeforePendingInsert != nil {
-		s.testHookBeforePendingInsert()
-	}
-
 	// The pending rows shield every object from GC, so write them before
 	// deciding what is present.
 	pendingClosure, allObjects, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap)
@@ -261,10 +257,6 @@ func (s *Service) objectsToUpload(
 		if err := s.dropStaleNarinfos(ctx, present, existingObjects, objectsMap); err != nil {
 			return nil, err
 		}
-	}
-
-	if s.testHookAfterPresenceCheck != nil {
-		s.testHookAfterPresenceCheck()
 	}
 
 	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
