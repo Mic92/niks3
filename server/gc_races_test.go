@@ -372,10 +372,11 @@ func TestForceGCDuringPushOffersSweptObject(t *testing.T) {
 
 	for _, point := range []struct {
 		name string
-		set  func(*server.Service, func())
+		set  func(*testing.T, *server.Service, string, func())
+		at   string
 	}{
-		{"before pending rows", (*server.Service).SetTestHookBeforePendingInsert},
-		{"after presence check", (*server.Service).SetTestHookAfterPresenceCheck},
+		{"before pending rows", beforeQuery, "InsertPendingClosure"},
+		{"after presence check", afterQuery, "GetExistingObjects"},
 	} {
 		t.Run(point.name, func(t *testing.T) {
 			t.Parallel()
@@ -397,7 +398,7 @@ func TestForceGCDuringPushOffersSweptObject(t *testing.T) {
 
 			gcRuns := 0
 
-			point.set(service, func() {
+			point.set(t, service, point.at, func() {
 				gcRuns++
 
 				st := service.RunGCForTest(0, 24*time.Hour, true)
@@ -634,7 +635,7 @@ func TestSweepRechecksPendingAfterLocking(t *testing.T) {
 		VALUES ($1, '{}', timezone('UTC', now()) - interval '1 hour', timezone('UTC', now()) - interval '1 hour')`, key)
 	ok(t, err)
 
-	service.SetTestHookAfterSweepSelect(func() {
+	afterQuery(t, service, "LockObjectsReadyForDeletion", func() {
 		q := pg.New(service.Pool)
 
 		pc, err := q.InsertPendingClosure(ctx, "late.narinfo")

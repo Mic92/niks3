@@ -377,10 +377,6 @@ func (s *Service) handleProxyGet(w http.ResponseWriter, r *http.Request, key str
 		}
 	}
 
-	if s.testHookBeforeProxyGet != nil {
-		s.testHookBeforeProxyGet()
-	}
-
 	// Client.GetObject is lazy and only sends the request on the first Read,
 	// after the headers are written. Core.GetObject sends it now, so a missing
 	// object is a 404 and a throttle reaches the rate limiter.

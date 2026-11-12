@@ -112,28 +112,6 @@ func ServeProxySocketForTest(shutdownCtx context.Context, handler http.Handler, 
 	}, nil)
 }
 
-// SetTestHookBeforePendingInsert runs f right before a pending closure and
-// its objects are written, before the existence check.
-func (s *Service) SetTestHookBeforePendingInsert(f func()) {
-	s.testHookBeforePendingInsert = f
-}
-
-// SetTestHookAfterPresenceCheck runs f once a push has decided what is present.
-func (s *Service) SetTestHookAfterPresenceCheck(f func()) {
-	s.testHookAfterPresenceCheck = f
-}
-
-// SetTestHookAfterSweepSelect runs f after the sweep locked a batch of rows,
-// before it rechecks pending rows.
-func (s *Service) SetTestHookAfterSweepSelect(f func()) {
-	s.testHookAfterSweepSelect = f
-}
-
-// SetTestHookBeforeProxyGet runs f between the read proxy's Stat and GET.
-func (s *Service) SetTestHookBeforeProxyGet(f func()) {
-	s.testHookBeforeProxyGet = f
-}
-
 // AbortSucceeded exposes abortSucceeded for tests.
 func AbortSucceeded(err error) bool {
 	return abortSucceeded(err)

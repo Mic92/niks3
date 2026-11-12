@@ -76,7 +76,7 @@ func TestPendingClosureWriteTimeout(t *testing.T) {
 
 		const writeTimeout = 200 * time.Millisecond
 
-		service.SetTestHookBeforePendingInsert(func() { time.Sleep(4 * writeTimeout) })
+		beforeQuery(t, service, "InsertPendingClosure", func() { time.Sleep(4 * writeTimeout) })
 
 		ts := httptest.NewUnstartedServer(http.HandlerFunc(service.CreatePendingClosureHandler))
 		ts.Config.WriteTimeout = writeTimeout

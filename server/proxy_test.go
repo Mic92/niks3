@@ -363,10 +363,14 @@ func TestReadProxy404(t *testing.T) {
 		minio.PutObjectOptions{ContentEncoding: "zstd"})
 	putTestObject(ctx, t, service, narKey, bytes.Repeat([]byte("nar"), 1024), minio.PutObjectOptions{})
 
+	s3 := service.MinioClient
+
 	var deleteBeforeGet string
 
-	service.SetTestHookBeforeProxyGet(func() {
-		ok(t, service.MinioClient.RemoveObject(ctx, service.Bucket, deleteBeforeGet, minio.RemoveObjectOptions{}))
+	beforeS3Request(t, service, func(r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/"+service.Bucket+"/"+deleteBeforeGet {
+			ok(t, s3.RemoveObject(ctx, service.Bucket, deleteBeforeGet, minio.RemoveObjectOptions{}))
+		}
 	})
 
 	for _, key := range []string{narinfoKey, narKey} {

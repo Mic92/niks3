@@ -147,17 +147,6 @@ type Service struct {
 
 	GCTasks *GCTaskStore
 	Metrics *Metrics
-
-	// testHookBeforePendingInsert runs right before a pending closure is
-	// written. Tests use it to interleave a GC run with a push.
-	testHookBeforePendingInsert func()
-	// testHookAfterPresenceCheck runs once a push has decided what is present.
-	testHookAfterPresenceCheck func()
-	// testHookAfterSweepSelect runs after the sweep locked a batch, before it
-	// rechecks pending rows.
-	testHookAfterSweepSelect func()
-	// testHookBeforeProxyGet runs between the proxy's Stat and GET.
-	testHookBeforeProxyGet func()
 }
 
 // Close closes the database connection pool.
