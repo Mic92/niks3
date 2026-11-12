@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
@@ -93,9 +94,13 @@ func (t *bearerFileTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return resp, nil
 }
 
+// Verifications of a provider wait for its key fetch in flight.
+const fetchTimeout = 10 * time.Second
+
 func httpClientFor(p *ProviderConfig) (*http.Client, error) {
+	client := &http.Client{Timeout: fetchTimeout}
 	if p.CAFile == "" && p.BearerTokenFile == "" {
-		return http.DefaultClient, nil
+		return client, nil
 	}
 
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
@@ -114,12 +119,12 @@ func httpClientFor(p *ProviderConfig) (*http.Client, error) {
 		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
 
-	var rt http.RoundTripper = transport
+	client.Transport = transport
 	if p.BearerTokenFile != "" {
-		rt = &bearerFileTransport{path: p.BearerTokenFile, base: transport}
+		client.Transport = &bearerFileTransport{path: p.BearerTokenFile, base: transport}
 	}
 
-	return &http.Client{Transport: rt}, nil
+	return client, nil
 }
 
 // asymmetricAlgs is accepted when discovery is skipped. The JWKS key type
