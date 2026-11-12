@@ -11,6 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const backfillPinObjects = `-- name: BackfillPinObjects :exec
+WITH RECURSIVE reach (pin, narinfo_key, key) AS (
+    SELECT
+        name,
+        narinfo_key,
+        narinfo_key::varchar
+    FROM pins
+    UNION
+    SELECT
+        reach.pin,
+        reach.narinfo_key,
+        ref
+    FROM reach
+    JOIN objects o ON o.key = reach.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+INSERT INTO pin_objects (pin, narinfo_key, key)
+SELECT
+    pin,
+    narinfo_key,
+    key
+FROM reach
+ON CONFLICT DO NOTHING
+`
+
+// Backfill pin_objects for existing pins using recursive CTE.
+func (q *Queries) BackfillPinObjects(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, backfillPinObjects)
+	return err
+}
+
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT $1::timestamp AS time
@@ -111,6 +142,23 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const deleteExpiredPinObjects = `-- name: DeleteExpiredPinObjects :execrows
+DELETE FROM pin_objects po
+USING pins p
+WHERE po.pin = p.name
+  AND po.narinfo_key = p.previous_narinfo_key
+  AND p.moved_at <= now() - $1::interval
+`
+
+// Delete pin_objects rows for previous targets whose moved_at is older than grace period.
+func (q *Queries) DeleteExpiredPinObjects(ctx context.Context, grace pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredPinObjects, grace)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec
 DELETE FROM multipart_uploads
 WHERE upload_id = $1
@@ -167,6 +215,31 @@ func (q *Queries) DeleteUnpinnedClosures(ctx context.Context, dollar_1 []string)
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const fillPinObjects = `-- name: FillPinObjects :exec
+WITH RECURSIVE reach (key) AS (
+    SELECT $2::varchar
+    UNION
+    SELECT ref FROM reach
+    JOIN objects AS o ON o.key = reach.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+INSERT INTO pin_objects (pin, narinfo_key, key)
+SELECT $1, $2, key FROM reach
+ON CONFLICT DO NOTHING
+`
+
+type FillPinObjectsParams struct {
+	Pin        string `json:"pin"`
+	NarinfoKey string `json:"narinfo_key"`
+}
+
+// Insert objects reachable from a pin's narinfo_key using recursive traversal.
+// Cycle-safe due to UNION and conflict handling.
+func (q *Queries) FillPinObjects(ctx context.Context, arg FillPinObjectsParams) error {
+	_, err := q.db.Exec(ctx, fillPinObjects, arg.Pin, arg.NarinfoKey)
+	return err
 }
 
 const getClosure = `-- name: GetClosure :one
@@ -445,9 +518,17 @@ FROM pins
 WHERE name = $1
 `
 
-func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
+type GetPinRow struct {
+	Name       string             `json:"name"`
+	NarinfoKey string             `json:"narinfo_key"`
+	StorePath  string             `json:"store_path"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetPin(ctx context.Context, name string) (GetPinRow, error) {
 	row := q.db.QueryRow(ctx, getPin, name)
-	var i Pin
+	var i GetPinRow
 	err := row.Scan(
 		&i.Name,
 		&i.NarinfoKey,
@@ -554,15 +635,23 @@ FROM pins
 ORDER BY name
 `
 
-func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
+type ListPinsRow struct {
+	Name       string             `json:"name"`
+	NarinfoKey string             `json:"narinfo_key"`
+	StorePath  string             `json:"store_path"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListPins(ctx context.Context) ([]ListPinsRow, error) {
 	rows, err := q.db.Query(ctx, listPins)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Pin
+	var items []ListPinsRow
 	for rows.Next() {
-		var i Pin
+		var i ListPinsRow
 		if err := rows.Scan(
 			&i.Name,
 			&i.NarinfoKey,
@@ -710,6 +799,54 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const pinMayRead = `-- name: PinMayRead :one
+SELECT EXISTS(
+    SELECT 1 FROM pin_objects po
+    JOIN pins p ON p.name = po.pin
+    WHERE p.name LIKE ANY($1::varchar[])
+      AND po.key = $2::varchar
+      AND (
+          po.narinfo_key = p.narinfo_key
+          OR (
+              po.narinfo_key = p.previous_narinfo_key
+              AND p.moved_at IS NOT NULL
+              AND p.moved_at > now() - $3::interval
+          )
+      )
+) AS can_read
+`
+
+type PinMayReadParams struct {
+	Patterns []string        `json:"patterns"`
+	Key      string          `json:"key"`
+	Grace    pgtype.Interval `json:"grace"`
+}
+
+// Check if a pin pattern can read a key through its current or previous target.
+// Patterns are SQL LIKE patterns; matches against pin names.
+func (q *Queries) PinMayRead(ctx context.Context, arg PinMayReadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pinMayRead, arg.Patterns, arg.Key, arg.Grace)
+	var can_read bool
+	err := row.Scan(&can_read)
+	return can_read, err
+}
+
+const prunePinObjects = `-- name: PrunePinObjects :exec
+DELETE FROM pin_objects
+WHERE pin = $1
+  AND narinfo_key NOT IN (
+      SELECT narinfo_key FROM pins WHERE name = $1
+      UNION
+      SELECT previous_narinfo_key FROM pins WHERE name = $1 AND previous_narinfo_key IS NOT NULL
+  )
+`
+
+// Delete rows where narinfo_key is neither the current nor previous target.
+func (q *Queries) PrunePinObjects(ctx context.Context, pin string) error {
+	_, err := q.db.Exec(ctx, prunePinObjects, pin)
+	return err
+}
+
 const registerCompletedObject = `-- name: RegisterCompletedObject :exec
 INSERT INTO objects (key, refs, size)
 SELECT $1::varchar, $2::varchar [], $3
@@ -787,11 +924,19 @@ func (q *Queries) TouchPresentClosures(ctx context.Context, dollar_1 []string) (
 
 const upsertPin = `-- name: UpsertPin :exec
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
-VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
+VALUES ($1, $2, $3, now(), now())
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
     store_path = EXCLUDED.store_path,
-    updated_at = timezone('UTC', now())
+    previous_narinfo_key = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN pins.narinfo_key
+        ELSE pins.previous_narinfo_key
+    END,
+    moved_at = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN now()
+        ELSE pins.moved_at
+    END,
+    updated_at = now()
 `
 
 type UpsertPinParams struct {
@@ -801,6 +946,7 @@ type UpsertPinParams struct {
 }
 
 // Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+// Sets previous_narinfo_key and moved_at only when narinfo_key changes.
 func (q *Queries) UpsertPin(ctx context.Context, arg UpsertPinParams) error {
 	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey, arg.StorePath)
 	return err

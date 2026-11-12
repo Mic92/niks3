@@ -300,12 +300,21 @@ FOR SHARE;
 
 -- name: UpsertPin :exec
 -- Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+-- Sets previous_narinfo_key and moved_at only when narinfo_key changes.
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
-VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
+VALUES ($1, $2, $3, now(), now())
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
     store_path = EXCLUDED.store_path,
-    updated_at = timezone('UTC', now());
+    previous_narinfo_key = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN pins.narinfo_key
+        ELSE pins.previous_narinfo_key
+    END,
+    moved_at = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN now()
+        ELSE pins.moved_at
+    END,
+    updated_at = now();
 
 -- name: GetPin :one
 SELECT name, narinfo_key, store_path, created_at, updated_at
@@ -320,3 +329,78 @@ WHERE name = $1;
 SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name;
+
+-- name: FillPinObjects :exec
+-- Insert objects reachable from a pin's narinfo_key using recursive traversal.
+-- Cycle-safe due to UNION and conflict handling.
+WITH RECURSIVE reach (key) AS (
+    SELECT sqlc.arg(narinfo_key)::varchar
+    UNION
+    SELECT ref FROM reach
+    JOIN objects AS o ON o.key = reach.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+INSERT INTO pin_objects (pin, narinfo_key, key)
+SELECT sqlc.arg(pin), sqlc.arg(narinfo_key), key FROM reach
+ON CONFLICT DO NOTHING;
+
+-- name: PrunePinObjects :exec
+-- Delete rows where narinfo_key is neither the current nor previous target.
+DELETE FROM pin_objects
+WHERE pin = $1
+  AND narinfo_key NOT IN (
+      SELECT narinfo_key FROM pins WHERE name = $1
+      UNION
+      SELECT previous_narinfo_key FROM pins WHERE name = $1 AND previous_narinfo_key IS NOT NULL
+  );
+
+-- name: PinMayRead :one
+-- Check if a pin pattern can read a key through its current or previous target.
+-- Patterns are SQL LIKE patterns; matches against pin names.
+SELECT EXISTS(
+    SELECT 1 FROM pin_objects po
+    JOIN pins p ON p.name = po.pin
+    WHERE p.name LIKE ANY(sqlc.arg(patterns)::varchar[])
+      AND po.key = sqlc.arg(key)::varchar
+      AND (
+          po.narinfo_key = p.narinfo_key
+          OR (
+              po.narinfo_key = p.previous_narinfo_key
+              AND p.moved_at IS NOT NULL
+              AND p.moved_at > now() - sqlc.arg(grace)::interval
+          )
+      )
+) AS can_read;
+
+-- name: DeleteExpiredPinObjects :execrows
+-- Delete pin_objects rows for previous targets whose moved_at is older than grace period.
+DELETE FROM pin_objects po
+USING pins p
+WHERE po.pin = p.name
+  AND po.narinfo_key = p.previous_narinfo_key
+  AND p.moved_at <= now() - sqlc.arg(grace)::interval;
+
+-- name: BackfillPinObjects :exec
+-- Backfill pin_objects for existing pins using recursive CTE.
+WITH RECURSIVE reach (pin, narinfo_key, key) AS (
+    SELECT
+        name,
+        narinfo_key,
+        narinfo_key::varchar
+    FROM pins
+    UNION
+    SELECT
+        reach.pin,
+        reach.narinfo_key,
+        ref
+    FROM reach
+    JOIN objects o ON o.key = reach.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+INSERT INTO pin_objects (pin, narinfo_key, key)
+SELECT
+    pin,
+    narinfo_key,
+    key
+FROM reach
+ON CONFLICT DO NOTHING;
