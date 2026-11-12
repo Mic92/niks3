@@ -84,7 +84,13 @@ func NewTestClientForServer(serverURL string) (*Client, error) {
 
 // UploadMultipart re-exports uploadMultipart for the external test package.
 func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *MultipartUploadInfo, objectKey string, partSize int) error {
-	return c.uploadMultipart(ctx, r, info, objectKey, partSize)
+	produce := func(w io.Writer) error {
+		_, err := io.Copy(w, r)
+
+		return err //nolint:wrapcheck // the test's own error
+	}
+
+	return c.uploadMultipart(ctx, produce, info, objectKey, partSize)
 }
 
 // RecordSignatures re-exports (*Client).recordSignatures for tests.

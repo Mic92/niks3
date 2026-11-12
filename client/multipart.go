@@ -145,11 +145,52 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, objectKey, uploadI
 // partsInFlight bounds concurrent part PUTs (and part-sized buffers) per NAR.
 const partsInFlight = 4
 
-// uploadMultipart uploads a stream in parts using presigned URLs, up to
-// partsInFlight parts at once.
-func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
+var errProducerFailed = errors.New("producer failed")
+
+// uploadMultipart uploads what produce writes and completes the upload only
+// if produce returned nil: the server registers a completed object.
+func (c *Client) uploadMultipart(ctx context.Context, produce func(io.Writer) error, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) error {
 	slog.Debug("Uploading", "object_key", objectKey, "part_size", partSize)
 
+	pr, pw := io.Pipe()
+	produced := make(chan error, 1)
+
+	go func() {
+		err := produce(pw)
+		produced <- err
+
+		if err != nil {
+			err = errProducerFailed
+		}
+
+		_ = pw.CloseWithError(err)
+	}()
+
+	parts, err := c.uploadParts(ctx, pr, multipartInfo, objectKey, partSize)
+
+	// Ends a producer that still writes.
+	_ = pr.Close()
+
+	if perr := <-produced; perr != nil && (err == nil || errors.Is(err, errProducerFailed)) {
+		return perr
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, parts); err != nil {
+		return fmt.Errorf("completing multipart upload: %w", err)
+	}
+
+	slog.Debug("Completed upload", "parts", len(parts))
+
+	return nil
+}
+
+// uploadParts uploads a stream in parts using presigned URLs, up to
+// partsInFlight parts at once.
+func (c *Client) uploadParts(ctx context.Context, r io.Reader, multipartInfo *MultipartUploadInfo, objectKey string, partSize int) ([]CompletedPart, error) {
 	var (
 		mu             sync.Mutex
 		completedParts []CompletedPart
@@ -225,24 +266,16 @@ func (c *Client) uploadMultipart(ctx context.Context, r io.Reader, multipartInfo
 	}()
 
 	if err := g.Wait(); err != nil {
-		return err //nolint:wrapcheck // wrapped with its part number above
+		return nil, err //nolint:wrapcheck // wrapped with its part number above
 	}
 
 	if readErr != nil {
-		return readErr
+		return nil, readErr
 	}
 
 	slices.SortFunc(completedParts, func(a, b CompletedPart) int { return a.PartNumber - b.PartNumber })
 
-	// Complete the multipart upload
-	err := c.CompleteMultipartUpload(ctx, objectKey, multipartInfo.UploadID, completedParts)
-	if err != nil {
-		return fmt.Errorf("completing multipart upload: %w", err)
-	}
-
-	slog.Debug("Completed upload", "parts", len(completedParts))
-
-	return nil
+	return completedParts, nil
 }
 
 // uploadPart uploads a single part and returns the ETag.
