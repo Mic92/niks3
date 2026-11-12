@@ -23,12 +23,10 @@ var ErrTokenValidationFailed = errors.New("token validation failed")
 type ValidationError struct {
 	// Reason is a human-readable description of why validation failed
 	Reason string
-	// Provider is the provider name that was tried (if any)
+	// Provider is the provider the token's issuer names (if any)
 	Provider string
 	// Claims contains the token claims (if successfully parsed)
 	Claims map[string]any
-	// TriedProviders lists all providers that were attempted
-	TriedProviders []string
 }
 
 func (e *ValidationError) Error() string {
@@ -218,61 +216,51 @@ func (v *Validator) AudienceForIssuer(issuer string) (string, bool) {
 	return "", false
 }
 
-// ValidateToken validates a JWT token and returns the validated claims.
-// On failure, returns a *ValidationError with detailed information about why validation failed.
+// ValidateToken verifies a JWT with the provider its issuer names and returns
+// the validated claims, or a *ValidationError.
 func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*ValidatedClaims, error) {
-	triedProviders := make([]string, 0, len(v.verifiers))
-
-	// Try each provider's verifier
-	// go-oidc will check issuer claim matches the provider
-	for issuer, pv := range v.verifiers {
-		triedProviders = append(triedProviders, pv.config.Name())
-
-		idToken, err := pv.verifier.Verify(ctx, tokenString)
-		if err != nil {
-			slog.Debug("OIDC token verification failed", "provider", pv.config.Name(), "error", err)
-
-			continue
-		}
-
-		// Token verified! Extract claims
-		var claims map[string]any
-		if err := idToken.Claims(&claims); err != nil {
-			slog.Debug("Failed to extract claims", "provider", pv.config.Name(), "error", err)
-
-			return nil, &ValidationError{
-				Reason:         fmt.Sprintf("failed to extract claims: %v", err),
-				Provider:       pv.config.Name(),
-				Claims:         nil,
-				TriedProviders: triedProviders,
-			}
-		}
-
-		scopes, pins, err := matchRules(claims, pv.config.effectiveRules())
-		if err != nil {
-			slog.Debug("No rule matched", "provider", pv.config.Name(), "error", err)
-
-			return nil, &ValidationError{
-				Reason:         err.Error(),
-				Provider:       pv.config.Name(),
-				Claims:         claims,
-				TriedProviders: triedProviders,
-			}
-		}
-
-		return &ValidatedClaims{
-			Subject:   idToken.Subject,
-			Issuer:    issuer,
-			Provider:  pv.config.Name(),
-			Scopes:    scopes,
-			Pins:      pins,
-			RawClaims: claims,
-		}, nil
+	issuer, err := unverifiedIssuer(tokenString)
+	if err != nil {
+		return nil, &ValidationError{Reason: err.Error()}
 	}
 
-	// No provider matched - return detailed error
-	return nil, &ValidationError{
-		Reason:         "no provider could verify the token (signature or issuer mismatch)",
-		TriedProviders: triedProviders,
+	// go-oidc accepts Google's scheme-less issuer too.
+	if issuer == "accounts.google.com" {
+		issuer = "https://accounts.google.com"
 	}
+
+	pv := v.verifiers[issuer]
+	if pv == nil {
+		return nil, &ValidationError{Reason: fmt.Sprintf("no provider is configured for issuer %q", issuer)}
+	}
+
+	fail := func(reason string, claims map[string]any) (*ValidatedClaims, error) {
+		slog.Debug("OIDC token rejected", "provider", pv.config.Name(), "reason", reason)
+
+		return nil, &ValidationError{Reason: reason, Provider: pv.config.Name(), Claims: claims}
+	}
+
+	idToken, err := pv.verifier.Verify(ctx, tokenString)
+	if err != nil {
+		return fail(err.Error(), nil)
+	}
+
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return fail(fmt.Sprintf("failed to extract claims: %v", err), nil)
+	}
+
+	scopes, pins, err := matchRules(claims, pv.config.effectiveRules())
+	if err != nil {
+		return fail(err.Error(), claims)
+	}
+
+	return &ValidatedClaims{
+		Subject:   idToken.Subject,
+		Issuer:    pv.config.Issuer,
+		Provider:  pv.config.Name(),
+		Scopes:    scopes,
+		Pins:      pins,
+		RawClaims: claims,
+	}, nil
 }

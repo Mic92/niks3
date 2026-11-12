@@ -2,6 +2,10 @@ package oidc_test
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,42 +214,51 @@ func TestValidateToken_MultipleProviders(t *testing.T) {
 	}
 }
 
-func TestValidateToken_NoMatchingProvider(t *testing.T) {
+// A token is verified with the keys of the provider its issuer names, so a
+// token from elsewhere cannot make the server fetch anyone's keys.
+func TestValidateToken_UnknownIssuerFetchesNoKeys(t *testing.T) {
 	t.Parallel()
 
-	m1 := oidctest.StartMockOIDC(t)
-	m2 := oidctest.StartMockOIDC(t)
+	var fetches atomic.Int32
 
-	// Configure only m1
-	config := oidc.Config{
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+
+		_, _ = io.WriteString(w, `{"keys":[]}`)
+	}))
+	defer jwks.Close()
+
+	ctx, validator := oidctest.NewValidator(t, oidc.Config{
 		AllowInsecure: true,
 		Providers: map[string]*oidc.ProviderConfig{
-			"provider1": {
-				Issuer:   m1.Issuer(),
-				Audience: m1.ClientID,
-			},
+			"known": {Issuer: "https://known.example", JWKSURL: jwks.URL, Audience: "niks3"},
 		},
-	}
-	ctx, validator := oidctest.NewValidator(t, config)
-
-	// Token from m2 (not configured) should fail
-	token := oidctest.SignToken(t, m2, jwt.MapClaims{
-		"sub": "test-subject",
-		"iss": m2.Issuer(),
-		"aud": m2.ClientID,
 	})
 
-	_, err := validator.ValidateToken(ctx, token)
-	if err == nil {
-		t.Fatal("expected error for token from unconfigured provider, got nil")
+	_, err := validator.ValidateToken(ctx, oidctest.SignToken(t, oidctest.StartMockOIDC(t), jwt.MapClaims{}))
+	if !errors.Is(err, oidc.ErrTokenValidationFailed) {
+		t.Fatalf("ValidateToken: %v, want a validation error", err)
 	}
 
-	var validationErr *oidc.ValidationError
-	if !errors.As(err, &validationErr) {
-		t.Fatalf("expected ValidationError, got %T", err)
+	if n := fetches.Load(); n != 0 {
+		t.Errorf("%d key fetches for a token of an unconfigured issuer", n)
 	}
+}
 
-	if len(validationErr.TriedProviders) != 1 {
-		t.Errorf("expected 1 tried provider, got %d", len(validationErr.TriedProviders))
+// go-oidc accepts Google's scheme-less issuer for https://accounts.google.com.
+func TestValidateToken_GoogleSchemelessIssuer(t *testing.T) {
+	t.Parallel()
+
+	m := oidctest.StartMockOIDC(t)
+
+	ctx, validator := oidctest.NewValidator(t, oidc.Config{
+		AllowInsecure: true,
+		Providers: map[string]*oidc.ProviderConfig{
+			"google": {Issuer: "https://accounts.google.com", JWKSURL: m.JWKSEndpoint(), Audience: m.ClientID},
+		},
+	})
+
+	if _, err := validator.ValidateToken(ctx, oidctest.SignToken(t, m, jwt.MapClaims{"iss": "accounts.google.com"})); err != nil {
+		t.Errorf("ValidateToken: %v", err)
 	}
 }
