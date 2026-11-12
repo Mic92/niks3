@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"flag"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/server/oidc"
 )
 
 // SystemdListenerForTest exposes systemdListener to tests.
@@ -71,6 +73,11 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 	return resolveDBConnectionString(flagValue, file, lookupEnv)
 }
 
+// GlobToLike exports globToLike for tests.
+func GlobToLike(pattern string) string {
+	return globToLike(pattern)
+}
+
 // ServerTLSConfig is an export of serverTLSConfig for tests.
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
@@ -120,4 +127,32 @@ func AbortSucceeded(err error) bool {
 // EnsureAbortUploadsRule exposes ensureAbortUploadsRule for tests.
 func (s *Service) EnsureAbortUploadsRule(ctx context.Context) {
 	s.ensureAbortUploadsRule(ctx)
+}
+
+// Options is an export of options for tests.
+type Options = options
+
+// ValidateTLSOptions exposes validateTLSOptions for tests.
+func ValidateTLSOptions(opts *Options) error {
+	return validateTLSOptions(opts)
+}
+
+// CommonName exposes commonName for tests.
+func CommonName(dn string) (string, bool) {
+	return commonName(dn)
+}
+
+// PrincipalFromContext extracts the principal from a request context for tests.
+func PrincipalFromContext(r *http.Request) ([]string, []oidc.Scope, bool) {
+	p, ok := r.Context().Value(principalKey{}).(principal)
+	if !ok {
+		return nil, nil, false
+	}
+
+	return p.readPins, p.scopes, true
+}
+
+// ParseArgsFrom exports parseArgsFrom for testing.
+func ParseArgsFrom(fs *flag.FlagSet, args []string) (*Options, error) {
+	return parseArgsFrom(fs, args)
 }

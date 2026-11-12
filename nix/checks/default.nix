@@ -108,6 +108,10 @@ packages
     inherit common;
     niks3 = selfPackages.niks3;
   };
+  nixos-test-pin-scoped-reads = pkgs.callPackage ./nixos-test-pin-scoped-reads.nix {
+    inherit common;
+    niks3 = selfPackages.niks3;
+  };
   nixos-test-external-signer = pkgs.callPackage ./nixos-test-external-signer.nix {
     inherit common;
     niks3 = selfPackages.niks3;

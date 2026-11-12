@@ -123,6 +123,27 @@ func (s *Service) CreatePinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prune old pin_objects for this pin
+	err = queries.PrunePinObjects(r.Context(), name)
+	if err != nil {
+		slog.Error("Failed to prune pin objects", "name", name, "error", err)
+		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	// Fill pin_objects with reachable objects
+	err = queries.FillPinObjects(r.Context(), pg.FillPinObjectsParams{
+		Pin:        name,
+		NarinfoKey: narinfoKey,
+	})
+	if err != nil {
+		slog.Error("Failed to fill pin objects", "name", name, "narinfo_key", narinfoKey, "error", err)
+		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
 	if err = tx.Commit(r.Context()); err != nil {
 		slog.Error("Failed to commit pin transaction", "name", name, "error", err)
 		http.Error(w, "failed to create pin: "+err.Error(), http.StatusInternalServerError)

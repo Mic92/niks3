@@ -53,6 +53,67 @@ presigned S3 URL instead of being streamed, so NAR bytes bypass niks3. Narinfos
 and other metadata stay proxied. Note that anyone holding such a URL can fetch
 that object until it expires, regardless of read-proxy authentication.
 
+#### Pin-scoped reads (optional)
+
+With mTLS client certificates, niks3 can restrict read access to pin-scoped sets of objects.
+A machine presents its mTLS certificate and reads only the closure reachable from its assigned pin (or pins).
+
+Configure with module option `services.niks3.nginx.mtls.readPins`:
+
+```nix
+services.niks3.nginx.mtls = {
+  enable = true;
+  clientCAFile = "/path/to/ca.pem";
+  boundSubjects = [ "CN=ci" ];  # full access; a cert that matches this is never pin-scoped
+  readPins = [ "CN=*=host-{cn}" ]; # glob pattern mapping cert subject to pin name
+};
+services.niks3.readProxy.pinReadGrace = "1h";
+```
+
+**Flag syntax** for `--mtls-read-pin`:
+Each entry is a rule `<subject-glob>=<pin-pattern>`.
+The rule splits at the last `=`.
+The subject glob matches the subject DN of the cert.
+In the pin pattern, `{cn}` becomes the common name of the cert.
+The result is a glob over pin names.
+Example: `CN=web-*=host-{cn}` matches any cert with subject starting with `CN=web-` and maps it to pin `host-<its-cn>`.
+A cert that matches `boundSubjects` or `boundSubjectsRead` is not pin-scoped.
+
+**Grace period** (default 1 hour):
+After a pin is updated (moved to a different target), the machine can still read
+the previous target for this grace period.
+This allows in-progress pulls to complete and rollbacks to work without interruption.
+Configure with `services.niks3.readProxy.pinReadGrace` or flag `--pin-read-grace`.
+
+**Certificate and token behavior**:
+A cert that matches a pin-scoped read rule is pin-scoped.
+A bearer or OIDC token sent on the same connection is ignored.
+Use a narrower subject glob than `CN=*` if token writers also present certs.
+
+**Flags and environment variables**:
+`--mtls-read-pin` is repeatable. `--pin-read-grace` also reads `NIKS3_PIN_READ_GRACE`.
+
+**Server startup validation**:
+The server refuses to start when `--mtls-read-pin` is set and `--mtls-bound-subject` is empty.
+
+**Pin name validation**:
+A cert whose CN is not a valid pin name (`^[a-zA-Z0-9._-]+$`) is never pin-scoped.
+
+**Cost**:
+niks3 keeps a `pin_objects` row per object in each pin closure and fills it on each pin write,
+also when no rule is set (so that rules can be enabled later without re-pinning).
+The first start after the upgrade backfills all existing pins inside the migration.
+
+**Responses**:
+A pin-scoped client gets:
+
+- 200 OK for objects in its pin's closure, and for `pins/<its-pin-name>`
+- 200 OK for `nix-cache-info`
+- 404 Not Found for everything else (does not disclose which objects exist)
+- 403 Forbidden on write operations (`/api/*`)
+
+Pin-scoped clients must use the read proxy, not the S3 bucket directly.
+
 ## Features
 
 ### Binary Cache Protocol Support

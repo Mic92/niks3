@@ -173,27 +173,89 @@ func validateTLSOptions(opts *options) error {
 		return errors.New("--tls-client-ca and --mtls-proxy-header are mutually exclusive")
 	}
 
+	if len(opts.MTLSPinReadRules) > 0 && len(opts.MTLSBoundSubjects) == 0 {
+		return errors.New("--mtls-read-pin requires --mtls-bound-subject")
+	}
+
 	return nil
 }
 
 // registerBucketFlags registers the flags for what the server writes to and
 // serves from the bucket.
-func registerBucketFlags(opts *options) {
-	flag.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
+func registerBucketFlags(fs *flag.FlagSet, opts *options) {
+	fs.IntVar(&opts.CachePriority, "cache-priority", getEnvOrDefaultInt("NIKS3_CACHE_PRIORITY", defaultCachePriority),
 		"Priority advertised in nix-cache-info. Lower is preferred (cache.nixos.org uses 40)")
-	flag.IntVar(&opts.AbortIncompleteUploadsDays, "abort-incomplete-uploads-days",
+	fs.IntVar(&opts.AbortIncompleteUploadsDays, "abort-incomplete-uploads-days",
 		getEnvOrDefaultInt("NIKS3_ABORT_INCOMPLETE_UPLOADS_DAYS", defaultAbortIncompleteUploadsDays),
 		"Install a bucket lifecycle rule aborting multipart uploads after this many days. 0 disables it")
-	flag.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
+	fs.BoolVar(&opts.EnableReadProxy, "enable-read-proxy",
 		getEnvOrDefaultBool("NIKS3_ENABLE_READ_PROXY", false),
 		"Serve cache objects by proxying reads from S3 (for private buckets)")
-	flag.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
+	fs.DurationVar(&opts.ReadRedirectTTL, "read-redirect-ttl",
 		getEnvOrDefaultDuration("NIKS3_READ_REDIRECT_TTL", 0),
 		"Answer NAR reads with a redirect to a presigned S3 URL valid for this long (e.g. 15m) instead of "+
 			"streaming them. Requires --enable-read-proxy. 0 disables")
 }
 
-func parseArgs() (*options, error) {
+func registerPinReadFlags(fs *flag.FlagSet, opts *options, mtlsReadPinRules *stringSliceFlag) {
+	fs.Var(mtlsReadPinRules, "mtls-read-pin",
+		"Map mTLS subject DN glob to a readable pin glob. Repeat for multiple rules. Format: subject=pin")
+	fs.DurationVar(&opts.PinReadGrace, "pin-read-grace",
+		getEnvOrDefaultDuration("NIKS3_PIN_READ_GRACE", time.Hour),
+		"Grace period for pin-scoped clients to read recently-moved pins (e.g. 1h)")
+}
+
+// validateRequiredOptions checks for required flags and their consistency.
+func validateRequiredOptions(opts *options) error {
+	if opts.S3Endpoint == "" {
+		return errors.New("missing required flag: --s3-endpoint")
+	}
+
+	hasStaticKeys := opts.S3AccessKey != "" || opts.S3SecretKey != ""
+	if opts.S3UseIAM && hasStaticKeys {
+		return errors.New("--s3-use-iam cannot be combined with --s3-access-key / --s3-secret-key")
+	}
+
+	if !opts.S3UseIAM {
+		if opts.S3AccessKey == "" {
+			return errors.New("missing required flag: --s3-access-key or --s3-access-key-path (or use --s3-use-iam)")
+		}
+
+		if opts.S3SecretKey == "" {
+			return errors.New("missing required flag: --s3-secret-key or --s3-secret-key-path (or use --s3-use-iam)")
+		}
+	}
+
+	if opts.S3Bucket == "" {
+		return errors.New("missing required flag: --s3-bucket")
+	}
+
+	// API token is always required (for GC and admin operations)
+	if opts.APIToken == "" {
+		return errors.New("missing required flag: --api-token or --api-token-path")
+	}
+
+	// errgroup.SetLimit(0) blocks forever, and 0 reads like "unlimited".
+	if opts.S3Concurrency < 1 {
+		return errors.New("--s3-concurrency must be at least 1")
+	}
+
+	if err := validateReadRedirect(opts); err != nil {
+		return err
+	}
+
+	if err := validateTLSOptions(opts); err != nil {
+		return err
+	}
+
+	if len(opts.APIToken) < minAPITokenLength {
+		return errors.New("API token must be at least 36 characters long")
+	}
+
+	return nil
+}
+
+func parseArgsFrom(fs *flag.FlagSet, args []string) (*options, error) {
 	var opts options
 
 	maxNarSize := ""
@@ -204,62 +266,64 @@ func parseArgs() (*options, error) {
 	apiTokenPath := ""
 	s3BucketLookup := ""
 
-	flag.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIKS3_DB", ""),
+	fs.StringVar(&opts.DBConnectionString, "db", getEnvOrDefault("NIKS3_DB", ""),
 		"Postgres connection string, see https://pkg.go.dev/github.com/lib/pq#hdr-Connection_String_Parameters. "+
 			"When empty, libpq PG* environment variables are used")
-	flag.StringVar(&dbFile, "db-file", getEnvOrDefault("NIKS3_DB_FILE", ""),
+	fs.StringVar(&dbFile, "db-file", getEnvOrDefault("NIKS3_DB_FILE", ""),
 		"Path to file containing the Postgres connection string (e.g. a mounted Kubernetes secret)")
-	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
-	flag.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
-	flag.StringVar(&opts.S3PublicURL, "s3-public-url", getEnvOrDefault("NIKS3_S3_PUBLIC_URL", ""),
+	fs.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
+	fs.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
+	fs.StringVar(&opts.S3PublicURL, "s3-public-url", getEnvOrDefault("NIKS3_S3_PUBLIC_URL", ""),
 		"Externally reachable S3 base URL (http(s)://host[:port]) used in presigned URLs handed to clients. "+
 			"Defaults to --s3-endpoint. Set this when the server reaches S3 via an internal address")
-	flag.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
-	flag.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
-	flag.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefaultBool("NIKS3_S3_USE_SSL", true), "Use SSL for S3")
-	flag.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefaultBool("NIKS3_S3_USE_IAM", false),
+	fs.StringVar(&opts.S3AccessKey, "s3-access-key", getEnvOrDefault("NIKS3_S3_ACCESS_KEY", ""), "S3 access key")
+	fs.StringVar(&opts.S3SecretKey, "s3-secret-key", getEnvOrDefault("NIKS3_S3_SECRET_KEY", ""), "S3 secret key")
+	fs.BoolVar(&opts.S3UseSSL, "s3-use-ssl", getEnvOrDefaultBool("NIKS3_S3_USE_SSL", true), "Use SSL for S3")
+	fs.BoolVar(&opts.S3UseIAM, "s3-use-iam", getEnvOrDefaultBool("NIKS3_S3_USE_IAM", false),
 		"Use IAM credentials from the environment (IRSA, EC2 instance profile, etc.) instead of static keys")
-	flag.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
-	flag.StringVar(&opts.S3Region, "s3-region", getEnvOrDefault("NIKS3_S3_REGION", ""), "S3 region override (e.g., us-east-1, auto)")
-	flag.StringVar(&s3BucketLookup, "s3-bucket-lookup", getEnvOrDefault("NIKS3_S3_BUCKET_LOOKUP", "auto"),
+	fs.StringVar(&opts.S3Bucket, "s3-bucket", getEnvOrDefault("NIKS3_S3_BUCKET", ""), "S3 bucket name")
+	fs.StringVar(&opts.S3Region, "s3-region", getEnvOrDefault("NIKS3_S3_REGION", ""), "S3 region override (e.g., us-east-1, auto)")
+	fs.StringVar(&s3BucketLookup, "s3-bucket-lookup", getEnvOrDefault("NIKS3_S3_BUCKET_LOOKUP", "auto"),
 		"S3 bucket addressing style: auto (default), dns (virtual-host, e.g. CoreWeave), or path")
-	flag.StringVar(&s3AccessKeyPath, "s3-access-key-path", getEnvOrDefault("NIKS3_S3_ACCESS_KEY_PATH", ""),
+	fs.StringVar(&s3AccessKeyPath, "s3-access-key-path", getEnvOrDefault("NIKS3_S3_ACCESS_KEY_PATH", ""),
 		"Path to file containing S3 access key")
-	flag.StringVar(&s3SecretKeyPath, "s3-secret-key-path", getEnvOrDefault("NIKS3_S3_SECRET_KEY_PATH", ""),
+	fs.StringVar(&s3SecretKeyPath, "s3-secret-key-path", getEnvOrDefault("NIKS3_S3_SECRET_KEY_PATH", ""),
 		"Path to file containing S3 secret key")
-	flag.StringVar(&opts.APIToken, "api-token", getEnvOrDefault("NIKS3_API_TOKEN", ""), "API token for authentication")
-	flag.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
-	flag.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
+	fs.StringVar(&opts.APIToken, "api-token", getEnvOrDefault("NIKS3_API_TOKEN", ""), "API token for authentication")
+	fs.StringVar(&apiTokenPath, "api-token-path", getEnvOrDefault("NIKS3_API_TOKEN_PATH", ""), "API token file path")
+	fs.StringVar(&opts.CacheURL, "cache-url", getEnvOrDefault("NIKS3_CACHE_URL", ""),
 		"Public cache URL for the landing page (e.g., https://cache.example.com)")
-	flag.StringVar(&opts.ServerURL, "server-url", getEnvOrDefault("NIKS3_SERVER_URL", ""),
+	fs.StringVar(&opts.ServerURL, "server-url", getEnvOrDefault("NIKS3_SERVER_URL", ""),
 		"Public niks3 server URL the landing page fetches cache stats from (e.g., https://niks3.example.com). "+
 			"Defaults to a same-origin relative path")
-	flag.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
+	fs.StringVar(&opts.OIDCConfigPath, "oidc-config", getEnvOrDefault("NIKS3_OIDC_CONFIG", ""),
 		"Path to OIDC configuration file (JSON format)")
-	flag.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),
+	fs.IntVar(&opts.S3Concurrency, "s3-concurrency", getEnvOrDefaultInt("NIKS3_S3_CONCURRENCY", defaultS3Concurrency),
 		"Maximum concurrent S3 operations (default: 100)")
-	flag.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
+	fs.Float64Var(&opts.S3RateLimit, "s3-rate-limit", getEnvOrDefaultFloat("NIKS3_S3_RATE_LIMIT", 0),
 		"Initial S3 requests per second (0 = unlimited, adapts on 429)")
-	flag.StringVar(&opts.MTLSProxyHeader, "mtls-proxy-header", getEnvOrDefault("NIKS3_MTLS_PROXY_HEADER", ""),
+	fs.StringVar(&opts.MTLSProxyHeader, "mtls-proxy-header", getEnvOrDefault("NIKS3_MTLS_PROXY_HEADER", ""),
 		"Header set to SUCCESS by the reverse proxy after mTLS client cert verification (e.g. X-SSL-Client-Verify). Requests with it skip bearer auth")
-	flag.StringVar(&opts.MTLSProxySocket, "mtls-proxy-socket", getEnvOrDefault("NIKS3_MTLS_PROXY_SOCKET", ""),
+	fs.StringVar(&opts.MTLSProxySocket, "mtls-proxy-socket", getEnvOrDefault("NIKS3_MTLS_PROXY_SOCKET", ""),
 		"Unix socket only the reverse proxy can reach. With --mtls-proxy-header, the header is trusted only there and stripped on --http-addr. A socket-activated fd named \"proxy\" is used for it")
-	flag.StringVar(&opts.MTLSSubjectHeader, "mtls-subject-header", getEnvOrDefault("NIKS3_MTLS_SUBJECT_HEADER", "X-SSL-Client-Dn"),
+	fs.StringVar(&opts.MTLSSubjectHeader, "mtls-subject-header", getEnvOrDefault("NIKS3_MTLS_SUBJECT_HEADER", "X-SSL-Client-Dn"),
 		"Header carrying the verified cert's subject DN, used with --mtls-bound-subject")
 
-	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjects), "mtls-bound-subject",
+	fs.Var((*stringSliceFlag)(&opts.MTLSBoundSubjects), "mtls-bound-subject",
 		"Restrict mTLS write auth to certs whose subject DN matches this glob. Repeat for multiple patterns")
-	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjectsRead), "mtls-bound-subject-read",
+	fs.Var((*stringSliceFlag)(&opts.MTLSBoundSubjectsRead), "mtls-bound-subject-read",
 		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob. Repeat for multiple patterns. Empty = public reads")
-	flag.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
+	var mtlsReadPinRules stringSliceFlag
+	registerPinReadFlags(fs, &opts, &mtlsReadPinRules)
+	fs.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
 		"TLS certificate. When set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
-	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
-	flag.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
+	fs.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")
+	fs.StringVar(&opts.TLSClientCA, "tls-client-ca", getEnvOrDefault("NIKS3_TLS_CLIENT_CA", ""),
 		"CA bundle for native mTLS client cert verification. Subjects are checked against --mtls-bound-subject")
-	flag.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
+	fs.StringVar(&maxNarSize, "max-nar-size", getEnvOrDefault("NIKS3_MAX_NAR_SIZE", ""),
 		"Maximum uncompressed NAR size accepted for upload (e.g. 2G, 512M). Empty or 0 means unlimited")
-	registerBucketFlags(&opts)
-	flag.BoolVar(&opts.Debug, "debug", getEnvOrDefaultBool("NIKS3_DEBUG", false),
+	registerBucketFlags(fs, &opts)
+	fs.BoolVar(&opts.Debug, "debug", getEnvOrDefaultBool("NIKS3_DEBUG", false),
 		"Enable debug logging (may leak sensitive information)")
 
 	if opts.Debug {
@@ -279,18 +343,26 @@ func parseArgs() (*options, error) {
 		}
 	}
 
-	flag.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
-	flag.StringVar(&opts.SignProgram, "sign-program", getEnvOrDefault("NIKS3_SIGN_PROGRAM", ""),
+	fs.Var(signKeyPaths, "sign-key-path", "Path to signing key file (can be specified multiple times)")
+	fs.StringVar(&opts.SignProgram, "sign-program", getEnvOrDefault("NIKS3_SIGN_PROGRAM", ""),
 		"Executable for signing narinfo batches (requires --sign-public-key)")
-	flag.StringVar(&opts.SignPublicKey, "sign-public-key", getEnvOrDefault("NIKS3_SIGN_PUBLIC_KEY", ""),
+	fs.StringVar(&opts.SignPublicKey, "sign-public-key", getEnvOrDefault("NIKS3_SIGN_PUBLIC_KEY", ""),
 		"Public key of the signing program in name:base64-public-key format")
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return nil, fmt.Errorf("failed to parse arguments: %w", err)
+	}
 
 	if (opts.SignProgram == "") != (opts.SignPublicKey == "") {
 		return nil, errors.New("--sign-program and --sign-public-key must be set together")
 	}
 
 	var err error
+
+	// Parse pin-read rules
+	opts.MTLSPinReadRules, err = parsePinReadRules([]string(mtlsReadPinRules))
+	if err != nil {
+		return nil, err
+	}
 
 	if opts.DBConnectionString, err = resolveDBConnectionString(opts.DBConnectionString, dbFile, os.LookupEnv); err != nil {
 		return nil, err
@@ -324,52 +396,15 @@ func parseArgs() (*options, error) {
 		opts.APIToken = secret
 	}
 
-	if opts.S3Endpoint == "" {
-		return nil, errors.New("missing required flag: --s3-endpoint")
-	}
-
-	hasStaticKeys := opts.S3AccessKey != "" || opts.S3SecretKey != ""
-	if opts.S3UseIAM && hasStaticKeys {
-		return nil, errors.New("--s3-use-iam cannot be combined with --s3-access-key / --s3-secret-key")
-	}
-
-	if !opts.S3UseIAM {
-		if opts.S3AccessKey == "" {
-			return nil, errors.New("missing required flag: --s3-access-key or --s3-access-key-path (or use --s3-use-iam)")
-		}
-
-		if opts.S3SecretKey == "" {
-			return nil, errors.New("missing required flag: --s3-secret-key or --s3-secret-key-path (or use --s3-use-iam)")
-		}
-	}
-
-	if opts.S3Bucket == "" {
-		return nil, errors.New("missing required flag: --s3-bucket")
-	}
-
-	// API token is always required (for GC and admin operations)
-	if opts.APIToken == "" {
-		return nil, errors.New("missing required flag: --api-token or --api-token-path")
-	}
-
-	// errgroup.SetLimit(0) blocks forever, and 0 reads like "unlimited".
-	if opts.S3Concurrency < 1 {
-		return nil, errors.New("--s3-concurrency must be at least 1")
-	}
-
-	if err := validateReadRedirect(&opts); err != nil {
+	if err := validateRequiredOptions(&opts); err != nil {
 		return nil, err
-	}
-
-	if err := validateTLSOptions(&opts); err != nil {
-		return nil, err
-	}
-
-	if len(opts.APIToken) < minAPITokenLength {
-		return nil, errors.New("API token must be at least 36 characters long")
 	}
 
 	return &opts, nil
+}
+
+func parseArgs() (*options, error) {
+	return parseArgsFrom(flag.CommandLine, os.Args[1:])
 }
 
 func Main() {

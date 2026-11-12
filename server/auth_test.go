@@ -3,8 +3,10 @@ package server_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
 	"github.com/Mic92/niks3/server/oidc/oidctest"
 	"github.com/golang-jwt/jwt/v5"
@@ -448,5 +450,130 @@ func TestService_ReadScope_PublicByDefault(t *testing.T) {
 		method:  "GET",
 		path:    "/health",
 		handler: service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler),
+	})
+}
+
+func TestPinScopedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	service := createTestService(t)
+	defer service.Close()
+	service.Pool.Close()
+
+	service.MTLSProxyHeader = "X-SSL-Client-Verify"
+	service.MTLSSubjectHeader = "X-SSL-Client-Dn"
+	service.MTLSBoundSubjects = []string{"CN=writer"}
+	service.MTLSBoundSubjectsRead = []string{"CN=reader"}
+	service.MTLSPinReadRules = []server.PinReadRule{
+		{Subject: "CN=*", Pin: "host-{cn}"},
+	}
+
+	write := service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler)
+
+	// Handler that captures and validates the principal for CN=web-01
+	capturePrincipal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readPins, scopes, ok := server.PrincipalFromContext(r)
+		if !ok {
+			http.Error(w, "no principal", http.StatusInternalServerError)
+
+			return
+		}
+		// Check that readPins is ["host-web-01"] and scopes does NOT contain ScopeRead
+		if len(readPins) != 1 || readPins[0] != "host-web-01" {
+			w.Header().Set("X-Error", "bad readPins")
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		if slices.Contains(scopes, oidc.ScopeRead) {
+			w.Header().Set("X-Error", "pin-scoped must not have ScopeRead")
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	read := service.RequireRead(capturePrincipal)
+	fullRead := service.RequireScope(oidc.ScopeRead, service.HealthCheckHandler)
+
+	checkForbidden := func(t *testing.T, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+		}
+	}
+
+	checkUnauthorized := func(t *testing.T, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+		}
+	}
+
+	// CN=writer has write scope.
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: write,
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS",
+			"X-SSL-Client-Dn":     "CN=writer",
+		},
+	})
+
+	// CN=web-01 has read access with pin-scoped principal.
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: read,
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS",
+			"X-SSL-Client-Dn":     "CN=web-01",
+		},
+	})
+
+	// CN=web-01 must not pass a plain read-scope check. Only RequireRead,
+	// which the read proxy uses, admits a pin-scoped principal.
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: fullRead,
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS",
+			"X-SSL-Client-Dn":     "CN=web-01",
+		},
+		checkResponse: &checkForbidden,
+	})
+
+	// CN=web-01 does not have write access.
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: write,
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS",
+			"X-SSL-Client-Dn":     "CN=web-01",
+		},
+		checkResponse: &checkForbidden,
+	})
+
+	// CN=bad/name has no pin rule match (CN has invalid chars).
+	testRequest(t, &TestRequest{
+		method:  "GET",
+		path:    "/health",
+		handler: read,
+		header: map[string]string{
+			"X-SSL-Client-Verify": "SUCCESS",
+			"X-SSL-Client-Dn":     "CN=bad/name",
+		},
+		checkResponse: &checkUnauthorized,
+	})
+
+	// No certificate or token: reads are gated.
+	testRequest(t, &TestRequest{
+		method:        "GET",
+		path:          "/health",
+		handler:       read,
+		checkResponse: &checkUnauthorized,
 	})
 }
