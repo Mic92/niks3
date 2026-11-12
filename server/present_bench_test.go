@@ -37,3 +37,36 @@ func BenchmarkTouchPresent(b *testing.B) {
 		})
 	}
 }
+
+// Many farm workers and the scheduler ask about the same closures at once.
+func BenchmarkTouchPresentConcurrent(b *testing.B) {
+	service, _ := seedCache(b, 1_000)
+	defer service.Close()
+
+	lines := strings.Split(strings.TrimSpace(nixosClosure), "\n")
+	all := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		all = append(all, strings.Fields(line)[0]+".narinfo")
+	}
+
+	_, err := service.Pool.Exec(b.Context(),
+		`INSERT INTO closures (updated_at, key) SELECT now(), k FROM unnest($1::varchar[]) AS k`, all)
+	ok(b, err)
+
+	q := pg.New(service.Pool)
+
+	for _, keys := range [][]string{all[:10], all} {
+		for _, callers := range []int{1, 8, 64} {
+			b.Run(fmt.Sprintf("keys=%d/callers=%d", len(keys), callers), func(b *testing.B) {
+				b.SetParallelism(callers)
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						_, err := q.TouchPresentClosures(b.Context(), keys)
+						ok(b, err)
+					}
+				})
+			})
+		}
+	}
+}
