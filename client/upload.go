@@ -156,32 +156,8 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		// Map NAR key back to store path hash for later lookup
 		narKeyToHash[narKey] = hash
 
-		// .ls file (directory listing with brotli compression)
-		lsKey := hash + ".ls"
-
-		// Check if this path has realisation objects
-		var realisationKeys []string
-
-		for realisationKey, realisation := range realisations {
-			if realisation.OutPath == storePath {
-				realisationKeys = append(realisationKeys, realisationKey)
-			}
-		}
-
-		// Narinfo references both dependencies, its own NAR file, .ls file, and any realisations
-		narinfoRefs := make([]string, 0, len(references)+2+len(realisationKeys))
-		narinfoRefs = append(narinfoRefs, references...)
-		narinfoRefs = append(narinfoRefs, narKey, lsKey)
-		narinfoRefs = append(narinfoRefs, realisationKeys...)
-		narinfoKey := hash + ".narinfo"
-
-		// Create objects for this closure
-		objects := []ObjectWithRefs{
-			{
-				Key:  narinfoKey,
-				Type: ObjectTypeNarinfo,
-				Refs: narinfoRefs,
-			},
+		// Everything that lives and dies with the narinfo.
+		parts := []ObjectWithRefs{
 			{
 				Key:     narKey,
 				Type:    ObjectTypeNAR,
@@ -189,13 +165,12 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 				NarSize: &pathInfo.NarSize, // Include NarSize for multipart estimation
 			},
 			{
-				Key:  lsKey,
+				Key:  hash + ".ls",
 				Type: ObjectTypeListing,
 				Refs: []string{},
 			},
 		}
 
-		// Check if this path has a deriver (i.e., was built) and has a build log
 		if pathInfo.Deriver != nil && *pathInfo.Deriver != "" {
 			drvPath := *pathInfo.Deriver
 
@@ -203,32 +178,27 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 			if err != nil {
 				slog.Warn("Error checking for build log", "drv_path", drvPath, "store_path", storePath, "error", err)
 			} else if logPath != "" {
-				// Build log exists - add log object
-				// Use filepath.Base to get just the derivation filename (works with any store directory)
-				drvName := filepath.Base(drvPath)
-				logKey := "log/" + drvName
-
-				objects = append(objects, ObjectWithRefs{
-					Key:  logKey,
-					Type: ObjectTypeBuildLog,
-					Refs: []string{}, // Logs don't reference anything
-				})
-
-				// Track the log path for later upload
+				logKey := "log/" + filepath.Base(drvPath)
+				parts = append(parts, ObjectWithRefs{Key: logKey, Type: ObjectTypeBuildLog, Refs: []string{}})
 				logPathsByKey[logKey] = logPath
 
 				slog.Debug("Found build log for path", "store_path", storePath, "drv_path", drvPath, "log_key", logKey)
 			}
 		}
 
-		// Add realisation objects for CA derivations
-		for _, realisationKey := range realisationKeys {
-			objects = append(objects, ObjectWithRefs{
-				Key:  realisationKey,
-				Type: ObjectTypeRealisation,
-				Refs: []string{}, // Realisations don't reference other objects
-			})
+		for realisationKey, realisation := range realisations {
+			if realisation.OutPath == storePath {
+				parts = append(parts, ObjectWithRefs{Key: realisationKey, Type: ObjectTypeRealisation, Refs: []string{}})
+			}
 		}
+
+		// GC keeps what the narinfo references, so it references all its parts.
+		narinfoRefs := references
+		for _, o := range parts {
+			narinfoRefs = append(narinfoRefs, o.Key)
+		}
+
+		objects := append([]ObjectWithRefs{{Key: hash + ".narinfo", Type: ObjectTypeNarinfo, Refs: narinfoRefs}}, parts...)
 
 		allObjects[storePath] = objects
 	}
