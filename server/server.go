@@ -90,6 +90,12 @@ type options struct {
 	// these globs may read. Empty = read proxy is public (default).
 	MTLSBoundSubjectsRead []string
 
+	// MTLSPinReadRules maps mTLS subject DNs to readable pin globs.
+	MTLSPinReadRules []PinReadRule
+
+	// PinReadGrace is the grace period for pin-scoped reads of recently-moved pins.
+	PinReadGrace time.Duration
+
 	// TLSCert/TLSKey, when both set, make the server terminate TLS itself
 	// instead of expecting a reverse proxy.
 	TLSCert string
@@ -123,6 +129,8 @@ type Service struct {
 	MTLSSubjectHeader     string
 	MTLSBoundSubjects     []string
 	MTLSBoundSubjectsRead []string
+	MTLSPinReadRules      []PinReadRule
+	PinReadGrace          time.Duration
 
 	// See options.ReadRedirectTTL.
 	ReadRedirectTTL time.Duration
@@ -248,6 +256,8 @@ func runServer(opts *options) error {
 		MTLSSubjectHeader:          opts.MTLSSubjectHeader,
 		MTLSBoundSubjects:          opts.MTLSBoundSubjects,
 		MTLSBoundSubjectsRead:      opts.MTLSBoundSubjectsRead,
+		MTLSPinReadRules:           opts.MTLSPinReadRules,
+		PinReadGrace:               opts.PinReadGrace,
 		CacheURL:                   opts.CacheURL,
 		ServerURL:                  opts.ServerURL,
 		MaxNarSize:                 opts.MaxNarSize,
@@ -340,7 +350,7 @@ func runServer(opts *options) error {
 		service.ReadRedirectTTL = opts.ReadRedirectTTL
 		// Register without method prefix to avoid ServeMux conflicts with
 		// auto-generated HEAD routes. The handler rejects non-GET/HEAD itself.
-		mux.HandleFunc("/{path...}", service.RequireScope(oidc.ScopeRead, service.ReadProxyHandler))
+		mux.HandleFunc("/{path...}", service.RequireRead(service.ReadProxyHandler))
 		slog.Info("Read proxy enabled — serving cache objects from S3")
 
 		if opts.ReadRedirectTTL > 0 {
