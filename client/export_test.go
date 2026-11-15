@@ -108,3 +108,6 @@ func (c *Client) SetRegistrationTimeout(d time.Duration) {
 func NewStallingTransport(timeout time.Duration, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return newStallingTransport(timeout, dial)
 }
+
+// GenerateNarinfoContent re-exports generateNarinfoContent for the external test package.
+var GenerateNarinfoContent = generateNarinfoContent //nolint:gochecknoglobals // test-only re-export

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,8 +38,8 @@ func generateNarinfoContent(meta *NarinfoMetadata, signatures []string) string {
 	sort.Strings(sortedRefs)
 
 	for _, ref := range sortedRefs {
-		// Remove /nix/store/ prefix
-		refName := strings.TrimPrefix(ref, "/nix/store/")
+		// Store path base name, whatever the store dir
+		refName := filepath.Base(ref)
 		fmt.Fprintf(&sb, " %s", refName)
 	}
 
@@ -51,7 +52,7 @@ func generateNarinfoContent(meta *NarinfoMetadata, signatures []string) string {
 
 	// Deriver (optional)
 	if meta.Deriver != nil {
-		deriverName := strings.TrimPrefix(*meta.Deriver, "/nix/store/")
+		deriverName := filepath.Base(*meta.Deriver)
 		fmt.Fprintf(&sb, "Deriver: %s\n", deriverName)
 	}
 
