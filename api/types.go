@@ -99,4 +99,7 @@ type CacheConfig struct {
 
 	// Pushes is true if the server has POST /api/pushes. Older servers omit it.
 	Pushes bool `json:"pushes,omitempty"`
+
+	// BuildTraces is true if the server accepts build-trace-v2/ realisations (Nix >= 2.35).
+	BuildTraces bool `json:"build_traces,omitempty"`
 }

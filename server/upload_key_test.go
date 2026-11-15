@@ -32,6 +32,10 @@ func TestIsValidUploadKey(t *testing.T) {
 		{"build log equals", "log/abcd1234-foo=bar.drv", "build_log", true},
 		{"realisation", "realisations/sha256:abc123!out.doi", "realisation", true},
 		{"realisation plus in output", "realisations/sha256:abc123!out+dev.doi", "realisation", true},
+		{"build trace", "build-trace-v2/6gmrcmazav19h16qgqg0n96ka6d5r129-ca-fixture.drv/out.doi", "realisation", true},
+		{"build trace dev output", "build-trace-v2/6gmrcmazav19h16qgqg0n96ka6d5r129-ca-fixture.drv/dev.doi", "realisation", true},
+		{"build trace, narinfo type", "build-trace-v2/6gmrcmazav19h16qgqg0n96ka6d5r129-ca-fixture.drv/out.doi", "narinfo", false},
+		{"build trace traversal", "build-trace-v2/6gmrcmazav19h16qgqg0n96ka6d5r129-ca-fixture.drv/../../x.doi", "realisation", false},
 
 		// Server-owned files: never client-writable
 		{"nix-cache-info", "nix-cache-info", "narinfo", false},

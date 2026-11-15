@@ -507,10 +507,20 @@ func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool,
 	return true, nil
 }
 
+// RealisationMetadata is a realisation to sign (see signing.Realisation).
+type RealisationMetadata struct {
+	DrvPath               string            `json:"drv_path,omitempty"`
+	OutputName            string            `json:"output_name,omitempty"`
+	ID                    string            `json:"id,omitempty"`
+	OutPath               string            `json:"out_path"`
+	DependentRealisations map[string]string `json:"dependent_realisations,omitempty"`
+}
+
 type signNarinfosRequest struct {
-	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
+	Narinfos     map[string]NarinfoMetadata     `json:"narinfos"`
 	// Claim is set by clients that publish what Claimed in the answer names.
 	Claim bool `json:"claim,omitempty"`
+	Realisations map[string]RealisationMetadata `json:"realisations,omitempty"`
 }
 
 type signNarinfosResponse struct {
@@ -638,8 +648,8 @@ func (s *Service) removeNarinfos(ctx context.Context, keys []string) error {
 }
 
 // SignNarinfosHandler handles POST /api/pending_closures/{id}/sign endpoint.
-// Signs narinfo metadata and returns signatures for client to upload.
-// Request body: JSON with narinfos metadata
+// Signs narinfo and realisation metadata and returns signatures for client to upload.
+// Request body: JSON with narinfos and realisations metadata
 // Response body: JSON with signatures map.
 func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Received sign narinfos request", "method", r.Method, "path", r.URL.Path)
@@ -675,7 +685,8 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		validKeys[key] = true
 	}
 
-	signaturesMap := make(map[string][]string, len(req.Narinfos))
+	count := len(req.Narinfos) + len(req.Realisations)
+	signaturesMap := make(map[string][]string, count)
 	narInfos := make(map[string]*signing.NarInfo, len(req.Narinfos))
 
 	for objectKey, meta := range req.Narinfos {
@@ -704,10 +715,56 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(req.Narinfos) == 0 {
+	if count == 0 {
 		writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap})
 
 		return
+	}
+
+	// Without signers, narinfos need no fingerprint.
+	fingerprints := make(map[string][]byte, count)
+	if len(s.SigningKeys) > 0 {
+		fingerprints, err = signing.NarInfoFingerprints(narInfos)
+		if err != nil {
+			slog.Error("Failed to sign narinfos", "error", err)
+			http.Error(w, fmt.Sprintf("failed to sign narinfos: %v", err), http.StatusInternalServerError)
+
+			return
+		}
+	}
+
+	for objectKey, meta := range req.Realisations {
+		if !validKeys[objectKey] {
+			slog.Error("Invalid realisation key: not part of pending closure", "object_key", objectKey, "closure_id", parsedUploadID)
+			http.Error(w, "invalid realisation key: not part of this pending closure", http.StatusForbidden)
+
+			return
+		}
+
+		realisation := &signing.Realisation{
+			DrvPath:               meta.DrvPath,
+			OutputName:            meta.OutputName,
+			ID:                    meta.ID,
+			OutPath:               meta.OutPath,
+			DependentRealisations: meta.DependentRealisations,
+		}
+
+		fingerprint, err := signing.GenerateRealisationFingerprint(realisation)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid realisation %q: %v", objectKey, err), http.StatusBadRequest)
+
+			return
+		}
+
+		// The signature must only fit this key.
+		if realisation.Key() != objectKey {
+			http.Error(w, fmt.Sprintf("realisation %q does not belong to key %q", realisation.Key(), objectKey), http.StatusBadRequest)
+
+			return
+		}
+
+		fingerprints[objectKey] = fingerprint
+		signaturesMap[objectKey] = make([]string, 0, len(s.SigningKeys))
 	}
 
 	for i, signer := range s.SigningKeys {
@@ -722,7 +779,7 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 			signerName, _, _ = strings.Cut(publicKey, ":")
 		}
 
-		signatures, err := signing.SignNarInfos(r.Context(), signer, narInfos)
+		signatures, err := signer.SignFingerprints(r.Context(), fingerprints)
 		if err != nil {
 			slog.Error("Failed to sign narinfos", "signer", signerName, "error", err)
 			http.Error(w, fmt.Sprintf("failed to sign narinfos: %v", err), http.StatusInternalServerError)
@@ -730,8 +787,8 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if len(signatures) != len(req.Narinfos) {
-			slog.Error("Signer returned unexpected signature count", "signer", signerName, "got", len(signatures), "want", len(req.Narinfos))
+		if len(signatures) != len(fingerprints) {
+			slog.Error("Signer returned unexpected signature count", "signer", signerName, "got", len(signatures), "want", len(fingerprints))
 			http.Error(w, "failed to sign narinfos: unexpected signature count", http.StatusInternalServerError)
 
 			return

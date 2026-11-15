@@ -166,8 +166,10 @@ var (
 	// in src/libstore/path.cc: [A-Za-z0-9+\-._?=].
 	logRe = regexp.MustCompile(`^log/[a-zA-Z0-9+._?=-]+\.drv$`)
 
-	// realisations: realisations/{hash-algo}:{hex}!{output}.doi
-	realisationsRe = regexp.MustCompile(`^realisations/[a-z0-9]+:[a-zA-Z0-9+/=]+![a-zA-Z0-9+._?=-]+\.doi$`)
+	// realisations (Nix < 2.35): realisations/{hash-algo}:{hex}!{output}.doi
+	// build traces (Nix >= 2.35): build-trace-v2/{drv base name}/{output}.doi.
+	realisationsRe = regexp.MustCompile(`^realisations/[a-z0-9]+:[a-zA-Z0-9+/=]+![a-zA-Z0-9+._?=-]+\.doi$` +
+		`|^build-trace-v2/[` + nixBase32Alphabet + `]{32}-[a-zA-Z0-9+._?=-]+\.drv/[a-zA-Z0-9+._?=-]+\.doi$`)
 
 	// pins: pins/{name}, a plain-text store path written by CreatePinHandler.
 	pinRe = regexp.MustCompile(`^pins/` + pinNamePattern + `$`)
