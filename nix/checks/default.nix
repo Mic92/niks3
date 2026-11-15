@@ -72,6 +72,11 @@ packages
         echo "Running server tests..."
         niks3-server.test -test.v
 
+        # pkgs.nix writes realisations in the format of Nix < 2.35;
+        # run the CA test against the build traces of newer Nix too.
+        echo "Running CA derivation tests with Nix ${pkgs.nixVersions.latest.version}..."
+        PATH=${pkgs.nixVersions.latest}/bin:$PATH niks3-server.test -test.v -test.run 'TestClientCADerivations'
+
         echo "Running OIDC tests..."
         niks3-server-oidc.test -test.v
 
