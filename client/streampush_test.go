@@ -436,7 +436,7 @@ func TestClientReportsOnlyAskedPaths(t *testing.T) {
 	}
 	reports := map[string]client.PathReport{"/nix/store/a": {}}
 
-	err = c.SignAndUploadNarinfos(t.Context(), "pushes", map[string]map[string]client.NarinfoMetadata{"1": narinfos}, pending, reports)
+	err = c.SignAndUploadNarinfos(t.Context(), "pushes", map[string]map[string]client.NarinfoMetadata{"1": narinfos}, nil, pending, reports)
 	if err != nil {
 		t.Fatal(err)
 	}

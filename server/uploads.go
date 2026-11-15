@@ -517,9 +517,9 @@ type RealisationMetadata struct {
 }
 
 type signNarinfosRequest struct {
-	Narinfos     map[string]NarinfoMetadata     `json:"narinfos"`
+	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
 	// Claim is set by clients that publish what Claimed in the answer names.
-	Claim bool `json:"claim,omitempty"`
+	Claim        bool                           `json:"claim,omitempty"`
 	Realisations map[string]RealisationMetadata `json:"realisations,omitempty"`
 }
 

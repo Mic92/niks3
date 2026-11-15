@@ -336,6 +336,16 @@ testers.nixosTest {
     # Verify realisation info is available in the chroot store
     realisation_info = server.succeed(f"nix --store /tmp/chroot-store realisation info {ca_output}")
     print(f"Realisation info in chroot store: {realisation_info}")
+
+    # A fresh store must substitute <drv>^out via the signed realisation.
+    ca_drv = server.succeed("nix-instantiate /tmp/ca-test.nix").strip()
+    server.succeed("nix-instantiate --store /tmp/ca-subst-store /tmp/ca-test.nix")
+    substituted = server.succeed(f"""
+      {s3_env}
+      nix build --store /tmp/ca-subst-store --no-link --print-out-paths --max-jobs 0 \
+        --option substituters '{binary_cache_url}' '{ca_drv}^out'
+    """).strip()
+    assert substituted == ca_output, f"substituted {substituted}, want {ca_output}"
   '')
   + ''
     # Test uploading a store path that is a symlink to a subdirectory

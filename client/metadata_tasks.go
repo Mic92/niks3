@@ -3,10 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -72,26 +72,15 @@ func (c *Client) uploadLog(ctx context.Context, task uploadTask, logPathsByKey m
 	return nil
 }
 
-// uploadRealisation uploads a realisation (.doi) file for CA derivations.
-func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisationsByKey map[string]*RealisationInfo) error {
-	// Get the realisation info
-	realisationInfo, ok := realisationsByKey[task.key]
-	if !ok {
-		// Realisation was requested by server but not found locally - this shouldn't happen
-		// but we'll log a warning and continue rather than failing the entire upload
-		slog.Warn("Realisation not found", "key", task.key)
-
-		return nil // Don't fail the entire upload
-	}
-
-	// Marshal realisation to JSON
-	jsonData, err := json.Marshal(realisationInfo)
+// uploadRealisation uploads a .doi file with local and server signatures.
+func (c *Client) uploadRealisation(ctx context.Context, task uploadTask, realisation *RealisationInfo, serverSigs []string) error {
+	content, err := realisation.FileContent(append(slices.Clone(realisation.Signatures), serverSigs...))
 	if err != nil {
-		return fmt.Errorf("marshaling realisation %s: %w", task.key, err)
+		return fmt.Errorf("encoding realisation %s: %w", task.key, err)
 	}
 
 	// Compress with zstd (like narinfo)
-	compressed, err := compressWithZstd(jsonData)
+	compressed, err := compressWithZstd(content)
 	if err != nil {
 		return fmt.Errorf("compressing realisation %s: %w", task.key, err)
 	}
