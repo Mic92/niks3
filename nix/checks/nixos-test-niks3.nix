@@ -597,10 +597,32 @@ testers.nixosTest {
     builder.succeed(f"test -n \"$(ls -A {roots})\"")
     builder.fail(f"nix-store --delete {retained}")
 
+    # A .drv output is rooted unbuilt; a bad path does not drop the batch.
+    builder.succeed("""
+    cat > /tmp/unbuilt-drv.nix << 'EOF'
+    derivation {
+      name = "unbuilt-test";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "exit 1" ];
+    }
+    EOF
+    """)
+    unbuilt = builder.succeed("nix-instantiate /tmp/unbuilt-drv.nix").strip()
+    missing = "/nix/store/00000000000000000000000000000000-missing"
+    sent = builder.succeed(
+        f"OUT_PATHS='{missing} {unbuilt}' ${lib.getExe' niks3-hook "niks3-hook"} send"
+        " --socket /run/niks3/upload-to-cache.sock 2>&1"
+    )
+    assert "queued 1 of 2 paths" in sent, sent
+    builder.fail(f"nix-store --delete {unbuilt}")
+    builder.fail(f"test -e $(nix-store --query --outputs {unbuilt})")
+
     server.systemctl("start niks3.service")
     server.wait_for_unit("niks3.service")
     builder.wait_until_succeeds(f"test -z \"$(ls -A {roots})\"", timeout=120)
     builder.succeed(f"nix-store --delete {retained}")
+    builder.succeed(f"nix-store --delete {unbuilt}")
 
     print("GC root test passed!")
   '';

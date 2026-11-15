@@ -194,10 +194,8 @@ func runServe() error {
 
 	// QueueFunc: enqueue paths in SQLite and notify worker + idle timer.
 	queueFunc := func(paths []string) error {
-		if err := queue.Enqueue(paths); err != nil {
-			return fmt.Errorf("enqueueing paths: %w", err)
-		}
-		// Non-blocking sends to wake both consumers.
+		err := queue.Enqueue(paths)
+		// Wake both consumers, also after a partial error.
 		select {
 		case workerNotify <- struct{}{}:
 		default:
@@ -206,6 +204,10 @@ func runServe() error {
 		select {
 		case idleNotify <- struct{}{}:
 		default:
+		}
+
+		if err != nil {
+			return fmt.Errorf("enqueueing paths: %w", err)
 		}
 
 		return nil
