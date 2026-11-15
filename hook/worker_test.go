@@ -516,3 +516,45 @@ func TestWorkerKeepsPathItCannotStat(t *testing.T) {
 		t.Errorf("queue holds %d paths, want the unreadable one kept", count)
 	}
 }
+
+// A derivation's outputs, <drv>^*, are pushed while the .drv exists and
+// leave the queue with the batch, although push reports only store paths.
+func TestWorkerUploadsDerivationOutputs(t *testing.T) {
+	t.Parallel()
+
+	q := newTestQueue(t)
+
+	dir := t.TempDir()
+	out := writeTestFile(t, dir, "out")
+	entry := writeTestFile(t, dir, "x.drv") + "^*"
+
+	if err := q.Enqueue([]string{out, entry}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+
+	var pushed [][]string
+
+	push := func(_ context.Context, paths []string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		pushed = append(pushed, slices.Clone(paths))
+
+		return []string{out}, nil
+	}
+
+	runWorkerUntilDrained(t, q, push, 10)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(pushed) != 1 || !slices.Equal(pushed[0], []string{out, entry}) {
+		t.Fatalf("pushed %v, want [[%s %s]]", pushed, out, entry)
+	}
+
+	if got := remaining(t, q); len(got) != 0 {
+		t.Fatalf("left in queue: %v", got)
+	}
+}

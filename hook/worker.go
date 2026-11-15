@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -172,7 +173,7 @@ func (w *Worker) step(ctx context.Context) ([]string, bool) {
 	var existing, gced, unreadable []string
 
 	for _, p := range paths {
-		_, err := os.Stat(p)
+		_, err := os.Stat(rootTarget(p))
 
 		switch {
 		case err == nil:
@@ -273,9 +274,12 @@ func (w *Worker) upload(ctx context.Context, batch []string) bool {
 // closure prunes dependencies that were queued separately but went up as
 // part of a parent.
 func (w *Worker) settle(batch, uploaded []string) ([]string, bool) {
-	toRemove := batch
-	if len(uploaded) > len(batch) {
-		toRemove = uploaded
+	toRemove := slices.Clone(uploaded)
+	for _, p := range batch {
+		// A derivation's outputs <drv>^* are no store path of the closure.
+		if !slices.Contains(toRemove, p) {
+			toRemove = append(toRemove, p)
+		}
 	}
 
 	return toRemove, w.remove(toRemove)

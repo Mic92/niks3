@@ -118,6 +118,7 @@ func (q *Queue) Enqueue(paths []string) error {
 	if q.owner == nil {
 		return errors.New("queue is closed")
 	}
+	paths = normalizeEntries(paths)
 	retained, failed, failures := q.retain(paths)
 	for i, path := range failed {
 		slog.Warn("Not queueing path: cannot retain it", "path", path, "error", failures[i])
@@ -131,6 +132,27 @@ func (q *Queue) Enqueue(paths []string) error {
 	}
 
 	return nil
+}
+
+// normalizeEntries queues a derivation's outputs as <drv>^*: every
+// realisation of the derivation is pushed, and its queue root is the one
+// reconcileRoots expects for a root that targets the .drv.
+func normalizeEntries(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+
+	for _, p := range paths {
+		if drv, _, found := strings.Cut(p, "^"); found && strings.HasSuffix(drv, ".drv") {
+			p = drv + "^*"
+		}
+
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+
+	return out
 }
 
 // FetchBatch returns up to batchSize store paths from the head of the queue.

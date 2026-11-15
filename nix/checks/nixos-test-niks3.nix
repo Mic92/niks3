@@ -175,7 +175,8 @@ testers.nixosTest {
         experimental-features = [
           "nix-command"
           "flakes"
-        ];
+        ]
+        ++ lib.optional ca-derivations-supported "ca-derivations";
         substituters = [ ];
       };
       services.niks3-auto-upload = {
@@ -577,6 +578,40 @@ testers.nixosTest {
     builder.succeed(f"test -z \"$(ls -A {roots})\"")
 
     print("Post-build-hook pipeline test passed!")
+  ''
+  + (lib.optionalString ca-derivations-supported ''
+    # Early cutoff: a changed CA derivation that builds an output already
+    # cached gets its own realisation, through the hook's DRV_PATH.
+    for tag in ["first", "changed"]:
+        expr = (
+            "derivation { name = \"early-cutoff\"; system = builtins.currentSystem;"
+            " builder = \"/bin/sh\"; args = [ \"-c\" \"echo same > $out\" ];"
+            " __contentAddressed = true; outputHashMode = \"recursive\";"
+            f" outputHashAlgo = \"sha256\"; tag = \"{tag}\"; }}"
+        )
+        for machine in [builder, server]:
+            machine.succeed(f"echo '{expr}' > /tmp/early-{tag}.nix")
+        builder.succeed(f"nix-build /tmp/early-{tag}.nix --no-out-link")
+        builder.wait_until_succeeds(
+            "test $(systemctl is-active niks3-auto-upload.service) = inactive",
+            timeout=60,
+        )
+
+    first_out = builder.succeed("nix-build /tmp/early-first.nix --no-out-link").strip()
+    changed_out = builder.succeed("nix-build /tmp/early-changed.nix --no-out-link").strip()
+    assert first_out == changed_out, f"no early cutoff: {first_out} != {changed_out}"
+
+    changed_drv = server.succeed("nix-instantiate --store /tmp/early-store /tmp/early-changed.nix").strip()
+    substituted = server.succeed(f"""
+      {s3_env}
+      nix build --store /tmp/early-store --no-link --print-out-paths --max-jobs 0 \
+        --option substituters '{binary_cache_url}' '{changed_drv}^out'
+    """).strip()
+    assert substituted == changed_out, f"substituted {substituted}, want {changed_out}"
+
+    print("Early cutoff realisation test passed!")
+  '')
+  + ''
 
     # ============================================
     # Queued paths survive GC until uploaded

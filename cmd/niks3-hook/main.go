@@ -123,6 +123,13 @@ func runSend() error {
 		return nil
 	}
 
+	// The derivation, so that its realisations are pushed even when its
+	// outputs are cached already: a CA output another derivation built
+	// first records that one as deriver.
+	if drv := os.Getenv("DRV_PATH"); strings.HasSuffix(drv, ".drv") {
+		paths = append(paths, drv+"^*")
+	}
+
 	// Always exit 0: log errors to stderr but never return an error.
 	if err := hook.SendPaths(*socket, paths); err != nil {
 		fmt.Fprintf(os.Stderr, "niks3-hook send: %v\n", err)

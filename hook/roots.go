@@ -55,11 +55,34 @@ func (q *Queue) retain(paths []string) ([]string, []string, []error) {
 	return retained, failed, failures
 }
 
-func (q *Queue) retainPath(path string) error {
-	if !isRootTarget(path) {
-		return fmt.Errorf("retention requires a store path, not a selector: %q", path)
+// rootTarget is the store path that keeps a queue entry uploadable: the
+// path itself, or the .drv of a derivation's outputs <drv>^*, which the
+// upload reads to find their realisations.
+func rootTarget(entry string) string {
+	drv, _, found := strings.Cut(entry, "^")
+	if found && strings.HasSuffix(drv, ".drv") {
+		return drv
 	}
-	root := q.rootPath(path)
+
+	return entry
+}
+
+// rootNames are the queue roots an entry for target may have.
+func (q *Queue) rootNames(target string) []string {
+	names := []string{q.rootPath(target)}
+	if strings.HasSuffix(target, ".drv") {
+		names = append(names, q.rootPath(target+"^*"))
+	}
+
+	return names
+}
+
+func (q *Queue) retainPath(entry string) error {
+	path := rootTarget(entry)
+	if !isRootTarget(path) {
+		return fmt.Errorf("retention requires a store path or <drv>^*, not %q", entry)
+	}
+	root := q.rootPath(entry)
 	common := []string{"--option", "substitute", "false", "--", path}
 	name, args := "nix-store", slices.Concat([]string{"--realise", "--add-root", root, "--indirect"}, common)
 	if strings.HasSuffix(path, ".drv") {
@@ -75,14 +98,14 @@ func (q *Queue) retainPath(path string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.ExtraFiles = []*os.File{q.owner}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("registering queue root for %q: %w: %s", path, err, out)
+		return fmt.Errorf("registering queue root for %q: %w: %s", entry, err, out)
 	}
 	target, err := os.Readlink(root)
 	if err != nil {
-		return fmt.Errorf("reading queue root for %q: %w", path, err)
+		return fmt.Errorf("reading queue root for %q: %w", entry, err)
 	}
 	if target != path {
-		return fmt.Errorf("queue root for %q has unexpected target %q", path, target)
+		return fmt.Errorf("queue root for %q has unexpected target %q", entry, target)
 	}
 
 	return nil
@@ -124,7 +147,7 @@ func (q *Queue) reconcileRoots() error {
 			continue
 		}
 		target, err := os.Readlink(root)
-		if err != nil || (q.rootPath(target) != root && !q.isTemporaryRoot(root, target)) {
+		if err != nil || (!slices.Contains(q.rootNames(target), root) && !q.isTemporaryRoot(root, target)) {
 			return fmt.Errorf("unexpected entry in queue roots directory: %s", root)
 		}
 		if err := os.Remove(root); err != nil {
@@ -170,8 +193,17 @@ func isRootTarget(path string) bool {
 }
 
 func (q *Queue) isTemporaryRoot(root, target string) bool {
-	suffix, ok := strings.CutPrefix(root, q.rootPath(target)+".tmp-")
-	if !ok || !isRootTarget(target) {
+	if !isRootTarget(target) {
+		return false
+	}
+	var suffix string
+	var ok bool
+	for _, name := range q.rootNames(target) {
+		if suffix, ok = strings.CutPrefix(root, name+".tmp-"); ok {
+			break
+		}
+	}
+	if !ok {
 		return false
 	}
 	var pid, random int32

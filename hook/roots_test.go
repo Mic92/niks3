@@ -72,7 +72,7 @@ func TestQueueRootsPartialBatch(t *testing.T) {
 	valid := nix("store", "add-file", writeTestFile(t, scratch, "valid"))
 	drv := instantiate(t, scratch)
 	missing := "/nix/store/00000000000000000000000000000000-missing"
-	selector := drv + "^out"
+	selector := valid + "^out"
 
 	q, dbPath := openRootedQueue(t, scratch)
 
@@ -131,6 +131,64 @@ func TestQueueRootsReconcileDerivation(t *testing.T) {
 
 	if target, err := os.Readlink(queueRoot(dbPath, drv)); err != nil || target != drv {
 		t.Fatalf("restored root: target %q, error %v", target, err)
+	}
+}
+
+// The outputs of a derivation, <drv>^<outputs>, are queued as <drv>^* and
+// keep their .drv, unbuilt, until uploaded; a root left over by a crash
+// between removal and release is cleaned up on reopening.
+func TestQueueRootsDerivationOutputs(t *testing.T) {
+	scratch, store, nix := scratchNixStore(t)
+	drv := instantiate(t, scratch)
+	entry := drv + "^*"
+
+	q, dbPath := openRootedQueue(t, scratch)
+	if err := q.Enqueue([]string{drv + "^out"}); err != nil {
+		t.Fatalf("Enqueue %s^out: %v", drv, err)
+	}
+
+	if got := remaining(t, q); !slices.Equal(got, []string{entry}) {
+		t.Fatalf("queue: got %v, want [%s]", got, entry)
+	}
+
+	if target, err := os.Readlink(queueRoot(dbPath, entry)); err != nil || target != drv {
+		t.Fatalf("queue root: target %q, error %v", target, err)
+	}
+
+	for output := range strings.FieldsSeq(runNix(t, "nix-store", "--query", "--outputs", drv)) {
+		if _, err := os.Lstat(filepath.Join(store, output)); !os.IsNotExist(err) {
+			t.Fatalf("output %s exists, so the derivation was built: %v", output, err)
+		}
+	}
+
+	nix("store", "gc")
+
+	if _, err := os.Stat(filepath.Join(store, drv)); err != nil {
+		t.Fatalf("queued derivation collected: %v", err)
+	}
+
+	// Removed, but its root survives as after a crash before release.
+	if err := q.Remove([]string{entry}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(drv, queueRoot(dbPath, entry)); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := hook.OpenQueueWithRoots(dbPath)
+	if err != nil {
+		t.Fatalf("reopening with a stale derivation root: %v", err)
+	}
+
+	t.Cleanup(func() { _ = q.Close() })
+
+	if _, err := os.Lstat(queueRoot(dbPath, entry)); !os.IsNotExist(err) {
+		t.Fatalf("stale root kept: %v", err)
 	}
 }
 
