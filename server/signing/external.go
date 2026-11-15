@@ -103,14 +103,16 @@ func (s *ExternalSigner) Close() {
 
 // Sign sends base64 fingerprints and verifies the returned signatures.
 func (s *ExternalSigner) Sign(ctx context.Context, infos map[string]*NarInfo) (map[string]string, error) {
-	fingerprints := make(map[string][]byte, len(infos))
-	for objectKey, info := range infos {
-		fingerprint, err := GenerateFingerprint(info)
-		if err != nil {
-			return nil, fmt.Errorf("narinfo %q: %w", objectKey, err)
-		}
-		fingerprints[objectKey] = fingerprint
+	fingerprints, err := NarInfoFingerprints(infos)
+	if err != nil {
+		return nil, err
 	}
+
+	return s.SignFingerprints(ctx, fingerprints)
+}
+
+// SignFingerprints sends base64 fingerprints and verifies the returned signatures.
+func (s *ExternalSigner) SignFingerprints(ctx context.Context, fingerprints map[string][]byte) (map[string]string, error) {
 	if len(fingerprints) == 0 {
 		return map[string]string{}, nil
 	}

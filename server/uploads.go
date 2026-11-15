@@ -722,7 +722,7 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 			signerName, _, _ = strings.Cut(publicKey, ":")
 		}
 
-		signatures, err := signer.Sign(r.Context(), narInfos)
+		signatures, err := signing.SignNarInfos(r.Context(), signer, narInfos)
 		if err != nil {
 			slog.Error("Failed to sign narinfos", "signer", signerName, "error", err)
 			http.Error(w, fmt.Sprintf("failed to sign narinfos: %v", err), http.StatusInternalServerError)

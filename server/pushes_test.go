@@ -402,13 +402,13 @@ func TestPush_SignsNarinfosOfItsPendingObjects(t *testing.T) {
 	for _, signer := range []signing.Signer{
 		nil,
 		(*signing.Key)(nil),
-		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+		testSigner(func(context.Context, map[string][]byte) (map[string]string, error) {
 			return nil, errors.New("signer failed")
 		}),
-		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+		testSigner(func(context.Context, map[string][]byte) (map[string]string, error) {
 			return map[string]string{}, nil
 		}),
-		testSigner(func(context.Context, map[string]*signing.NarInfo) (map[string]string, error) {
+		testSigner(func(context.Context, map[string][]byte) (map[string]string, error) {
 			return map[string]string{"unexpected.narinfo": "test-key:signature"}, nil
 		}),
 	} {
@@ -428,14 +428,14 @@ func TestPush_SignsNarinfosOfItsPendingObjects(t *testing.T) {
 	}
 }
 
-type testSigner func(context.Context, map[string]*signing.NarInfo) (map[string]string, error)
+type testSigner func(context.Context, map[string][]byte) (map[string]string, error)
 
 func (testSigner) PublicKey() (string, error) {
 	return testSigningPublic, nil
 }
 
-func (signer testSigner) Sign(ctx context.Context, infos map[string]*signing.NarInfo) (map[string]string, error) {
-	return signer(ctx, infos)
+func (signer testSigner) SignFingerprints(ctx context.Context, fingerprints map[string][]byte) (map[string]string, error) {
+	return signer(ctx, fingerprints)
 }
 
 // A client that lost the answer to its commit sends it again.

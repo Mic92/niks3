@@ -80,19 +80,28 @@ func LoadKeyFromFile(path string) (*Key, error) {
 
 // Sign returns "name:base64-signature" strings keyed like infos.
 func (k *Key) Sign(ctx context.Context, infos map[string]*NarInfo) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("signing canceled: %w", err)
+	}
+
+	fingerprints, err := NarInfoFingerprints(infos)
+	if err != nil {
+		return nil, err
+	}
+
+	return k.SignFingerprints(ctx, fingerprints)
+}
+
+// SignFingerprints returns "name:base64-signature" strings keyed like fingerprints.
+func (k *Key) SignFingerprints(ctx context.Context, fingerprints map[string][]byte) (map[string]string, error) {
 	if k == nil {
 		return nil, errors.New("signing key cannot be nil")
 	}
 
-	signatures := make(map[string]string, len(infos))
-	for objectKey, info := range infos {
+	signatures := make(map[string]string, len(fingerprints))
+	for objectKey, fingerprint := range fingerprints {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("signing canceled: %w", err)
-		}
-
-		fingerprint, err := GenerateFingerprint(info)
-		if err != nil {
-			return nil, fmt.Errorf("narinfo %q: %w", objectKey, err)
 		}
 
 		signature := ed25519.Sign(k.key, fingerprint)
