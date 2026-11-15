@@ -57,8 +57,14 @@ func nixOutput(ctx context.Context, t *testing.T, nixEnv []string, args ...strin
 func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) (string, string, string) {
 	t.Helper()
 
+	return buildCADerivationFrom(ctx, t, nixEnv, caTestExpr)
+}
+
+func buildCADerivationFrom(ctx context.Context, t *testing.T, nixEnv []string, expr string) (string, string, string) {
+	t.Helper()
+
 	nixExpr := filepath.Join(t.TempDir(), "ca-test.nix")
-	ok(t, os.WriteFile(nixExpr, []byte(caTestExpr), 0o600))
+	ok(t, os.WriteFile(nixExpr, []byte(expr), 0o600))
 
 	drvPath := nixOutput(ctx, t, nixEnv, "nix-instantiate", "--extra-experimental-features", "ca-derivations", nixExpr)
 
@@ -224,5 +230,95 @@ func TestClientCADerivations(t *testing.T) {
 		drvPath+"^out")
 	if substituted != caPath {
 		t.Errorf("substituted %q, want %q", substituted, caPath)
+	}
+}
+
+// A changed derivation that builds the same output (early cutoff) has a
+// realisation of its own, which a push of the derivation by name must add
+// although the output is already cached. The output path alone does not
+// find it: its deriver is the first derivation.
+func TestClientCAEarlyCutoff(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(func() { ts.Close() })
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	firstDrv, outPath, _ := buildCADerivation(ctx, t, nixEnv)
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{outPath}, nixEnv))
+
+	// Another derivation, the same output.
+	changed := strings.Replace(caTestExpr, `name = "ca-test";`, `name = "ca-test"; unused = "changed";`, 1)
+	secondDrv, secondOut, _ := buildCADerivationFrom(ctx, t, nixEnv, changed)
+
+	if secondDrv == firstDrv {
+		t.Fatalf("the changed expression gave the same derivation %s", firstDrv)
+	}
+
+	if secondOut != outPath {
+		t.Fatalf("the changed derivation built %s, want the cached %s", secondOut, outPath)
+	}
+
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{secondDrv + "^*"}, nixEnv))
+
+	for _, drv := range []string{firstDrv, secondDrv} {
+		key := expectedRealisationKey(ctx, t, nixEnv, drv, outPath)
+
+		var realisation struct {
+			OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's JSON format
+		}
+		ok(t, json.Unmarshal(readZstdObject(ctx, t, testService, key), &realisation))
+
+		if realisation.OutPath != filepath.Base(outPath) {
+			t.Errorf("%s: outPath = %q, want %q", key, realisation.OutPath, filepath.Base(outPath))
+		}
+	}
+}
+
+// Naming an input-addressed derivation pushes its outputs, as nix copy
+// does: there is no realisation, and a backfill may name derivations whose
+// outputs were never pushed.
+func TestClientPushInputAddressedByDrv(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(func() { ts.Close() })
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	inputAddressed := `
+		derivation {
+			name = "ia-test";
+			system = builtins.currentSystem;
+			builder = "/bin/sh";
+			args = [ "-c" "echo 'Hello from an input-addressed derivation' > $out" ];
+		}
+	`
+	drvPath, outPath, _ := buildCADerivationFrom(ctx, t, nixEnv, inputAddressed)
+
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{drvPath + "^*"}, nixEnv))
+
+	hash := filepath.Base(outPath)[:32]
+	narinfo := string(readZstdObject(ctx, t, testService, hash+".narinfo"))
+
+	if !strings.Contains(narinfo, "StorePath: "+outPath) {
+		t.Errorf("narinfo for %s:\n%s", outPath, narinfo)
 	}
 }

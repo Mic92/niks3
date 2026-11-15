@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -582,8 +583,16 @@ func (c *Client) pushPaths(ctx context.Context, paths []string) ([]string, map[s
 	return closurePaths, reports, err
 }
 
-func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, map[string]PathReport, error) {
+func (c *Client) pushPathsOnce(ctx context.Context, args []string) ([]string, map[string]PathReport, error) {
 	startTime := time.Now()
+
+	paths, derivationOutputs := splitDerivationOutputs(args)
+	paths = withFixedOutputs(paths, derivationOutputs)
+
+	named, namedOutPaths, err := c.namedRealisations(ctx, derivationOutputs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying realisations: %w", err)
+	}
 
 	// Resolve symlinks to actual store paths
 	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
@@ -617,21 +626,28 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 	} else if present, err := c.ClosuresExist(ctx, resolvedPaths); err != nil {
 		slog.Debug("Cannot ask for pushed closures, pushing everything", "error", err)
 	} else if len(present) > 0 {
-		missing := resolvedPaths[:0:0]
+		missing := slices.DeleteFunc(slices.Clone(resolvedPaths), func(p string) bool { return present[p] })
 
-		for _, p := range resolvedPaths {
-			if !present[p] {
-				missing = append(missing, p)
-			}
-		}
-
-		if len(missing) == 0 {
+		if len(missing) == 0 && len(namedOutPaths) == 0 {
 			slog.Info(fmt.Sprintf("All %d paths already cached", len(resolvedPaths)))
 
 			return resolvedPaths, report(), nil
 		}
 
 		resolvedPaths = missing
+	}
+
+	// Push the outputs of named derivations even if cached: the server
+	// uploads only what it lacks, such as a realisation of an output that
+	// another derivation built first.
+	for _, p := range namedOutPaths {
+		if !slices.Contains(resolvedPaths, p) {
+			resolvedPaths = append(resolvedPaths, p)
+		}
+	}
+
+	if len(resolvedPaths) == 0 {
+		return nil, report(), nil
 	}
 
 	// Get path info for all paths and their closures
@@ -676,7 +692,7 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 		return closurePaths, report(), nil
 	}
 
-	realisations := c.queryRealisations(ctx, pathInfos)
+	realisations := c.queryRealisations(ctx, pathInfos, named)
 
 	// Prepare closures - one per top-level path
 	result, err := PrepareClosures(resolvedPaths, pathInfos, realisations)

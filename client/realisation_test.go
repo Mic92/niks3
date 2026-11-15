@@ -2,7 +2,10 @@ package client_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/Mic92/niks3/client"
@@ -135,6 +138,125 @@ func TestRealisationFileContentWithoutSignatures(t *testing.T) {
 		}
 		if err := json.Unmarshal(content, &parsed); err != nil || parsed.Signatures == nil {
 			t.Errorf("FileContent() = %s, want a signatures array", content)
+		}
+	}
+}
+
+func TestSplitDerivationOutputs(t *testing.T) {
+	t.Parallel()
+
+	paths, outputs := client.SplitDerivationOutputs([]string{
+		"/nix/store/0b65fpa7amsf86ma3c5y40zgjx1843ia-hello",
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv^*",
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv^out,dev",
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv",
+		"./result",
+	})
+
+	wantPaths := []string{
+		"/nix/store/0b65fpa7amsf86ma3c5y40zgjx1843ia-hello",
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv",
+		"./result",
+	}
+	wantOutputs := []string{
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv^*",
+		"/nix/store/3d4ls1qwmdj2ixrfz0k9bwxi8hq5nnw0-hello.drv^out,dev",
+	}
+
+	if !slices.Equal(paths, wantPaths) {
+		t.Errorf("paths = %q, want %q", paths, wantPaths)
+	}
+
+	if !slices.Equal(outputs, wantOutputs) {
+		t.Errorf("outputs = %q, want %q", outputs, wantOutputs)
+	}
+}
+
+func TestFloatingInstallable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, outputs string) string {
+		t.Helper()
+
+		path := filepath.Join(dir, name)
+		aterm := "Derive([" + outputs + `],[],[],"x86_64-linux","/bin/sh",[],[])`
+
+		if err := os.WriteFile(path, []byte(aterm), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return path
+	}
+
+	floating := write("floating.drv", `("dev","","r:sha256",""),("out","","r:sha256","")`)
+	inputAddressed := write("ia.drv", `("out","/nix/store/0b65fpa7amsf86ma3c5y40zgjx1843ia-ia","","")`)
+	fixed := write("fixed.drv", `("out","/nix/store/0b65fpa7amsf86ma3c5y40zgjx1843ia-src","r:sha256","abcd")`)
+	deferred := write("deferred.drv", `("out","","","")`)
+
+	for _, tc := range []struct{ in, want string }{
+		{floating + "^*", floating + "^dev,out"},
+		{floating + "^out", floating + "^out"},
+		{floating + "^lib", ""},
+		{inputAddressed + "^*", ""},
+		{fixed + "^*", ""},
+		{deferred + "^*", ""},
+		{filepath.Join(dir, "missing.drv") + "^*", filepath.Join(dir, "missing.drv") + "^*"},
+	} {
+		if got := client.FloatingInstallable(tc.in); got != tc.want {
+			t.Errorf("FloatingInstallable(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWithFixedOutputs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	present := func(name string) string {
+		t.Helper()
+
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return path
+	}
+	write := func(name, outputs string) string {
+		t.Helper()
+
+		path := filepath.Join(dir, name)
+		aterm := "Derive([" + outputs + `],[("/nix/store/0b65fpa7amsf86ma3c5y40zgjx1843ia-in.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[])`
+
+		if err := os.WriteFile(path, []byte(aterm), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return path
+	}
+
+	iaOut, iaDev, src := present("ia-out"), present("ia-dev"), present("src")
+	missing := filepath.Join(dir, "gone")
+
+	inputAddressed := write("ia.drv", `("dev","`+iaDev+`","",""),("out","`+iaOut+`","","")`)
+	fixed := write("fixed.drv", `("out","`+src+`","r:sha256","abcd")`)
+	floating := write("floating.drv", `("out","","r:sha256","")`)
+	collected := write("collected.drv", `("out","`+missing+`","","")`)
+
+	for _, tc := range []struct {
+		paths, in, want []string
+	}{
+		{nil, []string{inputAddressed + "^*"}, []string{iaDev, iaOut}},
+		{nil, []string{inputAddressed + "^out"}, []string{iaOut}},
+		{nil, []string{inputAddressed + "^lib"}, nil},
+		{[]string{src}, []string{fixed + "^*", fixed + "^out"}, []string{src}},
+		{[]string{iaOut}, []string{floating + "^*"}, []string{iaOut}},
+		{nil, []string{collected + "^*"}, nil},
+		{nil, []string{filepath.Join(dir, "missing.drv") + "^*"}, nil},
+	} {
+		if got := client.WithFixedOutputs(slices.Clone(tc.paths), tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("WithFixedOutputs(%q, %q) = %q, want %q", tc.paths, tc.in, got, tc.want)
 		}
 	}
 }

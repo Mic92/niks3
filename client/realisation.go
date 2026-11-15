@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -206,6 +208,94 @@ func isFloatingOutput(deriver, output string) bool {
 	return bytes.Contains(outputs, []byte(`("`+output+`","",`))
 }
 
+// floatingOutputRe matches a floating CA output in a derivation's ATerm:
+// ("name","","hashAlgo","").
+var floatingOutputRe = regexp.MustCompile(`\("([^"]+)","","[^"]+",""\)`)
+
+// floatingOutputs returns the floating CA outputs of the derivation drv and
+// whether drv could be read.
+func floatingOutputs(drv string) ([]string, bool) {
+	content, err := os.ReadFile(drv)
+	if err != nil {
+		return nil, false
+	}
+
+	outputs, _, _ := bytes.Cut(content, []byte("],"))
+
+	var names []string
+	for _, m := range floatingOutputRe.FindAllSubmatch(outputs, -1) {
+		names = append(names, string(m[1]))
+	}
+
+	return names, true
+}
+
+// floatingInstallable narrows <drv>^<outputs> to the floating CA outputs
+// among them, or returns "" if there are none: input-addressed and
+// fixed-output derivations have no realisation to push, and Nix < 2.35
+// aborts when asked about a fixed output. An unreadable drv is kept as is.
+func floatingInstallable(installable string) string {
+	drv, spec, _ := strings.Cut(installable, "^")
+
+	floating, readable := floatingOutputs(drv)
+	if !readable {
+		return installable
+	}
+
+	if spec != "*" {
+		wanted := strings.Split(spec, ",")
+		floating = slices.DeleteFunc(floating, func(o string) bool { return !slices.Contains(wanted, o) })
+	}
+
+	if len(floating) == 0 {
+		return ""
+	}
+
+	return drv + "^" + strings.Join(floating, ",")
+}
+
+// fixedOutputRe matches an output with a path in a derivation's ATerm,
+// input-addressed or fixed-output: ("name","/nix/store/...",...).
+var fixedOutputRe = regexp.MustCompile(`\("([^"]+)","(/[^"]+)",`)
+
+// withFixedOutputs adds to paths the outputs named by <drv>^<outputs> that
+// the derivations fix, input-addressed or fixed-output. They have no
+// realisation, so pushing the derivation means pushing them, as nix copy
+// does. Outputs that are not in the store are skipped with a warning;
+// unreadable derivations are skipped.
+func withFixedOutputs(paths, installables []string) []string {
+	for _, installable := range installables {
+		drv, spec, _ := strings.Cut(installable, "^")
+
+		content, err := os.ReadFile(drv)
+		if err != nil {
+			continue
+		}
+
+		outputs, _, _ := bytes.Cut(content, []byte("],"))
+		wanted := strings.Split(spec, ",")
+
+		for _, m := range fixedOutputRe.FindAllSubmatch(outputs, -1) {
+			name, path := string(m[1]), string(m[2])
+			if spec != "*" && !slices.Contains(wanted, name) {
+				continue
+			}
+
+			if _, err := os.Lstat(path); err != nil { //nolint:gosec // G703: an output path of a .drv the caller named
+				slog.Warn("Not pushing output: it is not in the store", "output", installable, "path", path)
+
+				continue
+			}
+
+			if !slices.Contains(paths, path) {
+				paths = append(paths, path)
+			}
+		}
+	}
+
+	return paths
+}
+
 // QueryRealisations returns the realisations of floating CA outputs in
 // pathInfos, keyed by cache key. Nix finds them by <deriver>^<output> only.
 func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string]*RealisationInfo, error) {
@@ -282,14 +372,21 @@ func queryRealisationInfo(ctx context.Context, installables []string, nixEnv []s
 	return append(first, second...), nil
 }
 
-// queryRealisations drops build traces for servers that reject them.
-func (c *Client) queryRealisations(ctx context.Context, pathInfos map[string]*PathInfo) map[string]*RealisationInfo {
+// queryRealisations returns the realisations of the derivers of pathInfos
+// and named, dropping build traces for servers that reject them.
+func (c *Client) queryRealisations(
+	ctx context.Context,
+	pathInfos map[string]*PathInfo,
+	named map[string]*RealisationInfo,
+) map[string]*RealisationInfo {
 	realisations, err := QueryRealisations(ctx, pathInfos, c.NixEnv)
 	if err != nil {
 		slog.Warn("Failed to query realisations, pushing CA paths without them", "error", err)
 
-		return nil
+		realisations = make(map[string]*RealisationInfo, len(named))
 	}
+
+	maps.Copy(realisations, named)
 
 	if cfg, err := c.GetCacheConfig(ctx); err != nil || !cfg.BuildTraces {
 		for key, r := range realisations {
@@ -301,4 +398,90 @@ func (c *Client) queryRealisations(ctx context.Context, pathInfos map[string]*Pa
 	}
 
 	return realisations
+}
+
+// splitDerivationOutputs separates derivation outputs, written
+// <drv>^<outputs> as Nix does, from store paths.
+func splitDerivationOutputs(args []string) ([]string, []string) {
+	var paths, outputs []string
+
+	for _, arg := range args {
+		if drv, _, found := strings.Cut(arg, "^"); found && strings.HasSuffix(drv, ".drv") {
+			outputs = append(outputs, arg)
+		} else {
+			paths = append(paths, arg)
+		}
+	}
+
+	return paths, outputs
+}
+
+// namedRealisations queries the realisations of derivation outputs named as
+// <drv>^<outputs>. A store path records one deriver, the first derivation
+// that built it; a changed derivation that builds the same output (early
+// cutoff) has a realisation of its own, found only by its name.
+//
+// Only realisations of the named derivations are kept: for an unresolved
+// derivation Nix resolves through the realisations of all its inputs and
+// reports those too. The store records realisations of resolved derivations,
+// so these are the ones to name, as a post-build hook's DRV_PATH does.
+//
+// It returns the realisations by cache key and the store paths of their
+// outputs, leaving out outputs that are not in the store.
+func (c *Client) namedRealisations(ctx context.Context, installables []string) (map[string]*RealisationInfo, []string, error) {
+	if len(installables) == 0 {
+		return nil, nil, nil
+	}
+
+	// Older Nix keys realisations by hash, so only the new format can be
+	// matched to a name. The outputs are in the derivations' store.
+	named := make(map[string]bool, len(installables))
+	storeDir := c.storeDir
+
+	floating := make([]string, 0, len(installables))
+
+	for _, installable := range installables {
+		drv, _, _ := strings.Cut(installable, "^")
+		named[filepath.Base(drv)] = true
+		storeDir = filepath.Dir(drv)
+
+		if f := floatingInstallable(installable); f != "" {
+			floating = append(floating, f)
+		}
+	}
+
+	realisations := make(map[string]*RealisationInfo)
+
+	var outPaths []string
+
+	// Stay below ARG_MAX.
+	const maxPerChunk = 1000
+	for chunk := range slices.Chunk(floating, maxPerChunk) {
+		found, err := queryRealisationInfo(ctx, chunk, c.NixEnv)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for i := range found {
+			r := &found[i]
+			if r.ID == "" && !named[r.DrvPath] {
+				continue
+			}
+
+			outPath := filepath.Join(storeDir, r.OutPath)
+			if _, err := os.Lstat(outPath); err != nil {
+				slog.Warn("Not pushing realisation: its output is not in the store", "key", r.Key(), "output", outPath)
+
+				continue
+			}
+
+			if _, dup := realisations[r.Key()]; !dup {
+				outPaths = append(outPaths, outPath)
+			}
+
+			realisations[r.Key()] = r
+		}
+	}
+
+	return realisations, outPaths, nil
 }
