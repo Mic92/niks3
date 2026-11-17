@@ -20,20 +20,26 @@ import (
 
 // A random program of pushes through both APIs, commits, abandoned pushes,
 // expiring closures and garbage collections, some of which lose S3's answer,
-// runs against a real server. After every step:
+// runs against a real server. Pushes carry one of two builds of each path
+// and publish the narinfo the server tells them to. After every step:
 //
+//   - a narinfo names a NAR that it references and that is live and in S3;
 //   - an object's stored refs include every ref a committed push declared;
 //   - whatever a closure reaches is live and in S3;
 //   - whatever a pending push was told not to upload stays live and in S3;
 //   - every live row has its object, every open multipart upload its row,
 //     and object_stats equals a recount.
 //
+// In the end no publish claim is left.
+//
 // The seeds run as a test; `go test -fuzz=FuzzPushGC -run '^$' ./server`
 // searches further. A failure prints the steps it ran.
 
 type modelPath struct {
-	narinfo, nar, ls, realisation string
-	references                    []int
+	narinfo, ls, realisation string
+	// The NAR of each build of the path.
+	nars       [2]string
+	references []int
 }
 
 // Two chains of references that join, so closures overlap in part.
@@ -46,8 +52,11 @@ func modelPaths() []modelPath {
 	for i, refs := range references {
 		c := string(nixBase32[i+10])
 		paths = append(paths, modelPath{
-			narinfo:     strings.Repeat(c, 32) + ".narinfo",
-			nar:         "nar/" + strings.Repeat(c, 52) + ".nar.zst",
+			narinfo: strings.Repeat(c, 32) + ".narinfo",
+			nars: [2]string{
+				"nar/" + strings.Repeat(c, 51) + "0.nar.zst",
+				"nar/" + strings.Repeat(c, 51) + "1.nar.zst",
+			},
 			ls:          strings.Repeat(c, 32) + ".ls",
 			realisation: "realisations/sha256:" + strings.Repeat(c, 8) + "!out.doi",
 			references:  refs,
@@ -65,9 +74,10 @@ type modelObject struct {
 }
 
 // closure lists root's closure the way a client declares it. Bit i adds the
-// realisation of path i, or leaves out its listing, so that two pushes can
-// declare a narinfo with refs neither of which includes the other.
-func closure(paths []modelPath, root int, realised, unlisted int) []modelObject {
+// realisation of path i, leaves out its listing or takes its second build, so
+// that two pushes can declare a narinfo with refs neither of which includes
+// the other.
+func closure(paths []modelPath, root int, realised, unlisted, rebuilt int) []modelObject {
 	var (
 		objects []modelObject
 		seen    = map[int]bool{}
@@ -82,8 +92,9 @@ func closure(paths []modelPath, root int, realised, unlisted int) []modelObject 
 
 		seen[i] = true
 		p := paths[i]
-		refs := []string{p.nar}
-		objects = append(objects, modelObject{Key: p.nar, Type: "nar", Refs: []string{}, NarSize: &size})
+		nar := p.nars[rebuilt>>i&1]
+		refs := []string{nar}
+		objects = append(objects, modelObject{Key: nar, Type: "nar", Refs: []string{}, NarSize: &size})
 
 		if unlisted&(1<<i) == 0 {
 			refs = append(refs, p.ls)
@@ -136,6 +147,7 @@ type modelPush struct {
 	root    string
 	objects []modelObject
 	upload  map[string]server.PendingObject
+	signed  bool
 }
 
 type pushGCModel struct {
@@ -188,9 +200,9 @@ func (m *pushGCModel) call(handler http.HandlerFunc, id string, body any) []byte
 	return w.Body.Bytes()
 }
 
-func (m *pushGCModel) begin(viaPush bool, root, realised, unlisted int) {
-	push := &modelPush{viaPush: viaPush, root: m.paths[root].narinfo, objects: closure(m.paths, root, realised, unlisted)}
-	m.stepf("begin push=%v root=%s realised=%08b unlisted=%08b", viaPush, push.root, realised, unlisted)
+func (m *pushGCModel) begin(viaPush bool, root, realised, unlisted, rebuilt int) {
+	push := &modelPush{viaPush: viaPush, root: m.paths[root].narinfo, objects: closure(m.paths, root, realised, unlisted, rebuilt)}
+	m.stepf("begin push=%v root=%s realised=%08b unlisted=%08b rebuilt=%08b", viaPush, push.root, realised, unlisted, rebuilt)
 
 	var answer []byte
 	if viaPush {
@@ -211,7 +223,13 @@ func (m *pushGCModel) begin(viaPush bool, root, realised, unlisted int) {
 func (m *pushGCModel) put(url string) string {
 	m.t.Helper()
 
-	req, err := http.NewRequestWithContext(m.t.Context(), http.MethodPut, url, strings.NewReader("x"))
+	return m.putBody(url, "x")
+}
+
+func (m *pushGCModel) putBody(url, body string) string {
+	m.t.Helper()
+
+	req, err := http.NewRequestWithContext(m.t.Context(), http.MethodPut, url, strings.NewReader(body))
 	ok(m.t, err)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -242,14 +260,89 @@ func (m *pushGCModel) upload(key string, obj server.PendingObject) {
 	})
 }
 
+// sign uploads what the push was asked for the way a client does: everything
+// else first, then the narinfos the server tells it to publish. The body of
+// a narinfo is the key of its NAR.
+func (m *pushGCModel) sign(push *modelPush) {
+	if push.signed {
+		return
+	}
+
+	push.signed = true
+	m.stepf("sign id=%s", push.id)
+
+	narinfos := map[string]server.NarinfoMetadata{}
+
+	for _, obj := range push.objects {
+		pending, asked := push.upload[obj.Key]
+
+		switch {
+		case !asked:
+		case obj.Type != "narinfo":
+			m.upload(obj.Key, pending)
+		default:
+			nar := obj.Refs[0]
+			narinfos[obj.Key] = server.NarinfoMetadata{
+				StorePath:   "/nix/store/" + strings.TrimSuffix(obj.Key, ".narinfo") + "-path",
+				URL:         nar,
+				Compression: "zstd",
+				NarHash:     "sha256:" + strings.TrimSuffix(strings.TrimPrefix(nar, "nar/"), ".nar.zst"),
+				NarSize:     1,
+			}
+		}
+	}
+
+	var answer struct {
+		Claimed   map[string]server.NarinfoMetadata `json:"claimed"`
+		Published map[string]string                 `json:"published"`
+	}
+
+	ok(m.t, json.Unmarshal(m.call(m.service.SignNarinfosHandler, push.id,
+		map[string]any{"narinfos": narinfos, "claim": true}), &answer))
+
+	for i, obj := range push.objects {
+		own, asked := narinfos[obj.Key]
+		if !asked {
+			// The cache has the narinfo, and it keeps the NAR it names.
+			if obj.Type == "narinfo" {
+				push.objects[i].Refs = obj.Refs[1:]
+			}
+
+			continue
+		}
+
+		// A push that is to publish another build references that NAR.
+		publish := own.URL
+
+		if nar, published := answer.Published[obj.Key]; published {
+			m.stepf("  %s is published with %s", obj.Key, nar)
+			// The push is told the narinfo is there.
+			delete(push.upload, obj.Key)
+
+			if names := m.served(obj.Key); names != nar {
+				m.fatalf("%s is said to be published with %s, but names %s", obj.Key, nar, names)
+			}
+
+			publish = nar
+		} else {
+			if other, lost := answer.Claimed[obj.Key]; lost {
+				m.stepf("  %s is claimed with %s", obj.Key, other.URL)
+				publish = other.URL
+			}
+
+			m.putBody(push.upload[obj.Key].PresignedURL, publish)
+		}
+
+		push.objects[i].Refs = append([]string{publish}, obj.Refs[1:]...)
+	}
+}
+
 func (m *pushGCModel) finish(i int) {
 	push := m.pending[i]
+	m.sign(push)
+
 	m.pending = slices.Delete(m.pending, i, i+1)
 	m.stepf("finish id=%s uploads=%d", push.id, len(push.upload))
-
-	for key, obj := range push.upload {
-		m.upload(key, obj)
-	}
 
 	if push.viaPush {
 		m.call(m.service.CompletePushHandler, push.id, nil)
@@ -376,11 +469,37 @@ func (m *pushGCModel) stored() (map[string]storedObject, map[string]bool) {
 	return objects, inS3
 }
 
+// served returns the NAR a narinfo in S3 names.
+func (m *pushGCModel) served(narinfo string) string {
+	m.t.Helper()
+
+	obj, err := m.service.MinioClient.GetObject(m.t.Context(), m.service.Bucket, narinfo, minio.GetObjectOptions{})
+	ok(m.t, err)
+
+	defer func() { _ = obj.Close() }()
+
+	body, err := io.ReadAll(obj)
+	ok(m.t, err)
+
+	return string(body)
+}
+
 func (m *pushGCModel) check() {
 	m.t.Helper()
 
 	objects, inS3 := m.stored()
 	held := func(key string) bool { return objects[key].live && inS3[key] }
+
+	for key, obj := range objects {
+		if !strings.HasSuffix(key, ".narinfo") || !held(key) {
+			continue
+		}
+
+		if nar := m.served(key); !slices.Contains(obj.refs, nar) || !held(nar) {
+			m.fatalf("%s names %s, but its refs are %v and the NAR has live=%v inS3=%v",
+				key, nar, obj.refs, objects[nar].live, inS3[nar])
+		}
+	}
 
 	for key, refs := range m.declared {
 		for ref := range refs {
@@ -465,8 +584,10 @@ func (m *pushGCModel) run(program []byte) {
 
 		switch op := next(8); {
 		case op <= 2:
-			m.begin(next(2) == 1, next(len(m.paths)), next(256), next(256))
-		case op <= 4 && len(m.pending) > 0:
+			m.begin(next(2) == 1, next(len(m.paths)), next(256), next(256), next(256))
+		case op == 3 && len(m.pending) > 0:
+			m.sign(m.pending[next(len(m.pending))])
+		case op == 4 && len(m.pending) > 0:
 			m.finish(next(len(m.pending)))
 		case op == 5 && len(m.pending) > 0:
 			m.abandon(next(len(m.pending)))
@@ -487,6 +608,10 @@ func (m *pushGCModel) run(program []byte) {
 
 	m.collect(true, false, false)
 	m.check()
+
+	if n := countRows(m.t, m.service, "SELECT count(*) FROM publish_claims"); n != 0 {
+		m.fatalf("%d publish claims are left", n)
+	}
 }
 
 func FuzzPushGC(f *testing.F) {
