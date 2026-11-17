@@ -13,7 +13,8 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 )
 
-// A narinfo that was only pushed as a dependency still has to be pushed.
+// The three endpoints differ in what they say about a path that was only
+// pushed as a dependency.
 func TestExistsTellsClosuresFromTheirDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -53,7 +54,22 @@ func TestExistsTellsClosuresFromTheirDependencies(t *testing.T) {
 		ok(t, json.Unmarshal(w.Body.Bytes(), answer))
 	}
 
-	var closures api.ExistsResponse
+	var objects, closures api.ExistsResponse
+
+	ask(service.ObjectsExistHandler, &objects)
+	slices.Sort(objects.Exists)
+
+	if !slices.Equal(objects.Exists, []string{root, dep}) {
+		t.Fatalf("objects=%v, want the closure and its dependency", objects.Exists)
+	}
+
+	var untouched bool
+	ok(t, service.Pool.QueryRow(ctx,
+		"SELECT updated_at < timezone('UTC', now()) - interval '1 hour' FROM closures WHERE key = $1", root).Scan(&untouched))
+
+	if !untouched {
+		t.Errorf("asking for objects touched the closure %s", root)
+	}
 
 	ask(service.ClosuresExistHandler, &closures)
 

@@ -20,6 +20,14 @@ func (s *Service) ClosuresExistHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ObjectsExistHandler answers which narinfo keys can be fetched. That
+// includes the dependencies of a pushed closure, which are deleted with it.
+func (s *Service) ObjectsExistHandler(w http.ResponseWriter, r *http.Request) {
+	if keys, ok := s.existing(w, r, pg.New(s.Pool).GetPresentObjects); ok {
+		writeExisting(w, api.ExistsResponse{Exists: keys})
+	}
+}
+
 // PresentHandler serves /api/objects/present, the former name of
 // /api/closures/exists.
 func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
