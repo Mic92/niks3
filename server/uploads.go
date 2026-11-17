@@ -15,6 +15,7 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -573,10 +574,80 @@ func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool,
 
 type signNarinfosRequest struct {
 	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
+	// Claim is set by clients that publish what Claimed in the answer names.
+	Claim bool `json:"claim,omitempty"`
 }
 
 type signNarinfosResponse struct {
 	Signatures map[string][]string `json:"signatures"`
+	// Claimed holds, for each narinfo another push published a different
+	// build of, that build's narinfo. The client publishes it in place of
+	// its own.
+	Claimed map[string]NarinfoMetadata `json:"claimed,omitempty"`
+}
+
+var errPushNotFound = errors.New("push not found")
+
+// claimNarinfos records the signed narinfos as the builds this cache
+// publishes and returns those that lost to an earlier claim.
+func (s *Service) claimNarinfos(
+	ctx context.Context, pushID int64, narinfos map[string]NarinfoMetadata, signatures map[string][]string,
+) (map[string]NarinfoMetadata, error) {
+	params := pg.ClaimNarinfosParams{PushID: pushID}
+
+	for key, meta := range narinfos {
+		meta.Signatures = signatures[key]
+
+		encoded, err := json.Marshal(meta)
+		if err != nil {
+			return nil, fmt.Errorf("encoding narinfo %s: %w", key, err)
+		}
+
+		params.Keys = append(params.Keys, key)
+		params.NarKeys = append(params.NarKeys, meta.URL)
+		params.Narinfos = append(params.Narinfos, encoded)
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	answer, err := pg.New(tx).ClaimNarinfos(ctx, params)
+	if err != nil {
+		var pgError *pgconn.PgError
+		if errors.As(err, &pgError) && strings.HasPrefix(pgError.Message, "Push does not exist") {
+			return nil, errPushNotFound
+		}
+
+		return nil, fmt.Errorf("claiming narinfos: %w", err)
+	}
+
+	var claim struct {
+		Lost  map[string]NarinfoMetadata `json:"lost"`
+		Taken []string                   `json:"taken"`
+	}
+
+	if err := json.Unmarshal(answer, &claim); err != nil {
+		return nil, fmt.Errorf("decoding claim: %w", err)
+	}
+
+	// Still holding the claim rows, so nobody publishes under these keys
+	// before the dead build's narinfos are gone.
+	for _, key := range claim.Taken {
+		err := s.MinioClient.RemoveObject(ctx, s.Bucket, key, minio.RemoveObjectOptions{})
+		if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchKey {
+			return nil, fmt.Errorf("removing narinfo %s of a deleted build: %w", key, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return claim.Lost, nil
 }
 
 // SignNarinfosHandler handles POST /api/pending_closures/{id}/sign endpoint.
@@ -685,9 +756,28 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap))
+	var claimed map[string]NarinfoMetadata
 
-	writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap})
+	if req.Claim {
+		claimed, err = s.claimNarinfos(r.Context(), parsedUploadID, req.Narinfos, signaturesMap)
+	}
+
+	if err != nil {
+		if errors.Is(err, errPushNotFound) {
+			http.Error(w, "push not found", http.StatusNotFound)
+
+			return
+		}
+
+		slog.Error("Failed to claim narinfos", "id", parsedUploadID, "error", err)
+		http.Error(w, "failed to claim narinfos: "+err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap), "claimed", len(claimed))
+
+	writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap, Claimed: claimed})
 }
 
 // CommitPendingClosureHandler handles POST /api/pending_closures/{id}/complete endpoint.

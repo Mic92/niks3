@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimNarinfos = `-- name: ClaimNarinfos :one
+SELECT claim_narinfos(
+    $1::bigint, $2::varchar [], $3::varchar [], $4::jsonb []
+)::jsonb
+`
+
+type ClaimNarinfosParams struct {
+	PushID   int64    `json:"push_id"`
+	Keys     []string `json:"keys"`
+	NarKeys  []string `json:"nar_keys"`
+	Narinfos [][]byte `json:"narinfos"`
+}
+
+func (q *Queries) ClaimNarinfos(ctx context.Context, arg ClaimNarinfosParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, claimNarinfos,
+		arg.PushID,
+		arg.Keys,
+		arg.NarKeys,
+		arg.Narinfos,
+	)
+	var column_1 []byte
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const cleanupPendingClosures = `-- name: CleanupPendingClosures :execrows
 WITH cutoff_time AS (
     SELECT $1::timestamp AS time
@@ -109,6 +134,16 @@ func (q *Queries) CountPendingClosures(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteClaims = `-- name: DeleteClaims :exec
+DELETE FROM publish_claims
+WHERE key = any($1::varchar [])
+`
+
+func (q *Queries) DeleteClaims(ctx context.Context, dollar_1 []string) error {
+	_, err := q.db.Exec(ctx, deleteClaims, dollar_1)
+	return err
 }
 
 const deleteMultipartUpload = `-- name: DeleteMultipartUpload :exec

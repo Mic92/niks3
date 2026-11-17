@@ -89,6 +89,10 @@ func (s *Service) sweepBatch(ctx context.Context, gracePeriod int32, afterKey st
 		return "", s3Errs, fmt.Errorf("delete object rows: %w", err)
 	}
 
+	if err := pg.New(tx).DeleteClaims(ctx, deleted); err != nil {
+		return "", s3Errs, fmt.Errorf("delete claims: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return "", s3Errs, fmt.Errorf("commit sweep transaction: %w", err)
 	}

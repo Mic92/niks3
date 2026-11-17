@@ -202,6 +202,15 @@ WHERE key = any($1::varchar [])
 DELETE FROM objects
 WHERE key = any($1::varchar []);
 
+-- name: DeleteClaims :exec
+DELETE FROM publish_claims
+WHERE key = any($1::varchar []);
+
+-- name: ClaimNarinfos :one
+SELECT claim_narinfos(
+    sqlc.arg(push_id)::bigint, sqlc.arg(keys)::varchar [], sqlc.arg(nar_keys)::varchar [], sqlc.arg(narinfos)::jsonb []
+)::jsonb;
+
 -- name: InsertMultipartUpload :exec
 INSERT INTO multipart_uploads (pending_closure_id, object_key, upload_id)
 VALUES ($1, $2, $3);

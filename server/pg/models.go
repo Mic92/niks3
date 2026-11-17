@@ -59,3 +59,10 @@ type Pin struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
+
+type PublishClaim struct {
+	Key     string   `json:"key"`
+	NarKey  string   `json:"nar_key"`
+	Refs    []string `json:"refs"`
+	Narinfo []byte   `json:"narinfo"`
+}
