@@ -90,11 +90,11 @@ func TestExistsTellsClosuresFromTheirDependencies(t *testing.T) {
 		"SELECT updated_at > timezone('UTC', now()) - interval '1 minute' FROM closures WHERE key = $1", root).Scan(&touched))
 
 	if !touched {
-		t.Errorf("present closure %s was not touched", root)
+		t.Errorf("closure %s was not touched", root)
 	}
 }
 
-func TestPresentRefreshesOnlyStaleClosures(t *testing.T) {
+func TestExistsRefreshesOnlyStaleClosures(t *testing.T) {
 	t.Parallel()
 
 	service := createTestService(t)
@@ -113,11 +113,11 @@ func TestPresentRefreshesOnlyStaleClosures(t *testing.T) {
 		 ($1, timezone('UTC', now()) - interval '1 minute'), ($2, timezone('UTC', now()) - interval '1 hour')`, fresh, stale)
 	ok(t, err)
 
-	present, err := pg.New(service.Pool).TouchPresentClosures(ctx, []string{fresh, stale})
+	exists, err := pg.New(service.Pool).TouchPresentClosures(ctx, []string{fresh, stale})
 	ok(t, err)
 
-	if len(present) != 2 {
-		t.Fatalf("present=%v, want both closures", present)
+	if len(exists) != 2 {
+		t.Fatalf("exists=%v, want both closures", exists)
 	}
 
 	var freshKept, staleRefreshed bool
@@ -137,9 +137,9 @@ func TestPresentRefreshesOnlyStaleClosures(t *testing.T) {
 	}
 }
 
-// If GC is deleting a closure, the present check must not report it.
+// If GC is deleting a closure, it must not be reported.
 // Otherwise the client skips the push and the closure is lost.
-func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
+func TestExistsWaitsWhileGCDeletesClosure(t *testing.T) {
 	t.Parallel()
 
 	// The check waits for GC even when it does not rewrite the row.
@@ -147,12 +147,12 @@ func TestPresentNotReportedWhileGCDeletesClosure(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			presentWaitsForGC(t, age)
+			existsWaitsForGC(t, age)
 		})
 	}
 }
 
-func presentWaitsForGC(t *testing.T, age string) {
+func existsWaitsForGC(t *testing.T, age string) {
 	t.Helper()
 
 	service := createTestService(t)
