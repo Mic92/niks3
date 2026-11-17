@@ -61,8 +61,7 @@ type Pin struct {
 }
 
 type PublishClaim struct {
-	Key     string   `json:"key"`
-	NarKey  string   `json:"nar_key"`
-	Refs    []string `json:"refs"`
-	Narinfo []byte   `json:"narinfo"`
+	Key     string `json:"key"`
+	NarKey  string `json:"nar_key"`
+	Narinfo []byte `json:"narinfo"`
 }

@@ -9,10 +9,11 @@ DROP FUNCTION IF EXISTS claim_narinfos(bigint, varchar[], varchar[], jsonb[]);
 -- Per key the push learns one of:
 --   won:       it publishes its own build.
 --   lost:      another push claimed a different build. The push publishes
---              that one: its narinfo row gets the claimed references and
---              the claimed NAR becomes one of its pending objects, which
---              keeps GC away from it.
+--              that one: its narinfo row references the claimed NAR in
+--              place of its own, and the claimed NAR becomes one of its
+--              pending objects, which keeps GC away from it.
 --   published: a push committed the key meanwhile. Nothing is to publish.
+--              The commit of this push leaves the NAR of the row as it is.
 --
 -- A claim is dead once GC has marked or deleted its NAR and no push holds
 -- it. The next push wins the key.
@@ -49,10 +50,9 @@ BEGIN
     END IF;
 
     WITH inserted AS (
-        INSERT INTO publish_claims (key, nar_key, refs, narinfo)
-        SELECT t.key, t.nar_key, po.refs, t.narinfo
+        INSERT INTO publish_claims (key, nar_key, narinfo)
+        SELECT t.key, t.nar_key, t.narinfo
         FROM unnest(keys, nar_keys, narinfos) AS t (key, nar_key, narinfo)
-        INNER JOIN pending_objects AS po ON po.pending_closure_id = push_id AND po.key = t.key
         ORDER BY t.key COLLATE "C"
         ON CONFLICT (key) DO NOTHING
         RETURNING key
@@ -81,11 +81,6 @@ BEGIN
 
     IF cardinality(published_keys) > 0 THEN
         DELETE FROM publish_claims WHERE key = any(published_keys) AND key = any(won);
-
-        UPDATE pending_objects AS po
-        SET refs = o.refs
-        FROM objects AS o
-        WHERE po.pending_closure_id = push_id AND po.key = o.key AND o.key = any(published_keys);
     END IF;
 
     -- Claims of others, on a snapshot taken after their inserts committed.
@@ -103,9 +98,8 @@ BEGIN
 
     IF cardinality(replaced) > 0 THEN
         UPDATE publish_claims AS c
-        SET nar_key = t.nar_key, refs = po.refs, narinfo = t.narinfo
+        SET nar_key = t.nar_key, narinfo = t.narinfo
         FROM unnest(keys, nar_keys, narinfos) AS t (key, nar_key, narinfo)
-        INNER JOIN pending_objects AS po ON po.pending_closure_id = push_id AND po.key = t.key
         WHERE c.key = t.key AND c.key = any(replaced);
     END IF;
 
@@ -116,8 +110,9 @@ BEGIN
     WHERE c.nar_key <> t.nar_key;
 
     UPDATE pending_objects AS po
-    SET refs = c.refs
+    SET refs = array_replace(po.refs, t.nar_key, c.nar_key)
     FROM publish_claims AS c
+    INNER JOIN unnest(keys, nar_keys) AS t (key, nar_key) ON t.key = c.key
     WHERE po.pending_closure_id = push_id AND po.key = c.key AND c.key = any(lost_keys);
 
     INSERT INTO pending_objects (pending_closure_id, key, refs)
