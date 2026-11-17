@@ -296,7 +296,7 @@ func TestClientIntegration(t *testing.T) {
 		t.Fatalf("Client failed: %v", err)
 	}
 
-	// A second push is answered by /api/objects/present alone.
+	// A second push is answered by /api/closures/exists alone.
 	pendingCalls.Store(0)
 
 	err = pushToServer(ctx, ts.URL, testAuthToken, []string{storePath}, nixEnv)

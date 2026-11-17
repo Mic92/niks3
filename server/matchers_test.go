@@ -67,6 +67,6 @@ func registerTestHandlers(mux *http.ServeMux, testService *server.Service) {
 	mux.HandleFunc("POST /api/pushes/{id}/complete", testService.RequireScope(oidc.ScopeWrite, testService.CompletePushHandler))
 	mux.HandleFunc("GET /api/cache-config", testService.CacheConfigHandler)
 	mux.HandleFunc("POST /api/multipart/complete", testService.RequireScope(oidc.ScopeWrite, testService.CompleteMultipartUploadHandler))
-	mux.HandleFunc("POST /api/objects/present", testService.RequireScope(oidc.ScopeWrite, testService.PresentHandler))
+	mux.HandleFunc("POST /api/closures/exists", testService.RequireScope(oidc.ScopeWrite, testService.ClosuresExistHandler))
 	mux.HandleFunc("GET /health", testService.HealthCheckHandler)
 }
