@@ -13,15 +13,17 @@ import (
 
 const claimNarinfos = `-- name: ClaimNarinfos :one
 SELECT claim_narinfos(
-    $1::bigint, $2::varchar [], $3::varchar [], $4::jsonb []
+    $1::bigint, $2::varchar [], $3::varchar [], $4::jsonb [],
+    $5::boolean
 )::jsonb
 `
 
 type ClaimNarinfosParams struct {
-	PushID   int64    `json:"push_id"`
-	Keys     []string `json:"keys"`
-	NarKeys  []string `json:"nar_keys"`
-	Narinfos [][]byte `json:"narinfos"`
+	PushID        int64    `json:"push_id"`
+	Keys          []string `json:"keys"`
+	NarKeys       []string `json:"nar_keys"`
+	Narinfos      [][]byte `json:"narinfos"`
+	InTransaction bool     `json:"in_transaction"`
 }
 
 func (q *Queries) ClaimNarinfos(ctx context.Context, arg ClaimNarinfosParams) ([]byte, error) {
@@ -30,6 +32,7 @@ func (q *Queries) ClaimNarinfos(ctx context.Context, arg ClaimNarinfosParams) ([
 		arg.Keys,
 		arg.NarKeys,
 		arg.Narinfos,
+		arg.InTransaction,
 	)
 	var column_1 []byte
 	err := row.Scan(&column_1)

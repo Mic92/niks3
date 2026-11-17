@@ -584,6 +584,9 @@ type signNarinfosResponse struct {
 	// build of, that build's narinfo. The client publishes it in place of
 	// its own.
 	Claimed map[string]NarinfoMetadata `json:"claimed,omitempty"`
+	// Published holds, for each narinfo another push committed meanwhile,
+	// the key of its NAR. The client uploads no narinfo for it.
+	Published map[string]string `json:"published,omitempty"`
 }
 
 var errPushNotFound = errors.New("push not found")
@@ -592,7 +595,7 @@ var errPushNotFound = errors.New("push not found")
 // publishes and returns those that lost to an earlier claim.
 func (s *Service) claimNarinfos(
 	ctx context.Context, pushID int64, narinfos map[string]NarinfoMetadata, signatures map[string][]string,
-) (map[string]NarinfoMetadata, error) {
+) (*narinfoClaim, error) {
 	params := pg.ClaimNarinfosParams{PushID: pushID}
 
 	for key, meta := range narinfos {
@@ -608,6 +611,17 @@ func (s *Service) claimNarinfos(
 		params.Narinfos = append(params.Narinfos, encoded)
 	}
 
+	// A push that wins every key outright needs no transaction.
+	answer, err := pg.New(s.Pool).ClaimNarinfos(ctx, params)
+	if err == nil {
+		return decodeClaim(answer)
+	}
+
+	var pgError *pgconn.PgError
+	if !errors.As(err, &pgError) || pgError.Code != claimNeedsTransaction {
+		return nil, claimError(err)
+	}
+
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -615,39 +629,77 @@ func (s *Service) claimNarinfos(
 
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	answer, err := pg.New(tx).ClaimNarinfos(ctx, params)
+	params.InTransaction = true
+
+	answer, err = pg.New(tx).ClaimNarinfos(ctx, params)
 	if err != nil {
-		var pgError *pgconn.PgError
-		if errors.As(err, &pgError) && strings.HasPrefix(pgError.Message, "Push does not exist") {
-			return nil, errPushNotFound
-		}
-
-		return nil, fmt.Errorf("claiming narinfos: %w", err)
+		return nil, claimError(err)
 	}
 
-	var claim struct {
-		Lost  map[string]NarinfoMetadata `json:"lost"`
-		Taken []string                   `json:"taken"`
-	}
-
-	if err := json.Unmarshal(answer, &claim); err != nil {
-		return nil, fmt.Errorf("decoding claim: %w", err)
+	claim, err := decodeClaim(answer)
+	if err != nil {
+		return nil, err
 	}
 
 	// Still holding the claim rows, so nobody publishes under these keys
-	// before the dead build's narinfos are gone.
-	for _, key := range claim.Taken {
-		err := s.MinioClient.RemoveObject(ctx, s.Bucket, key, minio.RemoveObjectOptions{})
-		if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchKey {
-			return nil, fmt.Errorf("removing narinfo %s of a deleted build: %w", key, err)
-		}
+	// before the deleted build's narinfos are gone.
+	if err := s.removeNarinfos(ctx, claim.Taken); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
-	return claim.Lost, nil
+	return claim, nil
+}
+
+// claimNeedsTransaction is the SQLSTATE claim_narinfos fails with.
+const claimNeedsTransaction = "NK301"
+
+type narinfoClaim struct {
+	Lost      map[string]NarinfoMetadata `json:"lost"`
+	Published map[string]string          `json:"published"`
+	Taken     []string                   `json:"taken"`
+}
+
+func decodeClaim(answer []byte) (*narinfoClaim, error) {
+	claim := &narinfoClaim{}
+	if err := json.Unmarshal(answer, claim); err != nil {
+		return nil, fmt.Errorf("decoding claim: %w", err)
+	}
+
+	return claim, nil
+}
+
+func claimError(err error) error {
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) && strings.HasPrefix(pgError.Message, "Push does not exist") {
+		return errPushNotFound
+	}
+
+	return fmt.Errorf("claiming narinfos: %w", err)
+}
+
+func (s *Service) removeNarinfos(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	objects := make(chan minio.ObjectInfo, len(keys))
+	for _, key := range keys {
+		objects <- minio.ObjectInfo{Key: key}
+	}
+
+	close(objects)
+
+	for result := range s.MinioClient.RemoveObjects(ctx, s.Bucket, objects, minio.RemoveObjectsOptions{}) {
+		if result.Err != nil {
+			return fmt.Errorf("removing narinfo %s of a deleted build: %w", result.ObjectName, result.Err)
+		}
+	}
+
+	return nil
 }
 
 // SignNarinfosHandler handles POST /api/pending_closures/{id}/sign endpoint.
@@ -756,10 +808,10 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var claimed map[string]NarinfoMetadata
+	claim := &narinfoClaim{}
 
 	if req.Claim {
-		claimed, err = s.claimNarinfos(r.Context(), parsedUploadID, req.Narinfos, signaturesMap)
+		claim, err = s.claimNarinfos(r.Context(), parsedUploadID, req.Narinfos, signaturesMap)
 	}
 
 	if err != nil {
@@ -775,9 +827,10 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap), "claimed", len(claimed))
+	slog.Info("Signed narinfos", "id", parsedUploadID, "count", len(signaturesMap),
+		"claimed", len(claim.Lost), "published", len(claim.Published))
 
-	writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap, Claimed: claimed})
+	writeJSONResponse(w, signNarinfosResponse{Signatures: signaturesMap, Claimed: claim.Lost, Published: claim.Published})
 }
 
 // CommitPendingClosureHandler handles POST /api/pending_closures/{id}/complete endpoint.

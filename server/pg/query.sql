@@ -208,7 +208,8 @@ WHERE key = any($1::varchar []);
 
 -- name: ClaimNarinfos :one
 SELECT claim_narinfos(
-    sqlc.arg(push_id)::bigint, sqlc.arg(keys)::varchar [], sqlc.arg(nar_keys)::varchar [], sqlc.arg(narinfos)::jsonb []
+    sqlc.arg(push_id)::bigint, sqlc.arg(keys)::varchar [], sqlc.arg(nar_keys)::varchar [], sqlc.arg(narinfos)::jsonb [],
+    sqlc.arg(in_transaction)::boolean
 )::jsonb;
 
 -- name: InsertMultipartUpload :exec

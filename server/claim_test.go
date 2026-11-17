@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -55,7 +56,7 @@ func (bld build) push(t *testing.T, service *server.Service) string {
 	return createPush(t, service, bld.keys(), objects).ID
 }
 
-// sign returns the NAR each narinfo key is to be published with.
+// sign returns the NAR each narinfo key is or is to be published with.
 func (bld build) sign(t *testing.T, service *server.Service, id string) map[string]string {
 	t.Helper()
 
@@ -89,7 +90,8 @@ func (bld build) signAs(t *testing.T, service *server.Service, id string, claim 
 	})
 
 	var signed struct {
-		Claimed map[string]server.NarinfoMetadata `json:"claimed"`
+		Claimed   map[string]server.NarinfoMetadata `json:"claimed"`
+		Published map[string]string                 `json:"published"`
 	}
 
 	ok(t, json.Unmarshal(rr.Body.Bytes(), &signed))
@@ -106,6 +108,8 @@ func (bld build) signAs(t *testing.T, service *server.Service, id string, claim 
 
 		published[key] = narinfo.URL
 	}
+
+	maps.Copy(published, signed.Published)
 
 	return published
 }
@@ -276,10 +280,47 @@ func TestClaim_CollectedBuildIsReplaced(t *testing.T) {
 	}
 }
 
-// A push that started before the collected build published still has that
-// narinfo among its uploads. Once it takes the claim, the cache no longer
-// reports the narinfo as held.
-func TestClaim_ReplacedNarinfoIsNotReportedAsHeld(t *testing.T) {
+// Once a push commits, the committed objects say which build the cache
+// serves and the claim is gone. A push that signs later publishes nothing.
+func TestClaim_CommittedBuildIsPublished(t *testing.T) {
+	t.Parallel()
+
+	service := claimService(t)
+	defer service.Close()
+
+	first, second := newBuild(1, 1, 2), newBuild(1, 2, 2)
+	firstID, secondID := first.push(t, service), second.push(t, service)
+
+	first.sign(t, service, firstID)
+	completePush(t, service, firstID)
+
+	if n := countRows(t, service, `SELECT count(*) FROM publish_claims`); n != 0 {
+		t.Fatalf("%d claims left after the commit", n)
+	}
+
+	told := second.sign(t, service, secondID)
+	for out, key := range first.keys() {
+		if told[key] != first.nars[out] {
+			t.Fatalf("second build was told %v is published, want the first build's %v", told, first.nars)
+		}
+	}
+
+	if n := countRows(t, service, `SELECT count(*) FROM publish_claims`); n != 0 {
+		t.Fatalf("%d claims on committed narinfos", n)
+	}
+
+	completePush(t, service, secondID)
+
+	for out, key := range first.keys() {
+		if n := countRows(t, service, `SELECT count(*) FROM objects WHERE key = $1 AND refs = $2`, key, first.nars[out:out+1]); n != 1 {
+			t.Errorf("narinfo %s no longer refers to the first build's NAR alone", key)
+		}
+	}
+}
+
+// GC marked a committed build, and its narinfo is still in the bucket. A new
+// build of the path wins, and the old narinfo is gone before it is told so.
+func TestClaim_MarkedBuildIsDeletedFirst(t *testing.T) {
 	t.Parallel()
 
 	service := claimService(t)
@@ -287,32 +328,32 @@ func TestClaim_ReplacedNarinfoIsNotReportedAsHeld(t *testing.T) {
 
 	ctx := t.Context()
 
-	dead, next := newBuild(1, 1, 1), newBuild(1, 2, 1)
-	deadID, nextID := dead.push(t, service), next.push(t, service)
+	old, next := newBuild(1, 1, 2), newBuild(1, 2, 2)
 
-	dead.sign(t, service, deadID)
+	oldID := old.push(t, service)
+	old.sign(t, service, oldID)
 
-	key := dead.keys()[0]
-	_, err := service.Pool.Exec(ctx, `INSERT INTO objects (key, refs) VALUES ($1, $2)`, key, dead.nars)
-	ok(t, err)
-	_, err = service.Pool.Exec(ctx, `DELETE FROM pending_closures WHERE id = $1`, deadID)
-	ok(t, err)
-
-	next.sign(t, service, nextID)
-
-	body, err := json.Marshal(map[string]any{"keys": []string{key}})
-	ok(t, err)
-
-	rr := testRequest(t, &TestRequest{method: "POST", path: "/api/objects/exists", body: body, handler: service.ObjectsExistHandler})
-
-	var held struct {
-		Exists []string `json:"exists"`
+	for _, key := range old.keys() {
+		_, err := service.MinioClient.PutObject(ctx, service.Bucket, key,
+			bytes.NewReader([]byte("old")), 3, minio.PutObjectOptions{})
+		ok(t, err)
 	}
 
-	ok(t, json.Unmarshal(rr.Body.Bytes(), &held))
+	completePush(t, service, oldID)
 
-	if len(held.Exists) != 0 {
-		t.Fatalf("cache reports %v as held, but its file was deleted", held.Exists)
+	_, err := service.Pool.Exec(ctx, `UPDATE objects SET deleted_at = timezone('UTC', now()), first_deleted_at = timezone('UTC', now())`)
+	ok(t, err)
+
+	told := next.sign(t, service, next.push(t, service))
+	for out, key := range next.keys() {
+		if told[key] != next.nars[out] {
+			t.Fatalf("next build was told to publish %v", told)
+		}
+
+		_, err := service.MinioClient.StatObject(ctx, service.Bucket, key, minio.StatObjectOptions{})
+		if err == nil || minio.ToErrorResponse(err).Code != minio.NoSuchKey {
+			t.Fatalf("narinfo %s of the marked build is still served (err=%v)", key, err)
+		}
 	}
 }
 

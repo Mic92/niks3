@@ -1,30 +1,46 @@
 -- +goose up
 
 -- +goose statementbegin
--- Claims narinfo keys for the builds a push is about to publish.
+DROP FUNCTION IF EXISTS claim_narinfos(bigint, varchar[], varchar[], jsonb[]);
+
+-- Claims narinfo keys for the builds a push is about to publish. A claim
+-- lasts until a push commits the key or GC deletes it.
 --
--- A key is won if nobody claimed it, if the claim names the same NAR, or if
--- the claim is dead: GC has marked or deleted its NAR and no push holds it.
--- A dead build's narinfo row is marked as well, and the caller deletes the
--- file before it answers, so that no client sees it next to the new build.
+-- Per key the push learns one of:
+--   won:       it publishes its own build.
+--   lost:      another push claimed a different build. The push publishes
+--              that one: its narinfo row gets the claimed references and
+--              the claimed NAR becomes one of its pending objects, which
+--              keeps GC away from it.
+--   published: a push committed the key meanwhile. Nothing is to publish.
 --
--- A lost key makes the push publish the claimed build. Its narinfo row gets
--- the claimed references, and the claimed NAR becomes one of its pending
--- objects, which keeps GC away from it.
+-- A claim is dead once GC has marked or deleted its NAR and no push holds
+-- it. The next push wins the key.
+--
+-- taken lists won keys under which a build that GC has marked is still in
+-- the bucket. The caller deletes these files before it answers, so that no
+-- client sees them next to the new build.
 --
 -- Outputs of one derivation are claimed together: rows are taken in byte
 -- order, so a second push waits at the first key and then loses all of them.
 --
--- Returns {"lost": {key: narinfo}, "taken": [key]}.
+-- A push that wins every key outright is done after the insert. Anything
+-- else needs in_transaction: the caller holds the claim rows until it has
+-- deleted the taken files. Without it the call fails with SQLSTATE NK301.
+--
+-- Returns {"lost": {key: narinfo}, "published": {key: NAR key}, "taken": [key]}.
 CREATE OR REPLACE FUNCTION claim_narinfos(
-    push_id bigint, keys varchar[], nar_keys varchar[], narinfos jsonb[]
+    push_id bigint, keys varchar[], nar_keys varchar[], narinfos jsonb[], in_transaction boolean
 )
 RETURNS jsonb AS $$
 DECLARE
-    now timestamp without time zone := timezone('UTC', now());
     won varchar[];
+    replaced varchar[];
     taken varchar[];
     lost jsonb;
+    lost_keys varchar[];
+    published jsonb;
+    published_keys varchar[];
 BEGIN
     -- Locked, so the cleanup cannot delete the push while it claims.
     PERFORM 1 FROM pending_closures WHERE id = push_id FOR UPDATE;
@@ -43,30 +59,58 @@ BEGIN
     )
     SELECT coalesce(array_agg(key), '{}') INTO won FROM inserted;
 
+    -- Looked up after the insert, which waited for a commit of the same key.
+    IF cardinality(won) = cardinality(keys) AND NOT EXISTS (
+        SELECT 1 FROM objects AS o
+        INNER JOIN unnest(keys, nar_keys) AS t (key, nar_key) ON t.key = o.key
+        WHERE o.deleted_at IS NULL OR NOT (t.nar_key = any(o.refs))
+    ) THEN
+        RETURN '{}'::jsonb;
+    END IF;
+
+    IF NOT in_transaction THEN
+        RAISE EXCEPTION 'claim needs a transaction' USING ERRCODE = 'NK301';
+    END IF;
+
+    SELECT
+        coalesce(jsonb_object_agg(o.key, (SELECT r FROM unnest(o.refs) AS r WHERE r LIKE 'nar/%' LIMIT 1)), '{}'),
+        coalesce(array_agg(o.key), '{}')
+    INTO published, published_keys
+    FROM objects AS o
+    WHERE o.key = any(keys) AND o.deleted_at IS NULL;
+
+    IF cardinality(published_keys) > 0 THEN
+        DELETE FROM publish_claims WHERE key = any(published_keys) AND key = any(won);
+
+        UPDATE pending_objects AS po
+        SET refs = o.refs
+        FROM objects AS o
+        WHERE po.pending_closure_id = push_id AND po.key = o.key AND o.key = any(published_keys);
+    END IF;
+
     -- Claims of others, on a snapshot taken after their inserts committed.
     PERFORM 1 FROM publish_claims
     WHERE key = any(keys) AND NOT (key = any(won))
     ORDER BY key COLLATE "C"
     FOR UPDATE;
 
-    WITH replaced AS (
+    SELECT coalesce(array_agg(c.key), '{}') INTO replaced
+    FROM publish_claims AS c
+    WHERE c.key = any(keys)
+        AND NOT (c.key = any(won))
+        AND NOT EXISTS (SELECT 1 FROM objects AS o WHERE o.key = c.nar_key AND o.deleted_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM pending_objects AS held WHERE held.key = c.nar_key);
+
+    IF cardinality(replaced) > 0 THEN
         UPDATE publish_claims AS c
         SET nar_key = t.nar_key, refs = po.refs, narinfo = t.narinfo
         FROM unnest(keys, nar_keys, narinfos) AS t (key, nar_key, narinfo)
         INNER JOIN pending_objects AS po ON po.pending_closure_id = push_id AND po.key = t.key
-        WHERE c.key = t.key
-            AND NOT (c.key = any(won))
-            AND NOT EXISTS (SELECT 1 FROM objects AS o WHERE o.key = c.nar_key AND o.deleted_at IS NULL)
-            AND NOT EXISTS (SELECT 1 FROM pending_objects AS held WHERE held.key = c.nar_key)
-        RETURNING c.key
-    )
-    SELECT coalesce(array_agg(key), '{}') INTO taken FROM replaced;
+        WHERE c.key = t.key AND c.key = any(replaced);
+    END IF;
 
-    UPDATE objects
-    SET deleted_at = now, first_deleted_at = coalesce(first_deleted_at, now)
-    WHERE key = any(taken) AND deleted_at IS NULL;
-
-    SELECT coalesce(jsonb_object_agg(c.key, c.narinfo), '{}') INTO lost
+    SELECT coalesce(jsonb_object_agg(c.key, c.narinfo), '{}'), coalesce(array_agg(c.key), '{}')
+    INTO lost, lost_keys
     FROM publish_claims AS c
     INNER JOIN unnest(keys, nar_keys) AS t (key, nar_key) ON t.key = c.key
     WHERE c.nar_key <> t.nar_key;
@@ -74,16 +118,23 @@ BEGIN
     UPDATE pending_objects AS po
     SET refs = c.refs
     FROM publish_claims AS c
-    WHERE po.pending_closure_id = push_id AND po.key = c.key AND lost ? c.key;
+    WHERE po.pending_closure_id = push_id AND po.key = c.key AND c.key = any(lost_keys);
 
     INSERT INTO pending_objects (pending_closure_id, key, refs)
     SELECT push_id, c.nar_key, '{}'
     FROM publish_claims AS c
-    WHERE lost ? c.key
+    WHERE c.key = any(lost_keys)
     ORDER BY c.nar_key COLLATE "C"
     ON CONFLICT DO NOTHING;
 
-    RETURN jsonb_build_object('lost', lost, 'taken', to_jsonb(taken));
+    SELECT coalesce(array_agg(o.key), '{}') INTO taken
+    FROM objects AS o
+    INNER JOIN unnest(keys, nar_keys) AS t (key, nar_key) ON t.key = o.key
+    WHERE o.deleted_at IS NOT NULL
+        AND NOT (t.nar_key = any(o.refs))
+        AND (o.key = any(won) OR o.key = any(replaced));
+
+    RETURN jsonb_build_object('lost', lost, 'published', published, 'taken', to_jsonb(taken));
 END;
 $$ LANGUAGE plpgsql;
 -- +goose statementend

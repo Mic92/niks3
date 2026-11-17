@@ -56,6 +56,10 @@ BEGIN
         OR NOT (objects.refs @> EXCLUDED.refs)
         OR (objects.size IS NULL AND EXCLUDED.size IS NOT NULL);
 
+    -- The committed objects now say which build the cache serves.
+    DELETE FROM publish_claims
+    WHERE key IN (SELECT key FROM pending_objects WHERE pending_closure_id = closure_id);
+
     -- Delete the pending objects
     DELETE FROM pending_objects WHERE pending_closure_id = closure_id;
     GET DIAGNOSTICS folded = ROW_COUNT;
