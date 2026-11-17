@@ -699,11 +699,15 @@ const markStaleObjects = `-- name: MarkStaleObjects :execrows
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
+roots AS (
+    SELECT key FROM closures
+    UNION
+    SELECT key FROM pending_objects
+),
 closure_reach AS (
-    -- Start with all closure keys
     SELECT o.key, o.refs
     FROM objects o
-    INNER JOIN closures c ON o.key = c.key
+    INNER JOIN roots r ON o.key = r.key
     UNION
     -- Recursively add all referenced objects
     SELECT o.key, o.refs
@@ -739,7 +743,9 @@ FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 `
 
-// Find all objects reachable from any closure
+// A pending push was told that the objects it names and the cache has are
+// there, so they keep what they reference like a closure does.
+// Find all objects reachable from a root
 func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, markStaleObjects)
 	if err != nil {

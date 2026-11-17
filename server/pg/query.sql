@@ -235,12 +235,18 @@ WHERE upload_id = $1 AND object_key = $2;
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
--- Find all objects reachable from any closure
+-- A pending push was told that the objects it names and the cache has are
+-- there, so they keep what they reference like a closure does.
+roots AS (
+    SELECT key FROM closures
+    UNION
+    SELECT key FROM pending_objects
+),
+-- Find all objects reachable from a root
 closure_reach AS (
-    -- Start with all closure keys
     SELECT o.key, o.refs
     FROM objects o
-    INNER JOIN closures c ON o.key = c.key
+    INNER JOIN roots r ON o.key = r.key
     UNION
     -- Recursively add all referenced objects
     SELECT o.key, o.refs
