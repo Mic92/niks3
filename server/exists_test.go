@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,8 @@ import (
 	"github.com/Mic92/niks3/server/pg"
 )
 
-// A narinfo that exists only as a dependency is not present, it must be pushed.
-func TestPresentReportsOnlyClosureRoots(t *testing.T) {
+// A narinfo that was only pushed as a dependency still has to be pushed.
+func TestExistsTellsClosuresFromTheirDependencies(t *testing.T) {
 	t.Parallel()
 
 	service := createTestService(t)
@@ -37,22 +38,35 @@ func TestPresentReportsOnlyClosureRoots(t *testing.T) {
 		`INSERT INTO closures (key, updated_at) VALUES ($1, now() - interval '1 day'), ($2, now())`, root, tombstoned)
 	ok(t, err)
 
-	body, err := json.Marshal(api.PresentRequest{Keys: []string{root, dep, tombstoned}})
+	body, err := json.Marshal(api.ExistsRequest{Keys: []string{root, dep, tombstoned}})
 	ok(t, err)
 
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/objects/present", strings.NewReader(string(body)))
-	w := httptest.NewRecorder()
-	service.PresentHandler(w, req)
+	ask := func(handler http.HandlerFunc, answer any) {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", strings.NewReader(string(body)))
+		w := httptest.NewRecorder()
+		handler(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+
+		ok(t, json.Unmarshal(w.Body.Bytes(), answer))
 	}
 
-	var resp api.PresentResponse
-	ok(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	var closures api.ExistsResponse
 
-	if len(resp.Present) != 1 || resp.Present[0] != root {
-		t.Fatalf("present=%v, want only the closure root %s", resp.Present, root)
+	ask(service.ClosuresExistHandler, &closures)
+
+	if !slices.Equal(closures.Exists, []string{root}) {
+		t.Fatalf("closures=%v, want only %s", closures.Exists, root)
+	}
+
+	var former api.PresentResponse
+
+	ask(service.PresentHandler, &former)
+
+	if !slices.Equal(former.Present, closures.Exists) {
+		t.Fatalf("/api/objects/present answered %v, /api/closures/exists %v", former.Present, closures.Exists)
 	}
 
 	var touched bool
@@ -148,7 +162,7 @@ func presentWaitsForGC(t *testing.T, age string) {
 	_, err = gcTx.Exec(ctx, `DELETE FROM closures WHERE key = $1`, root)
 	ok(t, err)
 
-	body, err := json.Marshal(api.PresentRequest{Keys: []string{root}})
+	body, err := json.Marshal(api.ExistsRequest{Keys: []string{root}})
 	ok(t, err)
 
 	type result struct {
@@ -159,9 +173,9 @@ func presentWaitsForGC(t *testing.T, age string) {
 	done := make(chan result, 1)
 
 	go func() {
-		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/objects/present", strings.NewReader(string(body)))
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/closures/exists", strings.NewReader(string(body)))
 		w := httptest.NewRecorder()
-		service.PresentHandler(w, req)
+		service.ClosuresExistHandler(w, req)
 		done <- result{code: w.Code, body: w.Body.Bytes()}
 	}()
 
@@ -169,7 +183,7 @@ func presentWaitsForGC(t *testing.T, age string) {
 	// a snapshot that still contains the closure.
 	select {
 	case res := <-done:
-		t.Fatalf("present answered while GC held the closure row: status=%d body=%s", res.code, res.body)
+		t.Fatalf("answered while GC held the closure row: status=%d body=%s", res.code, res.body)
 	case <-time.After(500 * time.Millisecond):
 	}
 
@@ -180,15 +194,15 @@ func presentWaitsForGC(t *testing.T, age string) {
 		t.Fatalf("status=%d body=%s", res.code, res.body)
 	}
 
-	var resp api.PresentResponse
+	var resp api.ExistsResponse
 	ok(t, json.Unmarshal(res.body, &resp))
 
-	if len(resp.Present) != 0 {
-		t.Fatalf("present=%v, want none: GC deleted the closure", resp.Present)
+	if len(resp.Exists) != 0 {
+		t.Fatalf("exists=%v, want none: GC deleted the closure", resp.Exists)
 	}
 
 	// Clients expect a JSON array, so an empty result must be [] and not null.
-	if !strings.Contains(string(res.body), `"present":[]`) {
-		t.Errorf("empty present list must encode as [], got %s", res.body)
+	if !strings.Contains(string(res.body), `"exists":[]`) {
+		t.Errorf("empty list must encode as [], got %s", res.body)
 	}
 }

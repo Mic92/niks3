@@ -538,8 +538,8 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	// verification asks to check what the database believes present.
 	if c.VerifyS3Integrity {
 		slog.Debug("Verifying S3 integrity, not skipping cached closures")
-	} else if present, err := c.Present(ctx, resolvedPaths); err != nil {
-		slog.Debug("Present check unavailable, pushing everything", "error", err)
+	} else if present, err := c.ClosuresExist(ctx, resolvedPaths); err != nil {
+		slog.Debug("Cannot ask for pushed closures, pushing everything", "error", err)
 	} else if len(present) > 0 {
 		missing := resolvedPaths[:0:0]
 
