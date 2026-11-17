@@ -38,14 +38,19 @@ BEGIN
     ORDER BY key COLLATE "C"
     ON CONFLICT (key)
     DO UPDATE SET
-        -- If object exists, merge references (union of arrays, removing duplicates)
-        refs = (
-            SELECT ARRAY(
-                SELECT DISTINCT unnest(
-                    objects.refs || EXCLUDED.refs
+        -- A tombstoned object was uploaded again and gets the new references.
+        -- A live one keeps its own and gains the new ones. Its file was not
+        -- uploaded again, so a narinfo keeps the one NAR it names.
+        refs = CASE
+            WHEN objects.deleted_at IS NOT NULL THEN EXCLUDED.refs
+            ELSE ARRAY(
+                SELECT DISTINCT r
+                FROM unnest(objects.refs || EXCLUDED.refs) AS r
+                WHERE r NOT LIKE 'nar/%' OR r = any(objects.refs) OR NOT EXISTS (
+                    SELECT 1 FROM unnest(objects.refs) AS own WHERE own LIKE 'nar/%'
                 )
             )
-        ),
+        END,
         -- Keep an existing size; set it only when currently unknown.
         size = COALESCE(objects.size, EXCLUDED.size),
         -- Resurrect previously tombstoned objects
