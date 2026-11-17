@@ -434,14 +434,31 @@ func TestStreamPushReportsSkippedPaths(t *testing.T) {
 	}
 }
 
+func TestStreamPushReportsOtherBuild(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+
+	s := client.NewStreamPusher(func(_ context.Context, p []string) ([]string, error) { return p, nil }, 1, 1)
+	s.OtherBuild = func(p string) string { return map[string]string{"/nix/store/lost": "sha256:abc"}[p] }
+
+	if err := s.Run(t.Context(), strings.NewReader(`{"paths":["/nix/store/lost","/nix/store/a"]}`), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"path":"/nix/store/lost","status":"ok","other_build":"sha256:abc"}
+{"path":"/nix/store/a","status":"ok"}
+`
+	if out.String() != want {
+		t.Errorf("got %s", out.String())
+	}
+}
+
 func TestClientSignaturesByStorePath(t *testing.T) {
 	t.Parallel()
 
 	c := &client.Client{}
-	c.RecordSignatures(
-		map[string]client.NarinfoMetadata{"h1.narinfo": {StorePath: "/nix/store/h1-a"}, "h2.narinfo": {StorePath: "/nix/store/h2-b"}},
-		map[string][]string{"h1.narinfo": {"k:1"}},
-	)
+	c.RecordSignatures("/nix/store/h1-a", []string{"k:1"})
 
 	if got := c.Signatures("/nix/store/h1-a"); !slices.Equal(got, []string{"k:1"}) {
 		t.Errorf("signed path: %v", got)

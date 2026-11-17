@@ -44,6 +44,7 @@ type Client struct {
 	signedMu                sync.Mutex
 	signed                  map[string][]string // store path -> what the server signed it with
 	skipped                 map[string]string   // store path -> why the size limit left it out
+	otherBuild              map[string]string   // store path -> NAR hash of the build the cache serves in its place
 	cacheConfigMu           sync.Mutex
 	cacheConfig             *api.CacheConfig
 	cacheConfigAt           time.Time

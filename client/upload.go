@@ -389,38 +389,41 @@ type narinfoTask struct {
 
 // SignAndUploadNarinfos signs narinfos on the server and uploads them to S3 in parallel.
 func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinfosByClosureID map[string]map[string]NarinfoMetadata, pendingObjects map[string]PendingObject) error {
-	// Collect all narinfo metadata and closure IDs
-	var narinfosToSign []narinfoTask
+	var toUpload []narinfoTask
 
 	for closureID, narinfos := range narinfosByClosureID {
-		for key, meta := range narinfos {
-			narinfosToSign = append(narinfosToSign, narinfoTask{
-				closureID: closureID,
-				key:       key,
-				meta:      meta,
-			})
+		if len(narinfos) == 0 {
+			continue
 		}
-	}
 
-	if len(narinfosToSign) == 0 {
-		return nil
-	}
-
-	// Sign narinfos for each closure
-	signaturesByKey := make(map[string][]string)
-
-	for closureID, narinfos := range narinfosByClosureID {
-		signatures, err := c.SignPendingClosure(ctx, route, closureID, narinfos)
+		signed, err := c.SignPendingClosure(ctx, route, closureID, narinfos)
 		if err != nil {
 			return fmt.Errorf("signing narinfos for closure %s: %w", closureID, err)
 		}
 
-		maps.Copy(signaturesByKey, signatures)
-		c.recordSignatures(narinfos, signatures)
+		for key, own := range narinfos {
+			meta := own
+			meta.Signatures = signed.Signatures[key]
+			narKey, published := signed.Published[key]
+
+			if claimed, ok := signed.Claimed[key]; ok {
+				meta, narKey = claimed, claimed.URL
+			}
+
+			if narKey != "" && narKey != own.URL {
+				slog.Info("Cache serves another build of the path", "path", own.StorePath, "nar", narKey)
+				c.recordOtherBuild(own.StorePath, narKey)
+			} else {
+				c.recordSignatures(own.StorePath, meta.Signatures)
+			}
+
+			if !published {
+				toUpload = append(toUpload, narinfoTask{closureID: closureID, key: key, meta: meta})
+			}
+		}
 	}
 
-	// Generate, compress, and upload narinfos in parallel
-	return c.uploadNarinfosInParallel(ctx, narinfosToSign, signaturesByKey, pendingObjects)
+	return c.uploadNarinfosInParallel(ctx, toUpload, pendingObjects)
 }
 
 // Signatures returns what the server signed the path with during this process's pushes.
@@ -439,21 +442,40 @@ func (c *Client) Skipped(path string) string {
 	return c.skipped[path]
 }
 
-func (c *Client) recordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
+// OtherBuild returns the NAR hash the cache serves for the path when another
+// build of it was published first, or "".
+func (c *Client) OtherBuild(path string) string {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	return c.otherBuild[path]
+}
+
+func (c *Client) recordSignatures(path string, signatures []string) {
 	c.signedMu.Lock()
 	defer c.signedMu.Unlock()
 
 	if c.signed == nil {
-		c.signed = make(map[string][]string, len(signatures))
+		c.signed = make(map[string][]string)
 	}
 
-	for key, sigs := range signatures {
-		c.signed[narinfos[key].StorePath] = sigs
+	c.signed[path] = signatures
+}
+
+func (c *Client) recordOtherBuild(path, narKey string) {
+	c.signedMu.Lock()
+	defer c.signedMu.Unlock()
+
+	if c.otherBuild == nil {
+		c.otherBuild = make(map[string]string)
 	}
+
+	hash := strings.TrimSuffix(strings.TrimPrefix(narKey, "nar/"), ".nar.zst")
+	c.otherBuild[path] = "sha256:" + hash
 }
 
 // uploadNarinfosInParallel generates, compresses, and uploads narinfos in parallel.
-func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinfoTask, signaturesByKey map[string][]string, pendingObjects map[string]PendingObject) error {
+func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinfoTask, pendingObjects map[string]PendingObject) error {
 	if len(narinfos) == 0 {
 		return nil
 	}
@@ -471,11 +493,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 
 	for _, task := range narinfos {
 		g.Go(func() error {
-			// Get signatures for this narinfo
-			signatures := signaturesByKey[task.key]
-
-			// Generate narinfo content with signatures
-			content := generateNarinfoContent(&task.meta, signatures)
+			content := generateNarinfoContent(&task.meta, task.meta.Signatures)
 
 			// Compress narinfo
 			compressed, err := CompressNarinfo(content)

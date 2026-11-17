@@ -33,6 +33,12 @@ const (
 func getNARURLFromNarinfo(ctx context.Context, t *testing.T, testService *server.Service, narinfoKey string) string {
 	t.Helper()
 
+	return narinfoField(ctx, t, testService, narinfoKey, "URL")
+}
+
+func narinfoField(ctx context.Context, t *testing.T, testService *server.Service, narinfoKey, field string) string {
+	t.Helper()
+
 	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
 	ok(t, err)
 
@@ -51,14 +57,13 @@ func getNARURLFromNarinfo(ctx context.Context, t *testing.T, testService *server
 	narinfoText, err := io.ReadAll(decoder)
 	ok(t, err)
 
-	// Extract URL from narinfo
 	for line := range strings.SplitSeq(string(narinfoText), "\n") {
-		if after, ok0 := strings.CutPrefix(line, "URL: "); ok0 {
+		if after, ok0 := strings.CutPrefix(line, field+": "); ok0 {
 			return after
 		}
 	}
 
-	t.Fatal("No URL found in narinfo")
+	t.Fatalf("No %s found in narinfo", field)
 
 	return ""
 }
@@ -898,4 +903,121 @@ func TestPinProtectsFromGC(t *testing.T) {
 	}
 
 	t.Log("Pin successfully protected closure from garbage collection")
+}
+
+// Two builds of one derivation differ. The cache serves the build that was
+// signed first, and the push of the second build learns which one that is.
+func TestClientPublishesTheFirstBuild(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	// The second push signs before or after the first one commits.
+	for _, signs := range []string{"before", "after"} {
+		t.Run("second push signs "+signs+" the commit", func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			nixEnv := setupIsolatedNixStore(t)
+
+			// The builds run without a sandbox and copy a file the test changes.
+			dir := t.TempDir()
+			expr, input := filepath.Join(dir, "impure.nix"), filepath.Join(dir, "input")
+			ok(t, os.WriteFile(expr, []byte(`derivation {
+				name = "impure";
+				system = builtins.currentSystem;
+				builder = "/bin/sh";
+				args = [ "-c" "read line < `+input+`; echo $line > $out" ];
+			}`), 0o600))
+
+			nix := func(args ...string) string {
+				//nolint:gosec
+				cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+				cmd.Env = nixEnv
+
+				out, err := cmd.Output()
+				ok(t, err)
+
+				return strings.TrimSpace(string(out))
+			}
+			build := func(content string) (string, string) {
+				ok(t, os.WriteFile(input, []byte(content+"\n"), 0o600))
+
+				path := nix("nix-build", expr, "--no-out-link")
+
+				return path, nix("nix-store", "--query", "--hash", path)
+			}
+
+			path, firstHash := build("first")
+
+			// push returns the build the client says the cache serves in place of its own.
+			push := func(url string) string {
+				var pusher *client.Client
+
+				ok(t, pushToServerWith(ctx, url, testAuthToken, []string{path}, nixEnv, func(c *client.Client) { pusher = c }))
+
+				return pusher.OtherBuild(path)
+			}
+
+			var (
+				completes, signatures atomic.Int32
+				second                = make(chan string, 1)
+				atSign                = make(chan struct{})
+				committed             = make(chan struct{})
+			)
+
+			// The first push stops before its commit until the second push
+			// finished or reached its sign request.
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				commit := strings.HasPrefix(r.URL.Path, "/api/pushes/") && strings.HasSuffix(r.URL.Path, "/complete")
+
+				switch {
+				case commit && completes.Add(1) == 1:
+					nix("nix-store", "--delete", path)
+
+					build("second")
+
+					go func() { second <- push("http://" + r.Host) }()
+
+					if signs == "before" {
+						second <- <-second
+					} else {
+						<-atSign
+					}
+
+					mux.ServeHTTP(w, r)
+					close(committed)
+
+					return
+				case strings.HasSuffix(r.URL.Path, "/sign") && signatures.Add(1) == 2 && signs == "after":
+					close(atSign)
+					<-committed
+				}
+
+				mux.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+
+			if other := push(ts.URL); other != "" {
+				t.Errorf("first push was told the cache serves %s", other)
+			}
+
+			if other := <-second; other != firstHash {
+				t.Errorf("second push was told the cache serves %q, want the first build %s", other, firstHash)
+			}
+
+			hash, err := client.GetStorePathHash(path)
+			ok(t, err)
+
+			if got := narinfoField(ctx, t, testService, hash+".narinfo", "NarHash"); got != firstHash {
+				t.Errorf("cache serves %s, want the first build %s", got, firstHash)
+			}
+		})
+	}
 }

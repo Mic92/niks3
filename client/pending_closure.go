@@ -76,28 +76,38 @@ func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID st
 
 type signNarinfosRequest struct {
 	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
+	Claim    bool                       `json:"claim"`
 }
 
-type signNarinfosResponse struct {
+// SignedNarinfos is the server's answer to a sign request, by narinfo key.
+type SignedNarinfos struct {
 	Signatures map[string][]string `json:"signatures"`
+	// Another push signed a different build of the path first. This push
+	// publishes that narinfo.
+	Claimed map[string]NarinfoMetadata `json:"claimed"`
+	// The cache already serves the path with this NAR key. This push uploads
+	// no narinfo for it.
+	Published map[string]string `json:"published"`
 }
 
-// SignPendingClosure sends narinfo metadata to the server for signing and returns signatures.
-func (c *Client) SignPendingClosure(ctx context.Context, route, closureID string, narinfos map[string]NarinfoMetadata) (map[string][]string, error) {
+// SignPendingClosure sends narinfo metadata to the server for signing.
+func (c *Client) SignPendingClosure(ctx context.Context, route, closureID string, narinfos map[string]NarinfoMetadata) (*SignedNarinfos, error) {
 	reqURL := c.baseURL.JoinPath("api", route, closureID, "sign")
 
 	reqBody := signNarinfosRequest{
 		Narinfos: narinfos,
+		Claim:    true,
 	}
 
-	var result signNarinfosResponse
+	var result SignedNarinfos
 	if err := c.doJSONRequest(ctx, http.MethodPost, reqURL.String(), reqBody, &result, http.StatusOK); err != nil {
 		return nil, err
 	}
 
-	slog.Debug("Signed narinfos", "id", closureID, "count", len(result.Signatures))
+	slog.Debug("Signed narinfos", "id", closureID, "count", len(result.Signatures),
+		"claimed", len(result.Claimed), "published", len(result.Published))
 
-	return result.Signatures, nil
+	return &result, nil
 }
 
 type createPushRequest struct {

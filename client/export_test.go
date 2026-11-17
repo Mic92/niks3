@@ -94,8 +94,8 @@ func (c *Client) UploadMultipart(ctx context.Context, r io.Reader, info *Multipa
 }
 
 // RecordSignatures re-exports (*Client).recordSignatures for tests.
-func (c *Client) RecordSignatures(narinfos map[string]NarinfoMetadata, signatures map[string][]string) {
-	c.recordSignatures(narinfos, signatures)
+func (c *Client) RecordSignatures(path string, signatures []string) {
+	c.recordSignatures(path, signatures)
 }
 
 // UploadNARWithListing re-exports uploadNARWithListing for the external test package.

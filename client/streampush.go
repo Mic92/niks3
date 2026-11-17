@@ -47,6 +47,9 @@ type StreamResult struct {
 	Skipped string `json:"skipped,omitempty"`
 	// What the server signed the path with, so the caller can add them to its own store.
 	Signatures []string `json:"signatures,omitempty"`
+	// NAR hash the cache serves for the path, when another build of it was
+	// published first. The pushed build is not in the cache.
+	OtherBuild string `json:"other_build,omitempty"`
 }
 
 // StreamPusher pushes store paths read line by line from a reader as they
@@ -62,6 +65,8 @@ type StreamPusher struct {
 	Signatures func(path string) []string
 	// Skipped, if set, tells why a pushed path was left out, or "".
 	Skipped func(path string) string
+	// OtherBuild, if set, fills StreamResult.OtherBuild for pushed paths.
+	OtherBuild func(path string) string
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -248,6 +253,10 @@ func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult 
 	res := StreamResult{ID: id, Path: path, Status: status, Message: msg}
 	if status == streamStatusOK && s.Signatures != nil {
 		res.Signatures = s.Signatures(path)
+	}
+
+	if status == streamStatusOK && s.OtherBuild != nil {
+		res.OtherBuild = s.OtherBuild(path)
 	}
 
 	if status == streamStatusOK && s.Skipped != nil {
