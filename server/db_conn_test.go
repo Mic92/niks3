@@ -14,6 +14,19 @@ import (
 	"github.com/pressly/goose/v3/lock"
 )
 
+// The stored functions are applied on every start.
+func TestConnectToAMigratedDatabase(t *testing.T) {
+	t.Parallel()
+
+	connString := createTestDatabase(t)
+
+	for range 2 {
+		pool, err := pg.Connect(t.Context(), connString)
+		ok(t, err)
+		pool.Close()
+	}
+}
+
 func TestResolveDBConnectionString(t *testing.T) {
 	t.Parallel()
 
