@@ -144,6 +144,9 @@ testers.nixosTest {
       machine.succeed("kubectl -n niks3 get deployment niks3 -o jsonpath='{.metadata.annotations.reloader\\.stakater\\.com/auto}' | grep true")
       machine.wait_until_succeeds("curl -sf http://localhost:${toString nodePort}/readyz | grep OK", timeout=60)
 
+    # niks3 looks up the API server by name to fetch the keys that signed the tokens.
+    machine.wait_until_succeeds("kubectl -n kube-system rollout status deployment coredns --timeout=10s", timeout=300)
+
     # Same JWT a pod gets from a projected serviceAccountToken volume.
     machine.wait_until_succeeds("kubectl -n ci get sa builder", timeout=60)
     machine.succeed("kubectl -n ci create token builder --audience niks3 > /tmp/builder.jwt")
