@@ -387,8 +387,20 @@ type narinfoTask struct {
 	meta      NarinfoMetadata
 }
 
-// SignAndUploadNarinfos signs narinfos on the server and uploads them to S3 in parallel.
-func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinfosByClosureID map[string]map[string]NarinfoMetadata, pendingObjects map[string]PendingObject) error {
+// PathReport tells what a push did with one of the paths it was given.
+type PathReport struct {
+	// Signatures is what the server signed the path with.
+	Signatures []string
+	// OtherBuild is the NAR hash the cache serves when another build of the
+	// path was published first.
+	OtherBuild string
+	// Skipped tells why the size limit kept the path out of the cache.
+	Skipped string
+}
+
+// SignAndUploadNarinfos signs narinfos on the server and uploads them to S3 in
+// parallel. It reports on the store paths in reports.
+func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinfosByClosureID map[string]map[string]NarinfoMetadata, pendingObjects map[string]PendingObject, reports map[string]PathReport) error {
 	var toUpload []narinfoTask
 
 	for closureID, narinfos := range narinfosByClosureID {
@@ -410,11 +422,16 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinf
 				meta, narKey = claimed, claimed.URL
 			}
 
-			if narKey != "" && narKey != own.URL {
+			other := narKey != "" && narKey != own.URL
+			if other {
 				slog.Info("Cache serves another build of the path", "path", own.StorePath, "nar", narKey)
-				c.recordOtherBuild(own.StorePath, narKey)
-			} else {
-				c.recordSignatures(own.StorePath, meta.Signatures)
+			}
+
+			if _, asked := reports[own.StorePath]; asked && other {
+				hash := strings.TrimSuffix(strings.TrimPrefix(narKey, "nar/"), ".nar.zst")
+				reports[own.StorePath] = PathReport{OtherBuild: "sha256:" + hash}
+			} else if asked {
+				reports[own.StorePath] = PathReport{Signatures: meta.Signatures}
 			}
 
 			if !published {
@@ -424,54 +441,6 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinf
 	}
 
 	return c.uploadNarinfosInParallel(ctx, toUpload, pendingObjects)
-}
-
-// Signatures returns what the server signed the path with during this process's pushes.
-func (c *Client) Signatures(path string) []string {
-	c.signedMu.Lock()
-	defer c.signedMu.Unlock()
-
-	return c.signed[path]
-}
-
-// Skipped tells why the size limit kept the path out of the cache, or "".
-func (c *Client) Skipped(path string) string {
-	c.signedMu.Lock()
-	defer c.signedMu.Unlock()
-
-	return c.skipped[path]
-}
-
-// OtherBuild returns the NAR hash the cache serves for the path when another
-// build of it was published first, or "".
-func (c *Client) OtherBuild(path string) string {
-	c.signedMu.Lock()
-	defer c.signedMu.Unlock()
-
-	return c.otherBuild[path]
-}
-
-func (c *Client) recordSignatures(path string, signatures []string) {
-	c.signedMu.Lock()
-	defer c.signedMu.Unlock()
-
-	if c.signed == nil {
-		c.signed = make(map[string][]string)
-	}
-
-	c.signed[path] = signatures
-}
-
-func (c *Client) recordOtherBuild(path, narKey string) {
-	c.signedMu.Lock()
-	defer c.signedMu.Unlock()
-
-	if c.otherBuild == nil {
-		c.otherBuild = make(map[string]string)
-	}
-
-	hash := strings.TrimSuffix(strings.TrimPrefix(narKey, "nar/"), ".nar.zst")
-	c.otherBuild[path] = "sha256:" + hash
 }
 
 // uploadNarinfosInParallel generates, compresses, and uploads narinfos in parallel.
@@ -542,15 +511,45 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 // closures (including transitive dependencies), which callers can use to
 // prune queues of dependency paths that no longer need separate uploads.
 func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error) {
+	closurePaths, _, err := c.pushPaths(ctx, paths)
+
+	return closurePaths, err
+}
+
+// PushPathsReport pushes like PushPaths and reports on each of the paths.
+func (c *Client) PushPathsReport(ctx context.Context, paths []string) (map[string]PathReport, error) {
+	_, reports, err := c.pushPaths(ctx, paths)
+
+	return reports, err
+}
+
+func (c *Client) pushPaths(ctx context.Context, paths []string) ([]string, map[string]PathReport, error) {
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths
 	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolving symlinks: %w", err)
+		return nil, nil, fmt.Errorf("resolving symlinks: %w", err)
 	}
 
 	slog.Debug("Resolved paths", "original", paths, "resolved", resolvedPaths)
+
+	// Keyed by store path, and handed out under the path as it was given.
+	given := resolvedPaths
+	reports := make(map[string]PathReport, len(given))
+
+	for _, p := range given {
+		reports[p] = PathReport{}
+	}
+
+	report := func() map[string]PathReport {
+		out := make(map[string]PathReport, len(paths))
+		for i, p := range paths {
+			out[p] = reports[given[i]]
+		}
+
+		return out
+	}
 
 	// Skip cached closures before the local closure walk, unless S3
 	// verification asks to check what the database believes present.
@@ -570,7 +569,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 		if len(missing) == 0 {
 			slog.Info(fmt.Sprintf("All %d paths already cached", len(resolvedPaths)))
 
-			return resolvedPaths, nil
+			return resolvedPaths, report(), nil
 		}
 
 		resolvedPaths = missing
@@ -581,7 +580,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 
 	pathInfos, err := GetPathInfoRecursive(ctx, resolvedPaths, c.NixEnv)
 	if err != nil {
-		return nil, fmt.Errorf("getting path info: %w", err)
+		return nil, nil, fmt.Errorf("getting path info: %w", err)
 	}
 
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
@@ -608,29 +607,20 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	resolvedPaths, pathInfos, skipped = filterOversizedClosures(resolvedPaths, pathInfos, maxNarSize)
 	c.ReportSkippedUploads(ctx, skipped.Paths, skipped.NarBytes)
 
-	// Pushes run in parallel: only touch the paths of this one.
-	c.signedMu.Lock()
-	for _, p := range resolvedPaths {
-		delete(c.skipped, p)
+	for p, why := range skipped.Reasons {
+		reports[p] = PathReport{Skipped: why}
 	}
-
-	if c.skipped == nil {
-		c.skipped = skipped.Reasons
-	} else {
-		maps.Copy(c.skipped, skipped.Reasons)
-	}
-	c.signedMu.Unlock()
 
 	if len(resolvedPaths) == 0 {
 		slog.Warn("All closures skipped by server max NAR size, nothing to upload")
 
-		return closurePaths, nil
+		return closurePaths, report(), nil
 	}
 
 	// Prepare closures - one per top-level path
 	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv)
 	if err != nil {
-		return nil, fmt.Errorf("preparing closures: %w", err)
+		return nil, nil, fmt.Errorf("preparing closures: %w", err)
 	}
 
 	if len(result.LogPathsByKey) > 0 {
@@ -644,7 +634,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	// Create pending closures and collect what needs uploading
 	route, pendingByClosureID, err := c.createPending(ctx, result.Closures)
 	if err != nil {
-		return nil, fmt.Errorf("creating pending closures: %w", err)
+		return nil, nil, fmt.Errorf("creating pending closures: %w", err)
 	}
 
 	pendingObjects := make(map[string]PendingObject)
@@ -676,7 +666,7 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 		RealisationsByKey: result.RealisationsByKey,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("uploading objects: %w", err)
+		return nil, nil, fmt.Errorf("uploading objects: %w", err)
 	}
 
 	slog.Debug("Uploaded all objects", "narinfos", len(narinfoMetadata))
@@ -696,19 +686,19 @@ func (c *Client) PushPaths(ctx context.Context, paths []string) ([]string, error
 	}
 
 	// Sign narinfos for each closure and upload them
-	if err := c.SignAndUploadNarinfos(ctx, route, narinfosByClosureID, pendingObjects); err != nil {
-		return nil, fmt.Errorf("signing and uploading narinfos: %w", err)
+	if err := c.SignAndUploadNarinfos(ctx, route, narinfosByClosureID, pendingObjects, reports); err != nil {
+		return nil, nil, fmt.Errorf("signing and uploading narinfos: %w", err)
 	}
 
 	// Complete all pending closures (all objects including narinfos are now uploaded)
 	for id := range pendingByClosureID {
 		if err := c.CompletePendingClosure(ctx, route, id); err != nil {
-			return nil, fmt.Errorf("completing pending closure %s: %w", id, err)
+			return nil, nil, fmt.Errorf("completing pending closure %s: %w", id, err)
 		}
 	}
 
 	duration := time.Since(startTime)
 	slog.Info(fmt.Sprintf("Upload complete. (%s)", duration.Round(time.Millisecond)))
 
-	return closurePaths, nil
+	return closurePaths, report(), nil
 }

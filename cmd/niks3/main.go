@@ -265,10 +265,7 @@ func pushStdinCommand(serverURL string, ts client.TokenSource, maxConcurrent, pa
 
 	defer c.WaitRegistrations()
 
-	pusher := client.NewStreamPusher(c.PushPaths, parallel, batchSize)
-	pusher.Signatures = c.Signatures
-	pusher.Skipped = c.Skipped
-	pusher.OtherBuild = c.OtherBuild
+	pusher := client.NewStreamPusher(c.PushPathsReport, parallel, batchSize)
 
 	return pusher.Run(ctx, os.Stdin, os.Stdout) //nolint:wrapcheck // already descriptive
 }

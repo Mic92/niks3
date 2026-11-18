@@ -956,13 +956,21 @@ func TestClientPublishesTheFirstBuild(t *testing.T) {
 
 			path, firstHash := build("first")
 
+			// A driver may name the path by a link to it.
+			link := filepath.Join(dir, "result")
+			ok(t, os.Symlink(path, link))
+
 			// push returns the build the client says the cache serves in place of its own.
 			push := func(url string) string {
-				var pusher *client.Client
+				pusher, err := client.NewClient(ctx, url, testAuthToken)
+				ok(t, err)
 
-				ok(t, pushToServerWith(ctx, url, testAuthToken, []string{path}, nixEnv, func(c *client.Client) { pusher = c }))
+				pusher.NixEnv = nixEnv
 
-				return pusher.OtherBuild(path)
+				reports, err := pusher.PushPathsReport(ctx, []string{link})
+				ok(t, err)
+
+				return reports[link].OtherBuild
 			}
 
 			var (

@@ -26,7 +26,7 @@ const (
 	streamSkippedMaxNarSize = "max-nar-size"
 )
 
-type StreamPushFunc func(ctx context.Context, paths []string) ([]string, error)
+type StreamPushFunc func(ctx context.Context, paths []string) (map[string]PathReport, error)
 
 // StreamRequest is the JSON form of an input line. A build-farm worker sends
 // one per finished build so its outputs commit together.
@@ -61,12 +61,6 @@ type StreamPusher struct {
 	push      StreamPushFunc
 	parallel  int
 	batchSize int
-	// Signatures, if set, fills StreamResult.Signatures for pushed paths.
-	Signatures func(path string) []string
-	// Skipped, if set, tells why a pushed path was left out, or "".
-	Skipped func(path string) string
-	// OtherBuild, if set, fills StreamResult.OtherBuild for pushed paths.
-	OtherBuild func(path string) string
 }
 
 func NewStreamPusher(push StreamPushFunc, parallel, batchSize int) *StreamPusher {
@@ -249,20 +243,10 @@ func (s *StreamPusher) answer(ctx context.Context, j streamJob) []StreamResult {
 	}
 }
 
-func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult {
-	res := StreamResult{ID: id, Path: path, Status: status, Message: msg}
-	if status == streamStatusOK && s.Signatures != nil {
-		res.Signatures = s.Signatures(path)
-	}
-
-	if status == streamStatusOK && s.OtherBuild != nil {
-		res.OtherBuild = s.OtherBuild(path)
-	}
-
-	if status == streamStatusOK && s.Skipped != nil {
-		if why := s.Skipped(path); why != "" {
-			res.Skipped, res.Message = streamSkippedMaxNarSize, why
-		}
+func okResult(id uint64, path string, report PathReport) StreamResult {
+	res := StreamResult{ID: id, Path: path, Status: streamStatusOK, Signatures: report.Signatures, OtherBuild: report.OtherBuild}
+	if report.Skipped != "" {
+		res.Skipped, res.Message = streamSkippedMaxNarSize, report.Skipped
 	}
 
 	return res
@@ -270,7 +254,8 @@ func (s *StreamPusher) result(id uint64, path, status, msg string) StreamResult 
 
 // All or nothing: the outputs of one build must not be published partially.
 func (s *StreamPusher) uploadRequest(ctx context.Context, j streamJob) []StreamResult {
-	if _, err := s.push(ctx, j.paths); err != nil {
+	reports, err := s.push(ctx, j.paths)
+	if err != nil {
 		slog.Error("Upload failed", "error", err, "count", len(j.paths))
 
 		return j.failed(err.Error())
@@ -278,7 +263,7 @@ func (s *StreamPusher) uploadRequest(ctx context.Context, j streamJob) []StreamR
 
 	results := make([]StreamResult, 0, len(j.paths))
 	for _, p := range j.paths {
-		results = append(results, s.result(j.id, p, streamStatusOK, ""))
+		results = append(results, okResult(j.id, p, reports[p]))
 	}
 
 	return results
@@ -288,10 +273,10 @@ func (s *StreamPusher) uploadRequest(ctx context.Context, j streamJob) []StreamR
 func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResult {
 	results := make([]StreamResult, 0, len(batch))
 
-	_, err := s.push(ctx, batch)
+	reports, err := s.push(ctx, batch)
 	if err == nil {
 		for _, p := range batch {
-			results = append(results, s.result(0, p, streamStatusOK, ""))
+			results = append(results, okResult(0, p, reports[p]))
 		}
 
 		return results
@@ -321,7 +306,8 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			break
 		}
 
-		if _, perr := s.push(ctx, []string{p}); perr != nil {
+		reports, perr := s.push(ctx, []string{p})
+		if perr != nil {
 			fail([]string{p}, perr)
 
 			failures++
@@ -329,7 +315,7 @@ func (s *StreamPusher) upload(ctx context.Context, batch []string) []StreamResul
 			continue
 		}
 
-		results = append(results, s.result(0, p, streamStatusOK, ""))
+		results = append(results, okResult(0, p, reports[p]))
 		succeeded++
 	}
 

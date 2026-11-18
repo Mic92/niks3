@@ -41,10 +41,6 @@ type Client struct {
 	ServerRateLimiter       *ratelimit.AdaptiveRateLimiter // Rate limiter for niks3 server API calls
 	registrations           errgroup.Group
 	registrationTimeout     time.Duration // 0 means registrationTimeout. Tests shorten it
-	signedMu                sync.Mutex
-	signed                  map[string][]string // store path -> what the server signed it with
-	skipped                 map[string]string   // store path -> why the size limit left it out
-	otherBuild              map[string]string   // store path -> NAR hash of the build the cache serves in its place
 	cacheConfigMu           sync.Mutex
 	cacheConfig             *api.CacheConfig
 	cacheConfigAt           time.Time

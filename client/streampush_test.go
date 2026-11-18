@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -34,16 +36,7 @@ type result struct {
 func runStream(t *testing.T, push client.StreamPushFunc, parallel, batch int, feed func(w io.Writer)) []result {
 	t.Helper()
 
-	return runStreamSigned(t, push, nil, parallel, batch, feed)
-}
-
-func runStreamSigned(t *testing.T, push client.StreamPushFunc, sigs func(string) []string, parallel, batch int, feed func(w io.Writer)) []result {
-	t.Helper()
-
-	s := client.NewStreamPusher(push, parallel, batch)
-	s.Signatures = sigs
-
-	return runPusher(t, s, feed)
+	return runPusher(t, client.NewStreamPusher(push, parallel, batch), feed)
 }
 
 func runPusher(t *testing.T, s *client.StreamPusher, feed func(w io.Writer)) []result {
@@ -98,13 +91,13 @@ func TestStreamPushReportsEveryPath(t *testing.T) {
 		pushed []string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string) (map[string]client.PathReport, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
 		pushed = append(pushed, paths...)
 
-		return paths, nil
+		return map[string]client.PathReport{}, nil
 	}
 
 	results := runStream(t, push, 4, 10, func(w io.Writer) {
@@ -155,13 +148,13 @@ func testBatchesUnderLoad(t *testing.T, oneAtATime bool) {
 
 	var batches [][]string
 
-	push := func(ctx context.Context, paths []string) ([]string, error) {
+	push := func(ctx context.Context, paths []string) (map[string]client.PathReport, error) {
 		batches = append(batches, slices.Clone(paths))
 		if len(batches) == 1 {
 			<-release
 		}
 
-		return paths, ctx.Err()
+		return map[string]client.PathReport{}, ctx.Err()
 	}
 
 	inR, inW := io.Pipe()
@@ -210,12 +203,12 @@ func TestStreamPushIsolatesFailures(t *testing.T) {
 
 	errBad := errors.New("bad path")
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string) (map[string]client.PathReport, error) {
 		if slices.Contains(paths, "/nix/store/bad") {
 			return nil, errBad
 		}
 
-		return paths, nil
+		return map[string]client.PathReport{}, nil
 	}
 
 	results := runStream(t, push, 1, 10, func(w io.Writer) {
@@ -251,7 +244,7 @@ func TestStreamPushGivesUpOnDeadServer(t *testing.T) {
 		calls [][]string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string) (map[string]client.PathReport, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -308,7 +301,7 @@ func TestStreamPushRequestLine(t *testing.T) {
 		calls []string
 	)
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string) (map[string]client.PathReport, error) {
 		mu.Lock()
 
 		calls = append(calls, fmt.Sprintf("%v", paths))
@@ -319,7 +312,7 @@ func TestStreamPushRequestLine(t *testing.T) {
 			return nil, errors.New("boom")
 		}
 
-		return paths, nil
+		return map[string]client.PathReport{}, nil
 	}
 
 	results := runStream(t, push, 1, 10, func(w io.Writer) {
@@ -380,92 +373,76 @@ func TestStreamPushRequestLine(t *testing.T) {
 	}
 }
 
-func TestStreamPushReportsSignatures(t *testing.T) {
+// The answer of a path carries what the push reported for it.
+func TestStreamPushAnswersWithTheReport(t *testing.T) {
 	t.Parallel()
 
-	push := func(_ context.Context, paths []string) ([]string, error) {
+	push := func(_ context.Context, paths []string) (map[string]client.PathReport, error) {
 		if slices.Contains(paths, "/nix/store/bad") {
 			return nil, errors.New("boom")
 		}
 
-		return paths, nil
-	}
-	sigs := func(p string) []string { return []string{"key-1:" + p} }
-
-	results := runStreamSigned(t, push, sigs, 1, 1, func(w io.Writer) {
-		fmt.Fprintln(w, "/nix/store/a")
-		fmt.Fprintln(w, `{"id":7,"paths":["/nix/store/b"]}`)
-		fmt.Fprintln(w, "/nix/store/bad")
-	})
-
-	got := map[string]result{}
-	for _, r := range results {
-		got[r.Path] = r
+		return map[string]client.PathReport{
+			"/nix/store/signed": {Signatures: []string{"key-1:sig"}},
+			"/nix/store/lost":   {OtherBuild: "sha256:abc"},
+			"/nix/store/big":    {Skipped: "too big"},
+		}, nil
 	}
 
-	for _, p := range []string{"/nix/store/a", "/nix/store/b"} {
-		if got[p].Status != "ok" || !slices.Equal(got[p].Signatures, []string{"key-1:" + p}) {
-			t.Errorf("%s: %+v", p, got[p])
+	var out strings.Builder
+
+	in := `{"id":7,"paths":["/nix/store/signed","/nix/store/lost","/nix/store/big"]}
+/nix/store/signed
+/nix/store/bad
+`
+	if err := client.NewStreamPusher(push, 1, 1).Run(t.Context(), strings.NewReader(in), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"id":7,"path":"/nix/store/signed","status":"ok","signatures":["key-1:sig"]}
+{"id":7,"path":"/nix/store/lost","status":"ok","other_build":"sha256:abc"}
+{"id":7,"path":"/nix/store/big","status":"ok","message":"too big","skipped":"max-nar-size"}
+{"path":"/nix/store/signed","status":"ok","signatures":["key-1:sig"]}
+{"path":"/nix/store/bad","status":"error","message":"boom"}
+`
+	if out.String() != want {
+		t.Errorf("got %s", out.String())
+	}
+}
+
+// Dependencies get no answer, so nothing is reported for them.
+func TestClientReportsOnlyAskedPaths(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"signatures":{"a.narinfo":["k:a"],"dep.narinfo":["k:dep"]}}`)
 		}
-	}
+	}))
+	t.Cleanup(ts.Close)
 
-	if got["/nix/store/bad"].Status != "error" || got["/nix/store/bad"].Signatures != nil {
-		t.Errorf("failed path reports signatures: %+v", got["/nix/store/bad"])
-	}
-}
-
-func TestStreamPushReportsSkippedPaths(t *testing.T) {
-	t.Parallel()
-
-	var out strings.Builder
-
-	s := client.NewStreamPusher(func(_ context.Context, p []string) ([]string, error) { return p, nil }, 1, 1)
-	s.Skipped = func(p string) string { return map[string]string{"/nix/store/big": "too big"}[p] }
-
-	if err := s.Run(t.Context(), strings.NewReader(`{"paths":["/nix/store/big","/nix/store/a"]}`), &out); err != nil {
+	c, err := client.NewTestClientForServer(ts.URL)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := `{"path":"/nix/store/big","status":"ok","message":"too big","skipped":"max-nar-size"}
-{"path":"/nix/store/a","status":"ok"}
-`
-	if out.String() != want {
-		t.Errorf("got %s", out.String())
+	narinfos := map[string]client.NarinfoMetadata{
+		"a.narinfo":   {StorePath: "/nix/store/a"},
+		"dep.narinfo": {StorePath: "/nix/store/dep"},
 	}
-}
+	pending := map[string]client.PendingObject{
+		"a.narinfo":   {PresignedURL: ts.URL + "/a"},
+		"dep.narinfo": {PresignedURL: ts.URL + "/dep"},
+	}
+	reports := map[string]client.PathReport{"/nix/store/a": {}}
 
-func TestStreamPushReportsOtherBuild(t *testing.T) {
-	t.Parallel()
-
-	var out strings.Builder
-
-	s := client.NewStreamPusher(func(_ context.Context, p []string) ([]string, error) { return p, nil }, 1, 1)
-	s.OtherBuild = func(p string) string { return map[string]string{"/nix/store/lost": "sha256:abc"}[p] }
-
-	if err := s.Run(t.Context(), strings.NewReader(`{"paths":["/nix/store/lost","/nix/store/a"]}`), &out); err != nil {
+	err = c.SignAndUploadNarinfos(t.Context(), "pushes", map[string]map[string]client.NarinfoMetadata{"1": narinfos}, pending, reports)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := `{"path":"/nix/store/lost","status":"ok","other_build":"sha256:abc"}
-{"path":"/nix/store/a","status":"ok"}
-`
-	if out.String() != want {
-		t.Errorf("got %s", out.String())
-	}
-}
-
-func TestClientSignaturesByStorePath(t *testing.T) {
-	t.Parallel()
-
-	c := &client.Client{}
-	c.RecordSignatures("/nix/store/h1-a", []string{"k:1"})
-
-	if got := c.Signatures("/nix/store/h1-a"); !slices.Equal(got, []string{"k:1"}) {
-		t.Errorf("signed path: %v", got)
-	}
-
-	if got := c.Signatures("/nix/store/h2-b"); got != nil {
-		t.Errorf("unsigned path: %v", got)
+	if len(reports) != 1 || !slices.Equal(reports["/nix/store/a"].Signatures, []string{"k:a"}) {
+		t.Errorf("reports: %v", reports)
 	}
 }
 
@@ -478,7 +455,7 @@ func TestStreamPushAnswersEveryLineWhenCanceled(t *testing.T) {
 
 		var pushes, late atomic.Int32
 
-		push := func(ctx context.Context, paths []string) ([]string, error) {
+		push := func(ctx context.Context, _ []string) (map[string]client.PathReport, error) {
 			pushes.Add(1)
 
 			if ctx.Err() != nil {
@@ -487,7 +464,7 @@ func TestStreamPushAnswersEveryLineWhenCanceled(t *testing.T) {
 
 			<-ctx.Done()
 
-			return paths, ctx.Err()
+			return map[string]client.PathReport{}, ctx.Err()
 		}
 
 		inR, inW := io.Pipe()
