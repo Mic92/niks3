@@ -57,7 +57,8 @@ type providerVerifier struct {
 // ErrProviderUnavailable: the provider of a token did not hand out its keys.
 var ErrProviderUnavailable = errors.New("oidc provider is unavailable")
 
-// keySet tells the caller of Verify when the key fetch failed.
+// keySet tells the caller of Verify when the key fetch failed, until
+// https://github.com/coreos/go-oidc/pull/516 lets Verify do it.
 type keySet struct{ keys gooidc.KeySet }
 
 type fetchFailureKey struct{}
