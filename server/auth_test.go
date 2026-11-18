@@ -4,8 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/Mic92/niks3/server"
 	"github.com/Mic92/niks3/server/oidc"
+	"github.com/Mic92/niks3/server/oidc/oidcmock"
 	"github.com/Mic92/niks3/server/oidc/oidctest"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -47,6 +50,50 @@ func TestService_AuthMiddleware(t *testing.T) {
 			"Authorization": "Bearer wrongtoken",
 		},
 	})
+}
+
+func TestTokenOfAnUnreachableProviderCanBeRetried(t *testing.T) {
+	t.Parallel()
+
+	provider, err := oidcmock.Run(t.Context())
+	ok(t, err)
+
+	// Each case gets a server that has not fetched the keys yet.
+	status := func(token string, providerUp bool) int {
+		_, validator := oidctest.NewValidator(t, oidc.Config{
+			AllowInsecure: true,
+			Providers:     map[string]*oidc.ProviderConfig{"test": {Issuer: provider.Issuer(), Audience: provider.ClientID}},
+		})
+		service := &server.Service{OIDCValidator: validator}
+
+		if !providerUp {
+			ok(t, provider.Shutdown(t.Context()))
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		service.RequireScope(oidc.ScopeWrite, service.HealthCheckHandler)(rec, req)
+
+		return rec.Code
+	}
+
+	stranger, err := oidcmock.NewKeypair()
+	ok(t, err)
+
+	forged, err := stranger.SignJWT(jwt.MapClaims{
+		"iss": provider.Issuer(), "aud": provider.ClientID, "sub": "builder", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	ok(t, err)
+
+	if got := status(forged, true); got != http.StatusUnauthorized {
+		t.Errorf("forged token: status %d, want 401", got)
+	}
+
+	token := oidctest.SignToken(t, provider, jwt.MapClaims{"sub": "builder"})
+
+	if got := status(token, false); got != http.StatusServiceUnavailable {
+		t.Errorf("provider down: status %d, want 503", got)
+	}
 }
 
 func TestService_AuthMiddleware_MTLSProxyHeader(t *testing.T) {
