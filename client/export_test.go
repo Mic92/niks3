@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -101,4 +102,9 @@ func (c *Client) UploadNARWithListing(ctx context.Context, narKey string, narObj
 // SetRegistrationTimeout shortens the bound on one upload registration.
 func (c *Client) SetRegistrationTimeout(d time.Duration) {
 	c.registrationTimeout = d
+}
+
+// NewStallingTransport re-exports newStallingTransport for tests.
+func NewStallingTransport(timeout time.Duration, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return newStallingTransport(timeout, dial)
 }
