@@ -752,6 +752,13 @@ func (s *Service) SignNarinfosHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// The narinfo is published under its key, so it has to describe that path.
+		if key, err := storePathToNarinfoKey(meta.StorePath); err != nil || key != objectKey {
+			http.Error(w, fmt.Sprintf("narinfo %s is for another store path: %s", objectKey, meta.StorePath), http.StatusBadRequest)
+
+			return
+		}
+
 		// Initialize as empty slice to ensure JSON serializes as [] not null
 		signaturesMap[objectKey] = make([]string, 0, len(s.SigningKeys))
 		narInfos[objectKey] = &signing.NarInfo{
