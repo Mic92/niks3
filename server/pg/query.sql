@@ -17,6 +17,30 @@ INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2
 -- name: GetObjectStats :one
 SELECT object_count, total_bytes FROM object_stats WHERE id;
 
+-- name: RecountObjectStats :exec
+-- Counts the live objects again once the count is five minutes old, or 100
+-- times as old as the count took. recount_at is set after the count ran.
+-- A server skips the count while another one is at it.
+WITH due AS (
+    SELECT id FROM object_stats
+    WHERE recount_at < timezone('UTC', now())
+    FOR UPDATE SKIP LOCKED
+)
+
+UPDATE object_stats AS s
+SET
+    (object_count, total_bytes) = (
+        SELECT
+            count(*),
+            coalesce(sum(size), 0)
+        FROM objects
+        WHERE deleted_at IS NULL
+    ),
+    recount_at = timezone('UTC', clock_timestamp())
+    + greatest(interval '5 minutes', 100 * (clock_timestamp() - statement_timestamp()))
+FROM due
+WHERE s.id = due.id;
+
 -- name: CountPendingClosures :one
 SELECT count(*) FROM pending_closures;
 

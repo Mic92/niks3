@@ -27,8 +27,7 @@ import (
 //   - an object's stored refs include every ref a committed push declared;
 //   - whatever a closure reaches is live and in S3;
 //   - whatever a pending push was told not to upload stays live and in S3;
-//   - every live row has its object, every open multipart upload its row,
-//     and object_stats equals a recount.
+//   - every live row has its object, every open multipart upload its row.
 //
 // In the end no publish claim is left.
 //
@@ -548,18 +547,6 @@ func (m *pushGCModel) checkBookkeeping() {
 		if !tracked {
 			m.fatalf("multipart upload of %s is open in S3 without a row", upload.Key)
 		}
-	}
-
-	var stats, recount [2]int64
-	ok(m.t, m.service.Pool.QueryRow(ctx, `
-		SELECT s.object_count, s.total_bytes, l.n, l.bytes
-		FROM object_stats AS s,
-		     (SELECT count(*) AS n, coalesce(sum(size), 0)::bigint AS bytes
-		      FROM objects WHERE deleted_at IS NULL) AS l
-		WHERE s.id`).Scan(&stats[0], &stats[1], &recount[0], &recount[1]))
-
-	if stats != recount {
-		m.fatalf("object_stats says %v objects and bytes, a recount %v", stats, recount)
 	}
 }
 

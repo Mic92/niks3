@@ -121,3 +121,7 @@ func AbortSucceeded(err error) bool {
 func (s *Service) EnsureAbortUploadsRule(ctx context.Context) {
 	s.ensureAbortUploadsRule(ctx)
 }
+
+func (s *Service) RefreshInventory(ctx context.Context) error {
+	return s.refreshInventory(ctx)
+}

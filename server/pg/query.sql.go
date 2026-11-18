@@ -754,6 +754,36 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const recountObjectStats = `-- name: RecountObjectStats :exec
+WITH due AS (
+    SELECT id FROM object_stats
+    WHERE recount_at < timezone('UTC', now())
+    FOR UPDATE SKIP LOCKED
+)
+
+UPDATE object_stats AS s
+SET
+    (object_count, total_bytes) = (
+        SELECT
+            count(*),
+            coalesce(sum(size), 0)
+        FROM objects
+        WHERE deleted_at IS NULL
+    ),
+    recount_at = timezone('UTC', clock_timestamp())
+    + greatest(interval '5 minutes', 100 * (clock_timestamp() - statement_timestamp()))
+FROM due
+WHERE s.id = due.id
+`
+
+// Counts the live objects again once the count is five minutes old, or 100
+// times as old as the count took. recount_at is set after the count ran.
+// A server skips the count while another one is at it.
+func (q *Queries) RecountObjectStats(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, recountObjectStats)
+	return err
+}
+
 const registerCompletedObject = `-- name: RegisterCompletedObject :exec
 INSERT INTO objects (key, refs, size)
 SELECT $1::varchar, $2::varchar [], $3

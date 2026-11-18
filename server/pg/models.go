@@ -33,9 +33,10 @@ type Object struct {
 }
 
 type ObjectStat struct {
-	ID          bool  `json:"id"`
-	ObjectCount int64 `json:"object_count"`
-	TotalBytes  int64 `json:"total_bytes"`
+	ID          bool             `json:"id"`
+	ObjectCount int64            `json:"object_count"`
+	TotalBytes  int64            `json:"total_bytes"`
+	RecountAt   pgtype.Timestamp `json:"recount_at"`
 }
 
 type PendingClosure struct {

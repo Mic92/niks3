@@ -223,6 +223,10 @@ func (s *Service) refreshInventory(ctx context.Context) error {
 
 	queries := pg.New(s.Pool)
 
+	if err := queries.RecountObjectStats(ctx); err != nil {
+		return fmt.Errorf("recount object stats: %w", err)
+	}
+
 	stats, err := queries.GetObjectStats(ctx)
 	if err != nil {
 		return fmt.Errorf("get object stats: %w", err)
@@ -241,9 +245,8 @@ func (s *Service) refreshInventory(ctx context.Context) error {
 	return nil
 }
 
-// StartInventoryRefresh seeds the inventory gauges and refreshes them on a
-// ticker until ctx is cancelled. Independent of GC so the gauges are correct
-// shortly after startup.
+// StartInventoryRefresh refreshes the inventory gauges now and then on a
+// ticker until ctx is cancelled. The server starts without waiting for it.
 func (s *Service) StartInventoryRefresh(ctx context.Context) {
 	refresh := func() {
 		if err := s.refreshInventory(ctx); err != nil {
@@ -251,9 +254,9 @@ func (s *Service) StartInventoryRefresh(ctx context.Context) {
 		}
 	}
 
-	refresh()
-
 	go func() {
+		refresh()
+
 		ticker := time.NewTicker(inventoryRefreshInterval)
 		defer ticker.Stop()
 

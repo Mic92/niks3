@@ -13,7 +13,7 @@ import (
 )
 
 // TestMetricsInventory verifies the /metrics endpoint reports the cache
-// inventory gauges sourced from object_stats.
+// inventory gauges.
 func TestMetricsInventory(t *testing.T) {
 	t.Parallel()
 
@@ -36,7 +36,7 @@ func TestMetricsInventory(t *testing.T) {
 	ok(t, err)
 	commitOK(t)(queries.CommitPendingClosure(ctx, pendingClosure.ID))
 
-	service.StartInventoryRefresh(ctx)
+	ok(t, service.RefreshInventory(ctx))
 
 	// Drive a request through the middleware so the HTTP metrics populate.
 	mux := http.NewServeMux()
