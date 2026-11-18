@@ -38,40 +38,47 @@ func adminPrincipal() principal {
 	return principal{scopes: allScopes()}
 }
 
-// authenticate returns the principal for r. The bool is false when no valid
-// credentials were presented at all.
-func (s *Service) authenticate(r *http.Request) (principal, bool) {
+var errUnauthorized = errors.New("unauthorized")
+
+// authenticate returns the principal for r.
+func (s *Service) authenticate(r *http.Request) (principal, error) {
 	if s.mtlsCheck(r, s.MTLSBoundSubjects) {
-		return adminPrincipal(), true
+		return adminPrincipal(), nil
 	}
 
 	if len(s.MTLSBoundSubjectsRead) > 0 && s.mtlsCheck(r, s.MTLSBoundSubjectsRead) {
-		return principal{scopes: []oidc.Scope{oidc.ScopeRead}}, true
+		return principal{scopes: []oidc.Scope{oidc.ScopeRead}}, nil
 	}
 
 	token := requestToken(r)
 	if token == "" {
-		return principal{}, false
+		return principal{}, errUnauthorized
 	}
 
 	if s.APIToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.APIToken)) == 1 {
-		return adminPrincipal(), true
+		return adminPrincipal(), nil
 	}
 
 	if s.OIDCValidator == nil {
 		s.logAuthFailure(token, nil)
 
-		return principal{}, false
+		return principal{}, errUnauthorized
 	}
 
 	claims, err := s.OIDCValidator.ValidateToken(r.Context(), token)
+	if errors.Is(err, oidc.ErrProviderUnavailable) {
+		slog.Warn("Cannot check a token", "error", err)
+
+		return principal{}, oidc.ErrProviderUnavailable
+	}
+
 	if err != nil {
 		var vErr *oidc.ValidationError
 
 		errors.As(err, &vErr)
 		s.logAuthFailure(token, vErr)
 
-		return principal{}, false
+		return principal{}, errUnauthorized
 	}
 
 	slog.Debug("OIDC auth successful", "provider", claims.Provider, "subject", claims.Subject, "scopes", claims.Scopes)
@@ -82,7 +89,7 @@ func (s *Service) authenticate(r *http.Request) (principal, bool) {
 		scopes = append(slices.Clone(scopes), oidc.ScopeRead)
 	}
 
-	return principal{scopes: scopes, pins: claims.Pins}, true
+	return principal{scopes: scopes, pins: claims.Pins}, nil
 }
 
 // RequireScope wraps next so it only runs for principals holding scope.
@@ -94,8 +101,14 @@ func (s *Service) RequireScope(scope oidc.Scope, next http.HandlerFunc) http.Han
 			return
 		}
 
-		p, ok := s.authenticate(r)
-		if !ok {
+		p, err := s.authenticate(r)
+		if errors.Is(err, oidc.ErrProviderUnavailable) {
+			http.Error(w, "The identity provider of the token is unavailable", http.StatusServiceUnavailable)
+
+			return
+		}
+
+		if err != nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 
 			return

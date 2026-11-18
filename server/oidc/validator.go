@@ -50,9 +50,45 @@ type Validator struct {
 }
 
 type providerVerifier struct {
-	provider *gooidc.Provider
 	verifier *gooidc.IDTokenVerifier
 	config   *ProviderConfig
+}
+
+// ErrProviderUnavailable: the provider of a token did not hand out its keys.
+var ErrProviderUnavailable = errors.New("oidc provider is unavailable")
+
+// keySet tells the caller of Verify when the key fetch failed.
+type keySet struct{ keys gooidc.KeySet }
+
+type fetchFailureKey struct{}
+
+func (k keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
+	payload, err := k.keys.VerifySignature(ctx, jwt)
+	// A failed fetch is the one error of go-oidc's key set that wraps a cause.
+	if failure, ok := ctx.Value(fetchFailureKey{}).(*error); ok && errors.Unwrap(err) != nil {
+		*failure = err
+	}
+
+	return payload, err //nolint:wrapcheck // go-oidc adds the context
+}
+
+func discover(ctx context.Context, issuer string) (string, []string, error) {
+	provider, err := gooidc.NewProvider(ctx, issuer)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", issuer, err)
+	}
+
+	var doc struct {
+		JWKSURL    string   `json:"jwks_uri"`
+		Algorithms []string `json:"id_token_signing_alg_values_supported"`
+	}
+	if err := provider.Claims(&doc); err != nil {
+		return "", nil, fmt.Errorf("discovery document of %s: %w", issuer, err)
+	}
+
+	algs := slices.DeleteFunc(doc.Algorithms, func(alg string) bool { return !slices.Contains(asymmetricAlgs, alg) })
+
+	return doc.JWKSURL, algs, nil
 }
 
 // ValidatedClaims contains the validated claims from a token.
@@ -155,26 +191,19 @@ func NewValidator(ctx context.Context, cfg *Config) (*Validator, error) {
 		// go-oidc reuses this context's client for later JWKS fetches.
 		clientCtx := gooidc.ClientContext(ctx, client)
 
-		var provider *gooidc.Provider
-		if providerCfg.JWKSURL != "" {
-			provider = (&gooidc.ProviderConfig{
-				IssuerURL:  providerCfg.Issuer,
-				JWKSURL:    providerCfg.JWKSURL,
-				Algorithms: asymmetricAlgs,
-			}).NewProvider(clientCtx)
-		} else if provider, err = gooidc.NewProvider(clientCtx, providerCfg.Issuer); err != nil {
-			return nil, fmt.Errorf("failed to initialize OIDC provider for %s: %w", providerCfg.Issuer, err)
+		jwksURL, algs := providerCfg.JWKSURL, asymmetricAlgs
+		if jwksURL == "" {
+			if jwksURL, algs, err = discover(clientCtx, providerCfg.Issuer); err != nil {
+				return nil, err
+			}
 		}
 
-		// Create the verifier with our expected audience
-		verifier := provider.Verifier(&gooidc.Config{
-			ClientID: providerCfg.Audience,
-		})
-
 		v.verifiers[providerCfg.Issuer] = &providerVerifier{
-			provider: provider,
-			verifier: verifier,
-			config:   providerCfg,
+			verifier: gooidc.NewVerifier(providerCfg.Issuer, keySet{gooidc.NewRemoteKeySet(clientCtx, jwksURL)}, &gooidc.Config{
+				ClientID:             providerCfg.Audience,
+				SupportedSigningAlgs: algs,
+			}),
+			config: providerCfg,
 		}
 
 		slog.Info("OIDC provider initialized", "name", name, "issuer", providerCfg.Issuer)
@@ -245,7 +274,13 @@ func (v *Validator) ValidateToken(ctx context.Context, tokenString string) (*Val
 		return nil, &ValidationError{Reason: reason, Provider: pv.config.Name(), Claims: claims}
 	}
 
-	idToken, err := pv.verifier.Verify(ctx, tokenString)
+	var fetchFailure error
+
+	idToken, err := pv.verifier.Verify(context.WithValue(ctx, fetchFailureKey{}, &fetchFailure), tokenString)
+	if fetchFailure != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrProviderUnavailable, pv.config.Name(), fetchFailure)
+	}
+
 	if err != nil {
 		return fail(err.Error(), nil)
 	}
