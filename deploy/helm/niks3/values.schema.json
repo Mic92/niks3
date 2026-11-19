@@ -40,6 +40,9 @@
         },
         "url": {
           "type": "string"
+        },
+        "rdsIAMRegion": {
+          "type": "string"
         }
       },
       "additionalProperties": false

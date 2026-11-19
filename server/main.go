@@ -209,6 +209,9 @@ func parseArgs() (*options, error) {
 			"When empty, libpq PG* environment variables are used")
 	flag.StringVar(&dbFile, "db-file", getEnvOrDefault("NIKS3_DB_FILE", ""),
 		"Path to file containing the Postgres connection string (e.g. a mounted Kubernetes secret)")
+	flag.StringVar(&opts.DBRDSIAMRegion, "db-rds-iam-region", getEnvOrDefault("NIKS3_DB_RDS_IAM_REGION", ""),
+		"Authenticate to Postgres with RDS IAM tokens for this AWS region instead of a password. "+
+			"Credentials come from the default AWS chain (e.g. IRSA or EKS Pod Identity)")
 	flag.StringVar(&opts.HTTPAddr, "http-addr", getEnvOrDefault("NIKS3_HTTP_ADDR", ":5751"), "HTTP address to listen on")
 	flag.StringVar(&opts.S3Endpoint, "s3-endpoint", getEnvOrDefault("NIKS3_S3_ENDPOINT", ""), "S3 endpoint")
 	flag.StringVar(&opts.S3PublicURL, "s3-public-url", getEnvOrDefault("NIKS3_S3_PUBLIC_URL", ""),

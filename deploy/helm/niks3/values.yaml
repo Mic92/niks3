@@ -11,6 +11,11 @@ database:
   secretKey: uri
   # Or inline. The chart creates the Secret.
   url: ""
+  # AWS region of an RDS or Aurora database to authenticate to with IAM
+  # tokens instead of a password. The connection string then names the user
+  # but no password, and the service account needs rds-db:connect through
+  # IRSA or EKS Pod Identity.
+  rdsIAMRegion: ""
 s3:
   # host[:port] the server talks to. Clients upload via presigned URLs, so this
   # must also be reachable from wherever `niks3 push` runs unless publicURL is set.

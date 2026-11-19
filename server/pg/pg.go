@@ -16,6 +16,9 @@ import (
 //go:embed migrations/*.sql functions/*.sql
 var embedMigrations embed.FS
 
+// Option adjusts the pool configuration before the pool opens.
+type Option func(ctx context.Context, cfg *pgxpool.Config) error
+
 // Connect opens a pool on connString and brings the schema up to date.
 //
 // A goose Provider avoids the package-level goose globals, which race, and
@@ -23,10 +26,21 @@ var embedMigrations embed.FS
 //
 // ctx bounds reaching the database, not migrating it, so a slow migration
 // cannot fail every restart.
-func Connect(ctx context.Context, connString string) (*pgxpool.Pool, error) {
+func Connect(ctx context.Context, connString string, opts ...Option) (*pgxpool.Pool, error) {
 	slog.Debug("connecting to database", "connection_string", connString)
 
-	pool, err := pgxpool.New(ctx, connString)
+	cfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse database configuration: %w", err)
+	}
+
+	for _, opt := range opts {
+		if err := opt(ctx, cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}

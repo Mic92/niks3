@@ -26,7 +26,10 @@ import (
 
 type options struct {
 	DBConnectionString string
-	HTTPAddr           string
+	// DBRDSIAMRegion, when set, makes every database connection authenticate
+	// with an RDS IAM token for this region.
+	DBRDSIAMRegion string
+	HTTPAddr       string
 
 	S3Endpoint string
 	// S3PublicURL, when set, is the externally reachable S3 base URL
@@ -200,13 +203,27 @@ func NewPresignClient(
 	return client, nil
 }
 
+func connectDB(ctx context.Context, opts *options) (*pgxpool.Pool, error) {
+	var dbOpts []pg.Option
+	if opts.DBRDSIAMRegion != "" {
+		dbOpts = append(dbOpts, pg.WithRDSIAMAuth(opts.DBRDSIAMRegion))
+	}
+
+	pool, err := pg.Connect(ctx, opts.DBConnectionString, dbOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	return pool, nil
+}
+
 func runServer(opts *options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectionTimeout)
 	defer cancel()
 
-	pool, err := pg.Connect(ctx, opts.DBConnectionString)
+	pool, err := connectDB(ctx, opts)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
 	defer pool.Close()
 
