@@ -165,15 +165,9 @@ func startRustfsServer(ctx context.Context) (*rustfsServer, error) {
 		return nil, fmt.Errorf("failed to create data dir: %w", err)
 	}
 
-	consolePort, err := randPort(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find free console port: %w", err)
-	}
-
 	//nolint:gosec
 	rustfsProc := exec.CommandContext(ctx, "rustfs",
 		"--address", fmt.Sprintf("127.0.0.1:%d", port),
-		"--console-address", fmt.Sprintf("127.0.0.1:%d", consolePort),
 		"--access-key", "rustfsadmin",
 		"--secret-key", secret,
 		dataDir)
@@ -186,6 +180,9 @@ func startRustfsServer(ctx context.Context) (*rustfsServer, error) {
 	env := os.Environ()
 	env = append(env, "AWS_ACCESS_KEY_ID=rustfsadmin")
 	env = append(env, "AWS_SECRET_ACCESS_KEY="+secret)
+	// A second random port can come out equal to the first, and rustfs
+	// then refuses to start.
+	env = append(env, "RUSTFS_CONSOLE_ENABLE=false")
 	rustfsProc.Env = env
 
 	if err = rustfsProc.Start(); err != nil {
