@@ -533,7 +533,23 @@ func (c *Client) PushPathsReport(ctx context.Context, paths []string) (map[strin
 	return reports, err
 }
 
+// pushPaths pushes again when the server refuses the commit because garbage
+// collection marked an object the push was told is cached. The second push
+// uploads that object.
 func (c *Client) pushPaths(ctx context.Context, paths []string) ([]string, map[string]PathReport, error) {
+	closurePaths, reports, err := c.pushPathsOnce(ctx, paths)
+
+	var status *HTTPStatusError
+	if errors.As(err, &status) && status.StatusCode == http.StatusConflict {
+		slog.Warn("Pushing again", "error", err)
+
+		return c.pushPathsOnce(ctx, paths)
+	}
+
+	return closurePaths, reports, err
+}
+
+func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, map[string]PathReport, error) {
 	startTime := time.Now()
 
 	// Resolve symlinks to actual store paths

@@ -699,6 +699,59 @@ func nixEvalStorePath(t *testing.T, nixEnv []string, expr string) string {
 	return strings.Trim(strings.TrimSpace(string(output)), `"`)
 }
 
+// A mark that was running when the push started tombstones a dependency the
+// push was told is cached.
+func TestClientPushesAgainWhenADependencyIsCollected(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	depExpr := `builtins.toFile "collected-dep" "dependency"`
+	depPath := nixEvalStorePath(t, nixEnv, depExpr)
+	topPath := nixEvalStorePath(t, nixEnv, `builtins.toFile "top" "${`+depExpr+`}"`)
+
+	var created atomic.Int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+
+		if r.URL.Path == "/api/pushes" && created.Add(1) == 1 {
+			_, err := testService.Pool.Exec(r.Context(),
+				`UPDATE objects SET deleted_at = now(), first_deleted_at = now()`)
+			if err != nil {
+				t.Errorf("marking the dependency: %v", err)
+			}
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{depPath}, nixEnv))
+
+	_, err := testService.Pool.Exec(ctx, `DELETE FROM closures`)
+	ok(t, err)
+
+	created.Store(0)
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{topPath}, nixEnv))
+
+	for _, storePath := range []string{depPath, topPath} {
+		hash, err := client.GetStorePathHash(storePath)
+		ok(t, err)
+
+		if n := countRows(t, testService, `SELECT count(*) FROM objects WHERE key = $1 AND deleted_at IS NULL`, hash+".narinfo"); n != 1 {
+			t.Errorf("%s is not live after the push", storePath)
+		}
+	}
+}
+
 // Regression test: a second client commits a shared dependency between the two
 // CreatePendingClosure calls of one push. The later closure then no longer has
 // the dependency pending and the server rejects signing it there with 403.
