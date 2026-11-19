@@ -356,7 +356,7 @@ func (c *Client) createPending(ctx context.Context, closures []ClosureInfo) (str
 	if cfg, err := c.GetCacheConfig(ctx); err == nil && cfg.Pushes {
 		resp, err := c.CreatePush(ctx, closures, c.VerifyS3Integrity)
 		if err == nil {
-			return "pushes", map[string]map[string]PendingObject{resp.ID: resp.PendingObjects}, nil
+			return "pushes", map[string]map[string]PendingObject{resp.ID: ownedBy(resp.ID, resp.PendingObjects)}, nil
 		}
 
 		var statusErr *HTTPStatusError
@@ -375,10 +375,20 @@ func (c *Client) createPending(ctx context.Context, closures []ClosureInfo) (str
 			return "", nil, fmt.Errorf("creating pending closure: %w", err)
 		}
 
-		pendingByClosureID[resp.ID] = resp.PendingObjects
+		pendingByClosureID[resp.ID] = ownedBy(resp.ID, resp.PendingObjects)
 	}
 
 	return "pending_closures", pendingByClosureID, nil
+}
+
+// ownedBy notes on each object which push it is uploaded for.
+func ownedBy(pushID string, objects map[string]PendingObject) map[string]PendingObject {
+	for key, obj := range objects {
+		obj.PushID = pushID
+		objects[key] = obj
+	}
+
+	return objects
 }
 
 type narinfoTask struct {
@@ -496,7 +506,7 @@ func (c *Client) uploadNarinfosInParallel(ctx context.Context, narinfos []narinf
 				return fmt.Errorf("uploading narinfo %s: unexpected status %d", task.key, resp.StatusCode)
 			}
 
-			c.RegisterUploadedObject(ctx, task.key)
+			c.RegisterUploadedObject(ctx, pendingObj.PushID, task.key)
 			slog.Debug("Uploaded narinfo", "key", task.key, "size", len(compressed))
 
 			return nil

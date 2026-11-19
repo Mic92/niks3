@@ -35,7 +35,7 @@ func TestRegisterUploadedObjectReusesConnections(t *testing.T) {
 
 	const requests = 2000
 	for range requests {
-		c.RegisterUploadedObject(t.Context(), "x.narinfo")
+		c.RegisterUploadedObject(t.Context(), "1", "x.narinfo")
 	}
 
 	c.WaitRegistrations()

@@ -308,7 +308,7 @@ func TestService_createPendingClosureHandler(t *testing.T) {
 	commitPendingClosure(t, service, pendingClosureResponse.ID, narinfoMetadata)
 
 	// The client's upload registration races the commit and may land after it.
-	lateBody, err := json.Marshal(map[string]any{"object_key": secondObject})
+	lateBody, err := json.Marshal(map[string]any{"object_key": secondObject, "push_id": pendingClosureResponse.ID})
 	ok(t, err)
 	testRequest(t, &TestRequest{
 		method:  "POST",

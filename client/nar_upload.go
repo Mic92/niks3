@@ -76,7 +76,7 @@ func (c *Client) CompressAndUploadNAR(ctx context.Context, storePath string, nar
 	} else {
 		err = c.compressAndSimpleUploadNAR(ctx, storePath, obj.PresignedURL, objectKey, onListing)
 		if err == nil {
-			c.RegisterUploadedObject(ctx, objectKey)
+			c.RegisterUploadedObject(ctx, obj.PushID, objectKey)
 		}
 	}
 

@@ -559,29 +559,6 @@ func TestSweepSkipsRowsLockedByPush(t *testing.T) {
 	}
 }
 
-// Registering an upload needs a pending row: it is what keeps the sweep away
-// from the object, so without one the row would outlive its object.
-func TestRegisterCompletedObjectNeedsPendingRow(t *testing.T) {
-	t.Parallel()
-
-	service := createTestService(t)
-	defer service.Close()
-
-	ctx := t.Context()
-	key := "nar/" + strings.Repeat("f", 52) + ".nar.zst"
-
-	ok(t, pg.New(service.Pool).RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
-		Key: key, Refs: []string{},
-	}))
-
-	var n int
-	ok(t, service.Pool.QueryRow(ctx, "SELECT count(*) FROM objects WHERE key = $1", key).Scan(&n))
-
-	if n != 0 {
-		t.Errorf("registered %s without a pending row", key)
-	}
-}
-
 // Looking up existing objects in a push transaction locks their rows against the sweep.
 func TestGetExistingObjectsLocksRows(t *testing.T) {
 	t.Parallel()

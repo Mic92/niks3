@@ -410,48 +410,6 @@ func (q *Queries) GetOldMultipartUploads(ctx context.Context, cutoff pgtype.Time
 	return items, nil
 }
 
-const getPendingObject = `-- name: GetPendingObject :one
-SELECT refs, size FROM pending_objects
-WHERE pending_closure_id = $1 AND key = $2
-`
-
-type GetPendingObjectParams struct {
-	PendingClosureID int64  `json:"pending_closure_id"`
-	Key              string `json:"key"`
-}
-
-type GetPendingObjectRow struct {
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
-}
-
-func (q *Queries) GetPendingObject(ctx context.Context, arg GetPendingObjectParams) (GetPendingObjectRow, error) {
-	row := q.db.QueryRow(ctx, getPendingObject, arg.PendingClosureID, arg.Key)
-	var i GetPendingObjectRow
-	err := row.Scan(&i.Refs, &i.Size)
-	return i, err
-}
-
-const getPendingObjectByKey = `-- name: GetPendingObjectByKey :one
-SELECT refs, size FROM pending_objects
-WHERE key = $1
-LIMIT 1
-`
-
-type GetPendingObjectByKeyRow struct {
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
-}
-
-// Any pending closure's row for this key; used to recover refs/size when the
-// upload is registered outside closure commit.
-func (q *Queries) GetPendingObjectByKey(ctx context.Context, key string) (GetPendingObjectByKeyRow, error) {
-	row := q.db.QueryRow(ctx, getPendingObjectByKey, key)
-	var i GetPendingObjectByKeyRow
-	err := row.Scan(&i.Refs, &i.Size)
-	return i, err
-}
-
 const getPendingObjectKeys = `-- name: GetPendingObjectKeys :many
 SELECT key FROM pending_objects
 WHERE pending_closure_id = $1
@@ -788,10 +746,14 @@ func (q *Queries) RecountObjectStats(ctx context.Context) error {
 	return err
 }
 
-const registerCompletedObject = `-- name: RegisterCompletedObject :exec
+const registerCompletedObject = `-- name: RegisterCompletedObject :execrows
 INSERT INTO objects (key, refs, size)
-SELECT $1::varchar, $2::varchar [], $3
-WHERE EXISTS (SELECT 1 FROM pending_objects WHERE key = $1::varchar)
+SELECT
+    po.key,
+    po.refs,
+    po.size
+FROM pending_objects AS po
+WHERE po.key = $1::varchar AND po.pending_closure_id = $2::bigint
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -804,18 +766,19 @@ ON CONFLICT (key) DO UPDATE SET
 `
 
 type RegisterCompletedObjectParams struct {
-	Key  string      `json:"key"`
-	Refs []string    `json:"refs"`
-	Size pgtype.Int8 `json:"size"`
+	Key              string `json:"key"`
+	PendingClosureID int64  `json:"pending_closure_id"`
 }
 
-// Record an object as soon as its upload completes so later closures don't
-// re-offer it if this closure never commits. Only while a pending row exists:
-// that row keeps the sweep away from the object. Conflict handling matches
-// commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
-func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) error {
-	_, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.Refs, arg.Size)
-	return err
+// Records an uploaded object before its push commits, so a later push is not
+// asked for it again if this one dies. Only while the push has its pending
+// row: that row kept the sweep away since before the upload.
+func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompletedObjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, registerCompletedObject, arg.Key, arg.PendingClosureID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchPresentClosures = `-- name: TouchPresentClosures :many

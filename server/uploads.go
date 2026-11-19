@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mic92/niks3/ratelimit"
 	"github.com/Mic92/niks3/server/pg"
 	"github.com/Mic92/niks3/server/signing"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/minio/minio-go/v7"
 )
@@ -392,7 +392,7 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	// re-offering this NAR and leak an orphaned multipart upload each time.
 	// On error fail the request before dropping the tracking row, so a retry
 	// re-attempts the idempotent registration.
-	if err := s.registerCompletedObject(r.Context(), upload.PendingClosureID, req.ObjectKey); err != nil {
+	if _, err := s.registerCompletedObject(r.Context(), upload.PendingClosureID, req.ObjectKey); err != nil {
 		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
 		http.Error(w, "failed to register completed object", http.StatusInternalServerError)
 
@@ -410,44 +410,29 @@ func (s *Service) CompleteMultipartUploadHandler(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// registerCompletedObject records an uploaded object in the objects table,
-// using refs/size from its pending_objects row in the given closure. A
-// missing row (closure already cleaned up) is not an error; the object is
-// registered with empty refs and unknown size.
-func (s *Service) registerCompletedObject(ctx context.Context, pendingClosureID int64, objectKey string) error {
-	queries := pg.New(s.Pool)
-
-	row, err := queries.GetPendingObject(ctx, pg.GetPendingObjectParams{
-		PendingClosureID: pendingClosureID,
+// registerCompletedObject records an object the push has uploaded. It tells
+// whether the push still had its pending row for it.
+func (s *Service) registerCompletedObject(ctx context.Context, pendingClosureID int64, objectKey string) (bool, error) {
+	rows, err := pg.New(s.Pool).RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
 		Key:              objectKey,
+		PendingClosureID: pendingClosureID,
 	})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("get pending object %q: %w", objectKey, err)
+	if err != nil {
+		return false, fmt.Errorf("register completed object %q: %w", objectKey, err)
 	}
 
-	if row.Refs == nil {
-		row.Refs = []string{}
-	}
-
-	if err := queries.RegisterCompletedObject(ctx, pg.RegisterCompletedObjectParams{
-		Key:  objectKey,
-		Refs: row.Refs,
-		Size: row.Size,
-	}); err != nil {
-		return fmt.Errorf("register completed object %q: %w", objectKey, err)
-	}
-
-	return nil
+	return rows > 0, nil
 }
 
 type completeUploadRequest struct {
 	ObjectKey string `json:"object_key"`
+	// PushID is the pending closure or push that uploaded the object.
+	PushID string `json:"push_id,omitempty"`
 }
 
 // CompleteUploadHandler handles POST /api/uploads/complete. Clients call it
-// after a successful presigned PUT so the object is recorded even if its
-// closure never commits. The key must belong to a pending object and the
-// object must exist in S3, so clients cannot register arbitrary keys.
+// after a presigned PUT so the object is recorded even if its push never
+// commits. A request without push_id, as older clients send it, records nothing.
 func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer closeRequestBody(r)
 
@@ -462,60 +447,37 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	queries := pg.New(s.Pool)
+	if req.PushID == "" {
+		w.WriteHeader(http.StatusNoContent)
 
-	row, err := queries.GetPendingObjectByKey(r.Context(), req.ObjectKey)
+		return
+	}
+
+	id, err := strconv.ParseInt(req.PushID, 10, 64)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The registration is sent off the upload path and can arrive
-			// after the closure commit already recorded the object.
-			if present, perr := queries.GetPresentObjects(r.Context(), []string{req.ObjectKey}); perr == nil && len(present) == 1 {
-				w.WriteHeader(http.StatusNoContent)
-
-				return
-			}
-
-			http.Error(w, "object is not pending upload", http.StatusNotFound)
-
-			return
-		}
-
-		slog.Error("Failed to look up pending object", "error", err, "object_key", req.ObjectKey)
-		http.Error(w, "failed to look up pending object", http.StatusInternalServerError)
+		http.Error(w, "invalid push_id", http.StatusBadRequest)
 
 		return
 	}
 
-	if row.Refs == nil {
-		row.Refs = []string{}
-	}
-
-	exists, err := s.objectExistsInS3(r.Context(), req.ObjectKey)
+	registered, err := s.registerCompletedObject(r.Context(), id, req.ObjectKey)
 	if err != nil {
-		slog.Error("Failed to stat object", "error", err, "object_key", req.ObjectKey)
-		http.Error(w, "failed to stat object", http.StatusInternalServerError)
-
-		return
-	}
-
-	if !exists {
-		http.Error(w, "object not found in S3", http.StatusNotFound)
-
-		return
-	}
-
-	if err := queries.RegisterCompletedObject(r.Context(), pg.RegisterCompletedObjectParams{
-		Key:  req.ObjectKey,
-		Refs: row.Refs,
-		Size: row.Size,
-	}); err != nil {
 		slog.Error("Failed to register completed object", "error", err, "object_key", req.ObjectKey)
 		http.Error(w, "failed to register completed object", http.StatusInternalServerError)
 
 		return
 	}
 
-	slog.Info("Registered completed upload", "object_key", req.ObjectKey)
+	// The registration can arrive after the commit recorded the object.
+	if !registered {
+		present, err := pg.New(s.Pool).GetPresentObjects(r.Context(), []string{req.ObjectKey})
+		if err != nil || len(present) == 0 {
+			http.Error(w, "object is not pending upload", http.StatusNotFound)
+
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

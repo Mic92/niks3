@@ -103,14 +103,17 @@ SELECT key FROM live;
 -- name: CommitPendingClosure :one
 SELECT commit_pending_closure($1::bigint)::bigint;
 
--- name: RegisterCompletedObject :exec
--- Record an object as soon as its upload completes so later closures don't
--- re-offer it if this closure never commits. Only while a pending row exists:
--- that row keeps the sweep away from the object. Conflict handling matches
--- commit_pending_closure: merge refs, keep a known size, resurrect tombstones.
+-- name: RegisterCompletedObject :execrows
+-- Records an uploaded object before its push commits, so a later push is not
+-- asked for it again if this one dies. Only while the push has its pending
+-- row: that row kept the sweep away since before the upload.
 INSERT INTO objects (key, refs, size)
-SELECT sqlc.arg(key)::varchar, sqlc.arg(refs)::varchar [], sqlc.arg(size)
-WHERE EXISTS (SELECT 1 FROM pending_objects WHERE key = sqlc.arg(key)::varchar)
+SELECT
+    po.key,
+    po.refs,
+    po.size
+FROM pending_objects AS po
+WHERE po.key = sqlc.arg(key)::varchar AND po.pending_closure_id = sqlc.arg(pending_closure_id)::bigint
 ON CONFLICT (key) DO UPDATE SET
     refs = (
         SELECT ARRAY(
@@ -120,17 +123,6 @@ ON CONFLICT (key) DO UPDATE SET
     size = coalesce(objects.size, excluded.size),
     deleted_at = NULL,
     first_deleted_at = NULL;
-
--- name: GetPendingObject :one
-SELECT refs, size FROM pending_objects
-WHERE pending_closure_id = $1 AND key = $2;
-
--- name: GetPendingObjectByKey :one
--- Any pending closure's row for this key; used to recover refs/size when the
--- upload is registered outside closure commit.
-SELECT refs, size FROM pending_objects
-WHERE key = $1
-LIMIT 1;
 
 -- name: CleanupPendingClosures :execrows
 -- Pass the cutoff that GetOldMultipartUploads used. Closures in keep are left
