@@ -481,33 +481,6 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ObjectExistsHandler handles HEAD /api/objects/{key...}: 204 if objectKey is
-// in S3, 404 otherwise.
-func (s *Service) ObjectExistsHandler(w http.ResponseWriter, r *http.Request) {
-	objectKey := r.PathValue("key")
-	if objectKey == "" {
-		http.Error(w, "missing object key", http.StatusBadRequest)
-
-		return
-	}
-
-	exists, err := s.objectExistsInS3(r.Context(), objectKey)
-	if err != nil {
-		slog.Error("Failed to stat object", "error", err, "object_key", objectKey)
-		http.Error(w, "failed to stat object", http.StatusInternalServerError)
-
-		return
-	}
-
-	if !exists {
-		w.WriteHeader(http.StatusNotFound)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // objectExistsInS3 reports whether objectKey is present in the bucket.
 func (s *Service) objectExistsInS3(ctx context.Context, objectKey string) (bool, error) {
 	if err := s.S3RateLimiter.Wait(ctx); err != nil {
