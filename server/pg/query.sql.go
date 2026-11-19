@@ -353,6 +353,32 @@ func (q *Queries) GetKeysNotPending(ctx context.Context, keys []string) ([]strin
 	return items, nil
 }
 
+const getLiveObjects = `-- name: GetLiveObjects :many
+SELECT key FROM objects
+WHERE key = any($1::varchar []) AND deleted_at IS NULL
+`
+
+// GC-marked objects may vanish from S3 any moment, so they count as absent.
+func (q *Queries) GetLiveObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getLiveObjects, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMultipartUpload = `-- name: GetMultipartUpload :one
 SELECT pending_closure_id, object_key, upload_id
 FROM multipart_uploads
@@ -462,32 +488,6 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const getPresentObjects = `-- name: GetPresentObjects :many
-SELECT key FROM objects
-WHERE key = any($1::varchar []) AND deleted_at IS NULL
-`
-
-// GC-marked objects may vanish from S3 any moment, so they count as absent.
-func (q *Queries) GetPresentObjects(ctx context.Context, dollar_1 []string) ([]string, error) {
-	rows, err := q.db.Query(ctx, getPresentObjects, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		items = append(items, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
@@ -850,7 +850,7 @@ func (q *Queries) RegisterCompletedObject(ctx context.Context, arg RegisterCompl
 	return result.RowsAffected(), nil
 }
 
-const touchPresentClosures = `-- name: TouchPresentClosures :many
+const touchLiveClosures = `-- name: TouchLiveClosures :many
 WITH live AS (
     SELECT
         c.key,
@@ -875,8 +875,8 @@ SELECT key FROM live
 // Rows younger than ten minutes keep their age, since GC cuts off by days.
 // Locking in byte order stops overlapping callers from deadlocking, and waits
 // for a GC delete in flight.
-func (q *Queries) TouchPresentClosures(ctx context.Context, dollar_1 []string) ([]string, error) {
-	rows, err := q.db.Query(ctx, touchPresentClosures, dollar_1)
+func (q *Queries) TouchLiveClosures(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, touchLiveClosures, dollar_1)
 	if err != nil {
 		return nil, err
 	}

@@ -98,12 +98,12 @@ FROM objects AS o, ct
 WHERE key = any($1::varchar [])
 FOR KEY SHARE OF o;
 
--- name: GetPresentObjects :many
+-- name: GetLiveObjects :many
 -- GC-marked objects may vanish from S3 any moment, so they count as absent.
 SELECT key FROM objects
 WHERE key = any($1::varchar []) AND deleted_at IS NULL;
 
--- name: TouchPresentClosures :many
+-- name: TouchLiveClosures :many
 -- Rows younger than ten minutes keep their age, since GC cuts off by days.
 -- Locking in byte order stops overlapping callers from deadlocking, and waits
 -- for a GC delete in flight.

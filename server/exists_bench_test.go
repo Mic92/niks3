@@ -31,7 +31,7 @@ func BenchmarkTouchPresent(b *testing.B) {
 			b.ResetTimer()
 
 			for range b.N {
-				_, err := q.TouchPresentClosures(b.Context(), keys)
+				_, err := q.TouchLiveClosures(b.Context(), keys)
 				ok(b, err)
 			}
 		})
@@ -62,7 +62,7 @@ func BenchmarkTouchPresentConcurrent(b *testing.B) {
 				b.SetParallelism(callers)
 				b.RunParallel(func(pb *testing.PB) {
 					for pb.Next() {
-						_, err := q.TouchPresentClosures(b.Context(), keys)
+						_, err := q.TouchLiveClosures(b.Context(), keys)
 						ok(b, err)
 					}
 				})

@@ -113,7 +113,7 @@ func TestExistsRefreshesOnlyStaleClosures(t *testing.T) {
 		 ($1, timezone('UTC', now()) - interval '1 minute'), ($2, timezone('UTC', now()) - interval '1 hour')`, fresh, stale)
 	ok(t, err)
 
-	exists, err := pg.New(service.Pool).TouchPresentClosures(ctx, []string{fresh, stale})
+	exists, err := pg.New(service.Pool).TouchLiveClosures(ctx, []string{fresh, stale})
 	ok(t, err)
 
 	if len(exists) != 2 {
