@@ -157,7 +157,8 @@ testers.nixosTest {
     with subtest("allowed service account can push via workload identity"):
       print(machine.succeed(push.format("builder", path)))
       hash = path.removeprefix("/nix/store/").split("-")[0]
-      machine.succeed(f"curl -sf -H 'Authorization: Bearer ${apiToken}' -I http://localhost:${toString nodePort}/api/objects/{hash}.narinfo")
+      exists = machine.succeed(f"curl -sf -H 'Authorization: Bearer ${apiToken}' --json '{{\"keys\":[\"{hash}.narinfo\"]}}' http://localhost:${toString nodePort}/api/objects/exists")
+      assert f"{hash}.narinfo" in exists, exists
 
     with subtest("write scope does not grant admin"):
       status = "curl -s -o /dev/null -w '%{{http_code}}' -H \"Authorization: Bearer $(cat /tmp/{}.jwt)\" http://localhost:${toString nodePort}/api/gc/status"

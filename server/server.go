@@ -657,7 +657,6 @@ func (s *Service) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/uploads/complete", s.RequireScope(oidc.ScopeWrite, s.CompleteUploadHandler))
 	mux.HandleFunc("POST /api/uploads/skipped", s.RequireScope(oidc.ScopeWrite, s.SkippedUploadsHandler))
 	mux.HandleFunc("POST /api/multipart/request-parts", s.RequireScope(oidc.ScopeWrite, s.RequestMorePartsHandler))
-	mux.HandleFunc("HEAD /api/objects/{key...}", s.RequireScope(oidc.ScopeWrite, s.ObjectExistsHandler))
 	mux.HandleFunc("POST /api/closures/exists", s.RequireScope(oidc.ScopeWrite, s.ClosuresExistHandler))
 	mux.HandleFunc("POST /api/objects/exists", s.RequireScope(oidc.ScopeWrite, s.ObjectsExistHandler))
 	mux.HandleFunc("POST /api/objects/present", s.RequireScope(oidc.ScopeWrite, s.PresentHandler))
