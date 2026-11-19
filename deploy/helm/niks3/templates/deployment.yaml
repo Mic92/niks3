@@ -55,6 +55,10 @@ spec:
               value: ":5751"
             - name: NIKS3_DB_FILE
               value: /secrets/db/{{ .Values.database.secretKey }}
+            {{- with .Values.database.rdsIAMRegion }}
+            - name: NIKS3_DB_RDS_IAM_REGION
+              value: {{ . | quote }}
+            {{- end }}
             - name: NIKS3_API_TOKEN_PATH
               value: /secrets/token/token
             - name: NIKS3_S3_ENDPOINT
