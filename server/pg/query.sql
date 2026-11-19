@@ -288,19 +288,14 @@ roots AS (
     UNION
     SELECT unnest(roots || key) FROM pending_closures
 ),
--- Find all objects reachable from a root
-closure_reach AS (
-    SELECT o.key, o.refs
-    FROM objects o
-    INNER JOIN roots r ON o.key = r.key
-    UNION
-    -- Recursively add all referenced objects
-    SELECT o.key, o.refs
-    FROM objects o
-    INNER JOIN closure_reach cr ON o.key = ANY(cr.refs)
-),
+-- Everything a root reaches. Only keys are carried along.
 reachable_objects AS (
-    SELECT DISTINCT key FROM closure_reach
+    SELECT key::varchar FROM roots
+    UNION
+    SELECT ref
+    FROM reachable_objects AS ro
+    INNER JOIN objects AS o ON ro.key = o.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
 ),
 stale_objects AS (
     SELECT o.key
