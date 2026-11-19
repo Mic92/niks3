@@ -542,3 +542,38 @@ func TestStreamPushStopsWhenCanceled(t *testing.T) {
 		t.Fatal("Run still waits for input")
 	}
 }
+
+func TestStreamPushLogLine(t *testing.T) {
+	t.Parallel()
+
+	pusher := client.NewStreamPusher(func(context.Context, []string) (map[string]client.PathReport, error) {
+		return nil, errors.New("a log line must not push paths")
+	}, 1, 10)
+	pusher.PushLog = func(_ context.Context, drvPath string) error {
+		if drvPath == "/nix/store/lost.drv" {
+			return errors.New("no build log")
+		}
+
+		return nil
+	}
+
+	results := runPusher(t, pusher, func(w io.Writer) {
+		_, _ = io.WriteString(w, `{"id":3,"log":"/nix/store/failed.drv"}`+"\n"+
+			`{"id":4,"log":"/nix/store/lost.drv"}`+"\n"+
+			`{"log":"/nix/store/both.drv","paths":["/nix/store/a"]}`+"\n")
+	})
+
+	status := map[string]string{}
+	for _, r := range results {
+		status[fmt.Sprintf("%d %s", r.ID, r.Path)] = r.Status
+	}
+
+	want := map[string]string{
+		"3 /nix/store/failed.drv":                                  "ok",
+		"4 /nix/store/lost.drv":                                    "error",
+		`0 {"log":"/nix/store/both.drv","paths":["/nix/store/a"]}`: "error",
+	}
+	if !maps.Equal(status, want) {
+		t.Fatalf("got %v, want %v", status, want)
+	}
+}

@@ -135,10 +135,6 @@ func createPendingClosureInner(
 	s *Service,
 	verifyS3 bool,
 ) (*PendingClosure, error) {
-	if !strings.HasSuffix(closureKey, ".narinfo") {
-		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
-	}
-
 	pendingClosure, recorded, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap, verifyS3)
 	if err != nil {
 		return nil, err

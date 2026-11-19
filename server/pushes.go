@@ -19,7 +19,7 @@ type createPushRequest struct {
 
 // CreatePushHandler handles POST /api/pushes.
 //
-// A push names the narinfo keys it wants to publish (roots) and lists every
+// A push names the narinfos, or build logs, it wants to publish (roots) and lists every
 // object under them once. The server keeps one pending row per object and
 // answers with the objects the client has to upload. Completing the push
 // publishes a closure row for each root.
@@ -51,14 +51,16 @@ func (s *Service) CreatePushHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, root := range req.Roots {
-		if !strings.HasSuffix(root, ".narinfo") {
-			http.Error(w, "root key must end with .narinfo: "+root, http.StatusBadRequest)
+		object, found := objectsMap[root]
+		if !found {
+			http.Error(w, "root is not among the objects: "+root, http.StatusBadRequest)
 
 			return
 		}
 
-		if _, found := objectsMap[root]; !found {
-			http.Error(w, "root is not among the objects: "+root, http.StatusBadRequest)
+		// A failed build has no narinfo that could keep its log.
+		if object.Type != objectTypeNarinfo && object.Type != objectTypeBuildLog {
+			http.Error(w, "root must be a narinfo or a build log: "+root, http.StatusBadRequest)
 
 			return
 		}

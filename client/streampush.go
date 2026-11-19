@@ -32,7 +32,10 @@ type StreamPushFunc func(ctx context.Context, paths []string) (map[string]PathRe
 // one per finished build so its outputs commit together.
 type StreamRequest struct {
 	ID    uint64   `json:"id,omitempty"` // echoed in each result so concurrent requests may share paths
-	Paths []string `json:"paths"`
+	Paths []string `json:"paths,omitempty"`
+	// Derivation of a failed build, in place of Paths. Its kept log is
+	// pushed and the one result names the derivation.
+	Log string `json:"log,omitempty"`
 }
 
 // A farm worker's QueryValidPaths request names a whole closure on one line.
@@ -58,6 +61,9 @@ type StreamResult struct {
 // are busy, incoming paths accumulate into one batch of up to `batchSize`.
 // A line starting with `{` is a StreamRequest and forms a batch of its own.
 type StreamPusher struct {
+	// Pushes the log of a derivation. Without it a log request is refused.
+	PushLog func(ctx context.Context, drvPath string) error
+
 	push      StreamPushFunc
 	parallel  int
 	batchSize int
@@ -79,13 +85,18 @@ type streamJob struct {
 	id     uint64
 	paths  []string
 	whole  bool   // a request line: all or nothing
+	log    bool   // paths holds one derivation whose log is wanted
 	reject string // why the line cannot be pushed
 }
 
 func parseStreamRequest(line string) streamJob {
 	var req StreamRequest
-	if err := json.Unmarshal([]byte(line), &req); err != nil || len(req.Paths) == 0 {
+	if err := json.Unmarshal([]byte(line), &req); err != nil || (len(req.Paths) == 0) == (req.Log == "") {
 		return streamJob{paths: []string{line}, reject: "bad request line"}
+	}
+
+	if req.Log != "" {
+		return streamJob{id: req.ID, paths: []string{req.Log}, log: true}
 	}
 
 	return streamJob{id: req.ID, paths: req.Paths, whole: true}
@@ -236,6 +247,8 @@ func (s *StreamPusher) answer(ctx context.Context, j streamJob) []StreamResult {
 		return j.failed(j.reject)
 	case ctx.Err() != nil:
 		return j.failed(ctx.Err().Error())
+	case j.log:
+		return s.uploadLog(ctx, j)
 	case j.whole:
 		return s.uploadRequest(ctx, j)
 	default:
@@ -250,6 +263,20 @@ func okResult(id uint64, path string, report PathReport) StreamResult {
 	}
 
 	return res
+}
+
+func (s *StreamPusher) uploadLog(ctx context.Context, j streamJob) []StreamResult {
+	if s.PushLog == nil {
+		return j.failed("build logs cannot be pushed here")
+	}
+
+	if err := s.PushLog(ctx, j.paths[0]); err != nil {
+		slog.Error("Build log upload failed", "error", err, "drv", j.paths[0])
+
+		return j.failed(err.Error())
+	}
+
+	return []StreamResult{{ID: j.id, Path: j.paths[0], Status: streamStatusOK}}
 }
 
 // All or nothing: the outputs of one build must not be published partially.

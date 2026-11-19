@@ -331,6 +331,7 @@ func TestPush_RejectsBadRequests(t *testing.T) {
 		"no roots":            {"roots": []string{}, "objects": pkgObjects(base)},
 		"no objects":          {"roots": []string{base + ".narinfo"}, "objects": []any{}},
 		"bad root":            {"roots": []string{base}, "objects": pkgObjects(base)},
+		"root is a NAR":       {"roots": []string{narKeyFor(base)}, "objects": pkgObjects(base)},
 		"root not in objects": {"roots": []string{strings.Repeat("b", 32) + ".narinfo"}, "objects": pkgObjects(base)},
 	}
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"compress/bzip2"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -162,4 +163,44 @@ func CompressBuildLog(logPath string) (*CompressedBuildLogInfo, error) {
 		TempFile: tempFile.Name(),
 		Size:     stat.Size(),
 	}, nil
+}
+
+// PushBuildLog uploads the log Nix kept for a derivation, as a root of its
+// own. A failed build has no output whose narinfo would reference the log.
+func (c *Client) PushBuildLog(ctx context.Context, drvPath string) error {
+	logPath, err := GetBuildLogPath(drvPath)
+	if err != nil {
+		return err
+	}
+
+	if logPath == "" {
+		return fmt.Errorf("no build log of %s", drvPath)
+	}
+
+	key := "log/" + filepath.Base(drvPath)
+	object := ObjectWithRefs{Key: key, Type: ObjectTypeBuildLog, Refs: []string{}}
+
+	push, err := c.CreatePush(ctx, []ClosureInfo{{NarinfoKey: key, Objects: []ObjectWithRefs{object}}}, false)
+	if err != nil {
+		return fmt.Errorf("starting the push of %s: %w", key, err)
+	}
+
+	if pending, wanted := push.PendingObjects[key]; wanted {
+		compressed, err := CompressBuildLog(logPath)
+		if err != nil {
+			return err
+		}
+
+		defer func() {
+			if err := compressed.Cleanup(); err != nil {
+				slog.Warn("Failed to remove the compressed build log", "key", key, "error", err)
+			}
+		}()
+
+		if err := c.UploadBuildLogToPresignedURL(ctx, pending.PresignedURL, compressed); err != nil {
+			return fmt.Errorf("uploading %s: %w", key, err)
+		}
+	}
+
+	return c.CompletePendingClosure(ctx, "pushes", push.ID)
 }
