@@ -18,6 +18,9 @@ import (
 // GCTaskStore only dedupes within a process.
 const gcAdvisoryLockKey int64 = 0x6e696b73336763 // "niks3gc"
 
+// recordingPushesLockKey makes a mark wait for pushes that are recording their objects.
+const recordingPushesLockKey int64 = 0x6e696b73337075 // "niks3pu"
+
 var errGCAlreadyRunning = errors.New("another garbage collection is already running on this database")
 
 // acquireGCLock takes the GC advisory lock on a dedicated connection. The

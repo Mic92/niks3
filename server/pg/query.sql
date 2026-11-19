@@ -11,6 +11,33 @@ RETURNING *;
 -- name: CommitPush :one
 SELECT commit_push($1::bigint)::bigint;
 
+-- name: AwaitRecordingPushes :exec
+-- Waits until every push that is recording its objects has committed.
+SELECT pg_advisory_xact_lock(sqlc.arg(lock_key)::bigint);
+
+-- name: JoinRecordingPushes :exec
+-- Makes the next mark wait until this transaction has committed.
+SELECT pg_advisory_xact_lock_shared(sqlc.arg(lock_key)::bigint);
+
+-- name: RecordPendingObjects :many
+-- Records the objects of a push that are not live, or that would gain
+-- references or a size. With every_object it records all of them.
+INSERT INTO pending_objects (pending_closure_id, key, refs, size)
+SELECT
+    sqlc.arg(pending_closure_id)::bigint,
+    t.key,
+    t.refs,
+    t.size
+FROM jsonb_to_recordset(sqlc.arg(objects)::jsonb) AS t (key varchar, refs varchar [], size bigint)
+WHERE sqlc.arg(every_object)::bool OR NOT EXISTS (
+    SELECT 1 FROM objects AS o
+    WHERE o.key = t.key
+      AND o.deleted_at IS NULL
+      AND o.refs @> t.refs
+      AND (o.size IS NOT NULL OR t.size IS NULL)
+)
+RETURNING key;
+
 -- name: InsertPendingObjects :copyfrom
 INSERT INTO pending_objects (pending_closure_id, key, refs, size) VALUES ($1, $2, $3, $4);
 
@@ -251,12 +278,15 @@ WHERE upload_id = $1 AND object_key = $2;
 WITH RECURSIVE ct AS (
     SELECT timezone('UTC', now()) AS now
 ),
--- A pending push was told that the objects it names and the cache has are
--- there, so they keep what they reference like a closure does.
+-- A pending push needs what its rows reference and what its roots reach.
 roots AS (
     SELECT key FROM closures
     UNION
     SELECT key FROM pending_objects
+    UNION
+    SELECT unnest(refs) FROM pending_objects
+    UNION
+    SELECT unnest(roots || key) FROM pending_closures
 ),
 -- Find all objects reachable from a root
 closure_reach AS (

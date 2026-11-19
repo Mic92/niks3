@@ -375,7 +375,7 @@ func TestForceGCDuringPushOffersSweptObject(t *testing.T) {
 		set  func(*testing.T, *server.Service, string, func())
 		at   string
 	}{
-		{"before pending rows", beforeQuery, "InsertPendingClosure"},
+		{"before pending rows", beforeQuery, "JoinRecordingPushes"},
 		{"after presence check", afterQuery, "GetExistingObjects"},
 	} {
 		t.Run(point.name, func(t *testing.T) {

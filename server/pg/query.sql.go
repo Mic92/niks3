@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const awaitRecordingPushes = `-- name: AwaitRecordingPushes :exec
+SELECT pg_advisory_xact_lock($1::bigint)
+`
+
+// Waits until every push that is recording its objects has committed.
+func (q *Queries) AwaitRecordingPushes(ctx context.Context, lockKey int64) error {
+	_, err := q.db.Exec(ctx, awaitRecordingPushes, lockKey)
+	return err
+}
+
 const claimNarinfos = `-- name: ClaimNarinfos :one
 SELECT claim_narinfos(
     $1::bigint, $2::varchar [], $3::varchar [], $4::jsonb [],
@@ -544,6 +554,16 @@ func (q *Queries) InsertPush(ctx context.Context, arg InsertPushParams) (Pending
 	return i, err
 }
 
+const joinRecordingPushes = `-- name: JoinRecordingPushes :exec
+SELECT pg_advisory_xact_lock_shared($1::bigint)
+`
+
+// Makes the next mark wait until this transaction has committed.
+func (q *Queries) JoinRecordingPushes(ctx context.Context, lockKey int64) error {
+	_, err := q.db.Exec(ctx, joinRecordingPushes, lockKey)
+	return err
+}
+
 const listPins = `-- name: ListPins :many
 SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
@@ -661,6 +681,10 @@ roots AS (
     SELECT key FROM closures
     UNION
     SELECT key FROM pending_objects
+    UNION
+    SELECT unnest(refs) FROM pending_objects
+    UNION
+    SELECT unnest(roots || key) FROM pending_closures
 ),
 closure_reach AS (
     SELECT o.key, o.refs
@@ -702,8 +726,7 @@ FROM stale_objects, ct
 WHERE objects.key = stale_objects.key
 `
 
-// A pending push was told that the objects it names and the cache has are
-// there, so they keep what they reference like a closure does.
+// A pending push needs what its rows reference and what its roots reach.
 // Find all objects reachable from a root
 // deleted_at moves past first_deleted_at when a later mark finds a tombstoned
 // object still unreachable. The sweep deletes only those: a push that
@@ -714,6 +737,52 @@ func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const recordPendingObjects = `-- name: RecordPendingObjects :many
+INSERT INTO pending_objects (pending_closure_id, key, refs, size)
+SELECT
+    $1::bigint,
+    t.key,
+    t.refs,
+    t.size
+FROM jsonb_to_recordset($2::jsonb) AS t (key varchar, refs varchar [], size bigint)
+WHERE $3::bool OR NOT EXISTS (
+    SELECT 1 FROM objects AS o
+    WHERE o.key = t.key
+      AND o.deleted_at IS NULL
+      AND o.refs @> t.refs
+      AND (o.size IS NOT NULL OR t.size IS NULL)
+)
+RETURNING key
+`
+
+type RecordPendingObjectsParams struct {
+	PendingClosureID int64  `json:"pending_closure_id"`
+	Objects          []byte `json:"objects"`
+	EveryObject      bool   `json:"every_object"`
+}
+
+// Records the objects of a push that are not live, or that would gain
+// references or a size. With every_object it records all of them.
+func (q *Queries) RecordPendingObjects(ctx context.Context, arg RecordPendingObjectsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, recordPendingObjects, arg.PendingClosureID, arg.Objects, arg.EveryObject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recountObjectStats = `-- name: RecountObjectStats :exec

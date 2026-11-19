@@ -121,6 +121,10 @@ func (s *Service) cleanupOrphanObjects(ctx context.Context, gracePeriod int32, o
 	}
 
 	for range marks {
+		if err := pg.New(s.Pool).AwaitRecordingPushes(ctx, recordingPushesLockKey); err != nil {
+			return stats, fmt.Errorf("failed to wait for recording pushes: %w", err)
+		}
+
 		marked, err := pg.New(s.Pool).MarkStaleObjects(ctx)
 		if err != nil {
 			return stats, fmt.Errorf("failed to mark stale objects: %w", err)

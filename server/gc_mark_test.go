@@ -3,6 +3,8 @@ package server_test
 import (
 	"testing"
 	"time"
+
+	"github.com/Mic92/niks3/server"
 )
 
 func TestGC_KeepsWhatAPushCommittedDuringTheMark(t *testing.T) {
@@ -59,4 +61,53 @@ func TestGC_KeepsWhatAPushCommittedDuringTheMark(t *testing.T) {
 	if kept := countRows(t, service, `SELECT count(*) FROM objects WHERE key = any($1)`, depKeys); kept != 2 {
 		t.Fatalf("the cache holds %d of the 2 objects the pushed path depends on", kept)
 	}
+}
+
+// openPush starts a push of top, which depends on dep, and leaves it open.
+func openPush(t *testing.T, service *server.Service, top, dep build) string {
+	t.Helper()
+
+	return createPush(t, service, top.keys(), []map[string]any{
+		{"key": top.keys()[0], "type": "narinfo", "refs": []string{top.nars[0], dep.keys()[0]}},
+		{"key": top.nars[0], "type": "nar", "refs": []string{}},
+		{"key": dep.keys()[0], "type": "narinfo", "refs": []string{dep.nars[0]}},
+		{"key": dep.nars[0], "type": "nar", "refs": []string{}},
+	}).ID
+}
+
+func TestGC_WaitsForAPushThatIsRecording(t *testing.T) {
+	t.Parallel()
+
+	service := claimService(t)
+	defer service.Close()
+
+	dep, top := newBuild(1, 1, 1), newBuild(2, 1, 1)
+	completePush(t, service, dep.push(t, service))
+
+	_, err := service.Pool.Exec(t.Context(), `DELETE FROM closures`)
+	ok(t, err)
+
+	collected := make(chan struct{})
+
+	// The push has read that dep is live and has not committed its rows.
+	afterQuery(t, service, "RecordPendingObjects", func() {
+		go func() {
+			defer close(collected)
+
+			collectGarbage(t, service)
+		}()
+
+		for countRows(t, service, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND datname = current_database()`) == 0 {
+			select {
+			case <-collected:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	})
+
+	push := openPush(t, service, top, dep)
+	<-collected
+	completePush(t, service, push)
 }

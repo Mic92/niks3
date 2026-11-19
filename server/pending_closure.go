@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -138,14 +139,12 @@ func createPendingClosureInner(
 		return nil, fmt.Errorf("closure key must end with .narinfo: %s", closureKey)
 	}
 
-	// The pending rows shield every object from GC, so write them before
-	// deciding what is present.
-	pendingClosure, allObjects, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap)
+	pendingClosure, recorded, err := insertPendingClosure(ctx, pool, closureKey, roots, objectsMap, verifyS3)
 	if err != nil {
 		return nil, err
 	}
 
-	uploadObjects, err := s.objectsToUpload(ctx, pool, allObjects, objectsMap, verifyS3)
+	uploadObjects, err := s.objectsToUpload(ctx, pool, recorded, objectsMap, verifyS3)
 	if err != nil {
 		// The client gets no response and never commits, so drop the rows.
 		if delErr := pg.New(pool).DeletePendingClosure(context.WithoutCancel(ctx), pendingClosure.ID); delErr != nil {
@@ -162,14 +161,15 @@ func createPendingClosureInner(
 	}, nil
 }
 
-// insertPendingClosure records the closure and a pending row for each of its
-// objects in one transaction.
+// insertPendingClosure records the closure and its objects that are not live,
+// or every object, and returns those rows.
 func insertPendingClosure(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	closureKey string,
 	roots []string,
 	objectsMap map[string]objectWithRefs,
+	everyObject bool,
 ) (pg.PendingClosure, []pg.InsertPendingObjectsParams, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -183,6 +183,10 @@ func insertPendingClosure(
 
 	queries := pg.New(tx)
 
+	if err = queries.JoinRecordingPushes(ctx, recordingPushesLockKey); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to join recording pushes: %w", err)
+	}
+
 	var pendingClosure pg.PendingClosure
 
 	if roots != nil {
@@ -195,19 +199,43 @@ func insertPendingClosure(
 		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending closure: %w", err)
 	}
 
-	allObjects := make([]pg.InsertPendingObjectsParams, 0, len(objectsMap))
-
-	for objectKey, obj := range objectsMap {
-		allObjects = append(allObjects, pg.InsertPendingObjectsParams{
-			PendingClosureID: pendingClosure.ID,
-			Key:              objectKey,
-			Refs:             obj.Refs,
-			Size:             optionalSize(obj.NarSize),
-		})
+	type object struct {
+		Key  string   `json:"key"`
+		Refs []string `json:"refs"`
+		Size *int64   `json:"size"`
 	}
 
-	if _, err = queries.InsertPendingObjects(ctx, allObjects); err != nil {
-		return pg.PendingClosure{}, nil, fmt.Errorf("failed to insert pending objects: %w", err)
+	objects := make([]object, 0, len(objectsMap))
+	for key, obj := range objectsMap {
+		row := object{Key: key, Refs: append([]string{}, obj.Refs...)}
+		if size := optionalSize(obj.NarSize); size.Valid {
+			row.Size = &size.Int64
+		}
+
+		objects = append(objects, row)
+	}
+
+	var encoded []byte
+
+	if encoded, err = json.Marshal(objects); err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to encode objects: %w", err)
+	}
+
+	var keys []string
+
+	keys, err = queries.RecordPendingObjects(ctx, pg.RecordPendingObjectsParams{
+		PendingClosureID: pendingClosure.ID,
+		Objects:          encoded,
+		EveryObject:      everyObject,
+	})
+	if err != nil {
+		return pg.PendingClosure{}, nil, fmt.Errorf("failed to record pending objects: %w", err)
+	}
+
+	recorded := make([]pg.InsertPendingObjectsParams, 0, len(keys))
+	for _, key := range keys {
+		obj := objectsMap[key]
+		recorded = append(recorded, pg.InsertPendingObjectsParams{PendingClosureID: pendingClosure.ID, Key: key, Refs: obj.Refs, Size: optionalSize(obj.NarSize)})
 	}
 
 	if err = tx.Commit(ctx); err != nil {
@@ -216,21 +244,20 @@ func insertPendingClosure(
 
 	committed = true
 
-	return pendingClosure, allObjects, nil
+	return pendingClosure, recorded, nil
 }
 
-// objectsToUpload returns the pending rows the client must upload: objects
-// the database does not consider live and, with verifyS3, those missing from
-// S3 or pointing at a NAR missing from S3.
+// objectsToUpload returns the recorded rows the client must upload: objects
+// that are not live and, with verifyS3, objects whose file or NAR S3 has lost.
 func (s *Service) objectsToUpload(
 	ctx context.Context,
 	pool *pgxpool.Pool,
-	allObjects []pg.InsertPendingObjectsParams,
+	recorded []pg.InsertPendingObjectsParams,
 	objectsMap map[string]objectWithRefs,
 	verifyS3 bool,
 ) ([]pg.InsertPendingObjectsParams, error) {
-	keys := make([]string, 0, len(allObjects))
-	for _, row := range allObjects {
+	keys := make([]string, 0, len(recorded))
+	for _, row := range recorded {
 		keys = append(keys, row.Key)
 	}
 
@@ -259,9 +286,9 @@ func (s *Service) objectsToUpload(
 		}
 	}
 
-	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(allObjects)-len(present))
+	uploadObjects := make([]pg.InsertPendingObjectsParams, 0, len(recorded))
 
-	for _, row := range allObjects {
+	for _, row := range recorded {
 		if !present[row.Key] {
 			uploadObjects = append(uploadObjects, row)
 		}
