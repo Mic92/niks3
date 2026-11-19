@@ -15,7 +15,7 @@ import (
 func (s *Service) ClosuresExistHandler(w http.ResponseWriter, r *http.Request) {
 	// Check and refresh in one statement, so a closure that GC is deleting
 	// is not reported.
-	if keys, ok := s.existing(w, r, pg.New(s.Pool).TouchPresentClosures); ok {
+	if keys, ok := s.existing(w, r, pg.New(s.Pool).TouchLiveClosures); ok {
 		writeExisting(w, api.ExistsResponse{Exists: keys})
 	}
 }
@@ -23,7 +23,7 @@ func (s *Service) ClosuresExistHandler(w http.ResponseWriter, r *http.Request) {
 // ObjectsExistHandler answers which narinfo keys can be fetched. That
 // includes the dependencies of a pushed closure, which are deleted with it.
 func (s *Service) ObjectsExistHandler(w http.ResponseWriter, r *http.Request) {
-	if keys, ok := s.existing(w, r, pg.New(s.Pool).GetPresentObjects); ok {
+	if keys, ok := s.existing(w, r, pg.New(s.Pool).GetLiveObjects); ok {
 		writeExisting(w, api.ExistsResponse{Exists: keys})
 	}
 }
@@ -31,7 +31,7 @@ func (s *Service) ObjectsExistHandler(w http.ResponseWriter, r *http.Request) {
 // PresentHandler serves /api/objects/present, the former name of
 // /api/closures/exists.
 func (s *Service) PresentHandler(w http.ResponseWriter, r *http.Request) {
-	if keys, ok := s.existing(w, r, pg.New(s.Pool).TouchPresentClosures); ok {
+	if keys, ok := s.existing(w, r, pg.New(s.Pool).TouchLiveClosures); ok {
 		writeExisting(w, api.PresentResponse{Present: keys})
 	}
 }

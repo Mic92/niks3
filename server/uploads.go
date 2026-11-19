@@ -470,7 +470,7 @@ func (s *Service) CompleteUploadHandler(w http.ResponseWriter, r *http.Request) 
 
 	// The registration can arrive after the commit recorded the object.
 	if !registered {
-		present, err := pg.New(s.Pool).GetPresentObjects(r.Context(), []string{req.ObjectKey})
+		present, err := pg.New(s.Pool).GetLiveObjects(r.Context(), []string{req.ObjectKey})
 		if err != nil || len(present) == 0 {
 			http.Error(w, "object is not pending upload", http.StatusNotFound)
 
