@@ -3,14 +3,18 @@
 // Every step is one statement's snapshot, one commit or one S3 call.
 //
 // Push:
-//   1. Commit a pending row for every object of the closure.
-//   2. Look up which objects are live. The lookup waits for rows the sweep
-//      holds, and offers the rest for upload.
+//   1. In one transaction, under the shared lock: read which objects of the
+//      closure are live and record a pending row for the others. A push with
+//      verify_s3 records every object.
+//   2. Look up which recorded objects are live. The lookup waits for rows the
+//      sweep holds, and offers the rest for upload.
 //   3. Upload, register and commit.
 //
 // GC:
 //   1. Drop old closures.
-//   2. Mark, once or twice. The statement decides on its snapshot and writes
+//   2. Mark, once or twice. Each mark first waits for the lock, so no push is
+//      between reading and recording when the mark takes its snapshot or
+//      after. The statement decides on its snapshot and writes
 //      later: a live object nothing reaches becomes a tombstone, a tombstone
 //      nothing reaches is confirmed.
 //   3. Sweep confirmed tombstones: select on a snapshot, lock, recheck pending
@@ -19,7 +23,7 @@
 // The model has no clock. A push can expire at any time and the sweep has no
 // grace period, so safety does not rest on either.
 //
-// Check with (about 25 million states, several minutes):
+// Check with (about 50 million states, 20 minutes):
 //   quint verify --backend tlc --main gc_pushes --invariant safe spec/pushes.qnt
 //
 // A client that stops is a push that takes no further step. The older
@@ -30,13 +34,14 @@ module gc_pushes {
   // Tomb: one mark found it unreachable, or its push expired. Dead: a later mark confirmed it.
   type Row = NoRow | Live | Tomb | Dead
   type Obj = { row: Row, refs: Set[str] }
-  type Phase = Idle | Inserted | Created | Done | Expired
+  type Phase = Idle | Recording | Inserted | Created | Done | Expired
   type Push = {
     phase: Phase, root: str,
+    rec: Set[str],       // rows the create transaction has not committed yet
     offered: Set[str],   // keys the server told the client to upload
     uploaded: Set[str],  // keys the client has PUT to S3
   }
-  type GcPhase = GIdle | GMark | GMarking | GSweep
+  type GcPhase = GIdle | GMark | GReady | GMarking | GSweep
   type Gc = {
     phase: GcPhase,
     marks: int,          // marks left in this run
@@ -69,10 +74,14 @@ module gc_pushes {
   pure def closureOf(roots: Set[str]): Set[str] = expand(roots, REFS)
 
   pure val noObj: Obj = { row: NoRow, refs: Set() }
-  pure val newPush: Push = { phase: Idle, root: "", offered: Set(), uploaded: Set() }
+  pure val newPush: Push = { phase: Idle, root: "", rec: Set(), offered: Set(), uploaded: Set() }
   pure val idleGc: Gc = { phase: GIdle, marks: 0, stale: Set(), cand: Set(), picked: Set(), s3gone: Set() }
 
   val pendingKeys: Set[str] = CLIENTS.map(c => pend.get(c)).flatten()
+
+  // roots of pushes whose create transaction has committed
+  val openRoots: Set[str] =
+    CLIENTS.filter(c => pushes.get(c).phase == Inserted or pushes.get(c).phase == Created).map(c => pushes.get(c).root)
 
   // rows the sweep holds locked; writers wait, i.e. their action is disabled
   val locked: Set[str] = gc.picked.union(gc.s3gone)
@@ -97,12 +106,24 @@ module gc_pushes {
     gc' = idleGc,
   }
 
-  // InsertPush and InsertPendingObjects, committed
-  action createInsert(c: str, root: str): bool = all {
-    pushes.get(c).phase != Inserted,
-    pushes.get(c).phase != Created,
-    pend' = pend.set(c, closureOf(Set(root))),
-    pushes' = pushes.set(c, { ...newPush, phase: Inserted, root: root }),
+  // RecordPendingObjects reads what is live. A live row that lacks a
+  // reference is recorded too, so the commit adds it.
+  action createRecord(c: str, root: str, every: bool): bool = {
+    val cl = closureOf(Set(root))
+    all {
+      pushes.get(c).phase != Recording,
+      pushes.get(c).phase != Inserted,
+      pushes.get(c).phase != Created,
+      onlyPushes(pushes.set(c, { ...newPush, phase: Recording, root: root, rec:
+        if (every) cl else cl.filter(k => rows.get(k).row != Live or not(REFS.get(k).subseteq(rows.get(k).refs))) })),
+    }
+  }
+
+  // The create transaction commits: the push and its rows become visible.
+  action createCommit(c: str): bool = all {
+    pushes.get(c).phase == Recording,
+    pend' = pend.set(c, pushes.get(c).rec),
+    pushes' = pushes.set(c, { ...pushes.get(c), phase: Inserted, rec: Set() }),
     rows' = rows, s3' = s3, closureRoots' = closureRoots, gc' = gc,
   }
 
@@ -178,12 +199,21 @@ module gc_pushes {
     rows' = rows, s3' = s3, pend' = pend, pushes' = pushes,
   }
 
-  // MarkStaleObjects takes its snapshot. Reachability starts from closures
-  // and pending rows and walks tombstones too.
+  // AwaitRecordingPushes: the lock is free once no create transaction is open.
+  action gcBarrier: bool = all {
+    gc.phase == GMark,
+    CLIENTS.forall(c => pushes.get(c).phase != Recording),
+    onlyGc({ ...gc, phase: GReady }),
+  }
+
+  // MarkStaleObjects takes its snapshot. Reachability starts from closures,
+  // the roots of open pushes, pending rows and what those reference, and
+  // walks tombstones too.
   action gcMarkSnap: bool = {
-    val reach = expand(closureRoots.union(pendingKeys).filter(k => rows.get(k).row != NoRow), KEYS.mapBy(k => rows.get(k).refs))
+    val roots = closureRoots.union(openRoots).union(pendingKeys).union(pendingKeys.map(k => REFS.get(k)).flatten())
+    val reach = expand(roots.filter(k => rows.get(k).row != NoRow), KEYS.mapBy(k => rows.get(k).refs))
     all {
-      gc.phase == GMark,
+      gc.phase == GReady,
       onlyGc({ ...gc, phase: GMarking, stale: KEYS.filter(k =>
         (rows.get(k).row == Live or rows.get(k).row == Tomb) and not(reach.contains(k)) and not(pendingKeys.contains(k))) }),
     }
@@ -257,13 +287,15 @@ module gc_pushes {
   }
 
   action step = any {
-    nondet c = CLIENTS.oneOf() nondet root = KEYS.oneOf() createInsert(c, root),
+    nondet c = CLIENTS.oneOf() nondet root = KEYS.oneOf() nondet every = Set(true, false).oneOf() createRecord(c, root, every),
+    nondet c = CLIENTS.oneOf() createCommit(c),
     nondet c = CLIENTS.oneOf() createLookup(c),
     nondet c = CLIENTS.oneOf() nondet k = KEYS.oneOf() upload(c, k),
     nondet c = CLIENTS.oneOf() nondet k = KEYS.oneOf() register(c, k),
     nondet c = CLIENTS.oneOf() commit(c),
     nondet c = CLIENTS.oneOf() cleanup(c),
     nondet d = closureRoots.powerset().oneOf() nondet m = Set(1, 2).oneOf() gcStart(d, m),
+    gcBarrier,
     gcMarkSnap,
     gcMarkWrite,
     nondet k = KEYS.oneOf() sweepSnap(k),
