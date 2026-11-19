@@ -294,10 +294,14 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND o.deleted_at IS NULL  -- Only mark fresh objects
+        -- Live objects, and tombstoned ones no later mark has seen yet.
+        AND (o.deleted_at IS NULL OR o.deleted_at = o.first_deleted_at)
     ORDER BY o.key COLLATE "C"  -- lock in key order, like commit_pending_closure
-    FOR UPDATE
+    FOR NO KEY UPDATE
 )
+-- deleted_at moves past first_deleted_at when a later mark finds a tombstoned
+-- object still unreachable. The sweep deletes only those: a push that
+-- committed during the first mark is a root of the second.
 UPDATE objects
 SET
     deleted_at = ct.now,
@@ -306,13 +310,13 @@ FROM stale_objects, ct
 WHERE objects.key = stale_objects.key;
 
 -- name: LockObjectsReadyForDeletion :many
--- Tombstoned objects past the grace period, row-locked until the caller's
+-- Objects two marks found unreachable, past the grace period, row-locked until the caller's
 -- transaction ends. Rows a push transaction holds are skipped; the push is
 -- about to treat them as present. Keyset-paginated on key.
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND deleted_at IS NOT NULL
+  AND deleted_at > first_deleted_at
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * sqlc.arg(grace_period_seconds)::int
   AND key > sqlc.arg(after_key)::varchar
   AND NOT EXISTS (

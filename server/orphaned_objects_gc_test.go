@@ -214,6 +214,10 @@ func TestOrphanedObjectsGC(t *testing.T) {
 		t.Error("Orphaned Y NAR SHOULD be marked for deletion")
 	}
 
+	// A second mark confirms them.
+	_, err = queries.MarkStaleObjects(ctx)
+	ok(t, err)
+
 	// Actually delete the objects (simulate full GC)
 	objsToDelete, err := queries.LockObjectsReadyForDeletion(ctx, pg.LockObjectsReadyForDeletionParams{
 		GracePeriodSeconds: 0,
@@ -426,9 +430,11 @@ func TestOrphanedObjectsGCStressTest(t *testing.T) {
 	_, err := server.DeleteClosuresBefore(ctx, service, cutoffTime)
 	ok(t, err)
 
-	// ===== Run GC =====
-	_, err = queries.MarkStaleObjects(ctx)
-	ok(t, err)
+	// ===== Run GC: the second mark confirms the first =====
+	for range 2 {
+		_, err = queries.MarkStaleObjects(ctx)
+		ok(t, err)
+	}
 
 	// Get objects ready for deletion
 	objsToDelete, err := queries.LockObjectsReadyForDeletion(ctx, pg.LockObjectsReadyForDeletionParams{

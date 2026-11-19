@@ -622,7 +622,7 @@ const lockObjectsReadyForDeletion = `-- name: LockObjectsReadyForDeletion :many
 SELECT key
 FROM objects
 WHERE first_deleted_at IS NOT NULL
-  AND deleted_at IS NOT NULL
+  AND deleted_at > first_deleted_at
   AND first_deleted_at <= timezone('UTC', now()) - interval '1 second' * $1::int
   AND key > $2::varchar
   AND NOT EXISTS (
@@ -641,7 +641,7 @@ type LockObjectsReadyForDeletionParams struct {
 	LimitCount         int32  `json:"limit_count"`
 }
 
-// Tombstoned objects past the grace period, row-locked until the caller's
+// Objects two marks found unreachable, past the grace period, row-locked until the caller's
 // transaction ends. Rows a push transaction holds are skipped; the push is
 // about to treat them as present. Keyset-paginated on key.
 func (q *Queries) LockObjectsReadyForDeletion(ctx context.Context, arg LockObjectsReadyForDeletionParams) ([]string, error) {
@@ -731,9 +731,10 @@ stale_objects AS (
             FROM pending_objects AS po
             WHERE po.key = o.key
         )
-        AND o.deleted_at IS NULL  -- Only mark fresh objects
+        -- Live objects, and tombstoned ones no later mark has seen yet.
+        AND (o.deleted_at IS NULL OR o.deleted_at = o.first_deleted_at)
     ORDER BY o.key COLLATE "C"  -- lock in key order, like commit_pending_closure
-    FOR UPDATE
+    FOR NO KEY UPDATE
 )
 UPDATE objects
 SET
@@ -746,6 +747,9 @@ WHERE objects.key = stale_objects.key
 // A pending push was told that the objects it names and the cache has are
 // there, so they keep what they reference like a closure does.
 // Find all objects reachable from a root
+// deleted_at moves past first_deleted_at when a later mark finds a tombstoned
+// object still unreachable. The sweep deletes only those: a push that
+// committed during the first mark is a root of the second.
 func (q *Queries) MarkStaleObjects(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, markStaleObjects)
 	if err != nil {
