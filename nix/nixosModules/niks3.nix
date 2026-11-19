@@ -249,6 +249,14 @@ let
       "--mtls-bound-subject-read"
       s
     ]) cfg.nginx.mtls.boundSubjectsRead
+    ++ lib.concatMap (s: [
+      "--mtls-read-pin"
+      s
+    ]) cfg.nginx.mtls.readPins
+    ++ lib.optionals (cfg.nginx.mtls.readPins != [ ]) [
+      "--pin-read-grace"
+      cfg.readProxy.pinReadGrace
+    ]
   )
   ++ lib.optional cfg.readProxy.enable "--enable-read-proxy"
   ++ lib.optionals (cfg.readProxy.redirectTTL != null) [
@@ -576,6 +584,17 @@ in
           the object until it expires.
         '';
       };
+
+      pinReadGrace = lib.mkOption {
+        type = lib.types.str;
+        default = "1h";
+        example = "30m";
+        description = ''
+          Grace period after a pin moves before the previous target becomes
+          unreadable. A pull in progress completes. A rollback reads the
+          previous generation again.
+        '';
+      };
     };
 
     nginx = {
@@ -663,6 +682,38 @@ in
             nginx demands a cert on every connection.
           '';
         };
+
+        readPins = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "CN=*=host-{cn}" ];
+          description = ''
+            Each entry is a rule `<subject-glob>=<pin-pattern>`.
+            The rule splits at the last `=`.
+            The subject glob matches the subject DN of the cert.
+            In the pin pattern, `{cn}` becomes the common name of the cert.
+            The result is a glob over pin names.
+            A cert that matches `boundSubjects` or `boundSubjectsRead` is not pin-scoped.
+            Implies `require = true`, so nginx demands a cert on every connection.
+            Requires `boundSubjects`.
+
+            A cert that matches a pin-scoped read rule is pin-scoped.
+            A bearer or OIDC token sent on the same connection is ignored.
+            Use a narrower subject glob than `CN=*` if token writers also present certs.
+
+            This option is repeatable (via `--mtls-read-pin`).
+            The grace period for reading recently-moved pins is controlled by
+            `services.niks3.readProxy.pinReadGrace` or flag `--pin-read-grace`,
+            which also reads from environment variable `NIKS3_PIN_READ_GRACE`.
+
+            The server refuses to start when this option is set and `boundSubjects` is empty.
+
+            A cert whose CN is not a valid pin name (`^[a-zA-Z0-9._-]+$`) is never pin-scoped.
+
+            niks3 keeps a `pin_objects` row per object in each pin closure and fills it on each pin write,
+            also when no rule is set (so that rules can be enabled later without re-pinning).
+          '';
+        };
       };
     };
 
@@ -736,6 +787,10 @@ in
       {
         assertion = !(cfg.s3.useIAM && (cfg.s3.accessKeyFile != null || cfg.s3.secretKeyFile != null));
         message = "s3.useIAM cannot be combined with s3.accessKeyFile / s3.secretKeyFile";
+      }
+      {
+        assertion = cfg.nginx.mtls.readPins == [ ] || cfg.nginx.mtls.boundSubjects != [ ];
+        message = "services.niks3.nginx.mtls.readPins requires services.niks3.nginx.mtls.boundSubjects to be set";
       }
     ];
 
@@ -920,7 +975,12 @@ in
         extraConfig = lib.optionalString cfg.nginx.mtls.enable ''
           ssl_client_certificate ${cfg.nginx.mtls.clientCAFile};
           ssl_verify_client ${
-            if cfg.nginx.mtls.require || cfg.nginx.mtls.boundSubjectsRead != [ ] then "on" else "optional"
+            if
+              cfg.nginx.mtls.require || cfg.nginx.mtls.boundSubjectsRead != [ ] || cfg.nginx.mtls.readPins != [ ]
+            then
+              "on"
+            else
+              "optional"
           };
         '';
         locations."/" = {
