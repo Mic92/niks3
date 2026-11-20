@@ -249,6 +249,14 @@ let
       "--mtls-bound-subject-read"
       s
     ]) cfg.nginx.mtls.boundSubjectsRead
+    ++ lib.concatMap (s: [
+      "--mtls-read-pin"
+      s
+    ]) cfg.nginx.mtls.readPins
+    ++ lib.optionals (cfg.nginx.mtls.readPins != [ ]) [
+      "--pin-read-grace"
+      cfg.readProxy.pinReadGrace
+    ]
   )
   ++ lib.optional cfg.readProxy.enable "--enable-read-proxy"
   ++ lib.optionals (cfg.readProxy.redirectTTL != null) [
@@ -576,6 +584,16 @@ in
           the object until it expires.
         '';
       };
+
+      pinReadGrace = lib.mkOption {
+        type = lib.types.str;
+        default = "1h";
+        example = "30m";
+        description = ''
+          How long the previous target of a pin stays readable after the pin
+          moves. A download in progress finishes and a rollback still works.
+        '';
+      };
     };
 
     nginx = {
@@ -663,6 +681,25 @@ in
             nginx demands a cert on every connection.
           '';
         };
+
+        readPins = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "CN=*=host-{cn}" ];
+          description = ''
+            Certificates that may read only what a pin reaches, as
+            `<subject-glob>=<pin-glob>`. `{cn}` in the pin glob stands for the
+            certificate's common name: `CN=*=host-{cn}` lets `CN=web-01` read
+            the pin `host-web-01`.
+
+            A certificate that matches `boundSubjects` or `boundSubjectsRead`
+            keeps its full access. A request that carries a token is judged
+            by the token.
+
+            Needs `boundSubjects`. nginx then asks every connection for a
+            certificate.
+          '';
+        };
       };
     };
 
@@ -736,6 +773,10 @@ in
       {
         assertion = !(cfg.s3.useIAM && (cfg.s3.accessKeyFile != null || cfg.s3.secretKeyFile != null));
         message = "s3.useIAM cannot be combined with s3.accessKeyFile / s3.secretKeyFile";
+      }
+      {
+        assertion = cfg.nginx.mtls.readPins == [ ] || cfg.nginx.mtls.boundSubjects != [ ];
+        message = "services.niks3.nginx.mtls.readPins requires services.niks3.nginx.mtls.boundSubjects to be set";
       }
     ];
 
@@ -920,7 +961,12 @@ in
         extraConfig = lib.optionalString cfg.nginx.mtls.enable ''
           ssl_client_certificate ${cfg.nginx.mtls.clientCAFile};
           ssl_verify_client ${
-            if cfg.nginx.mtls.require || cfg.nginx.mtls.boundSubjectsRead != [ ] then "on" else "optional"
+            if
+              cfg.nginx.mtls.require || cfg.nginx.mtls.boundSubjectsRead != [ ] || cfg.nginx.mtls.readPins != [ ]
+            then
+              "on"
+            else
+              "optional"
           };
         '';
         locations."/" = {
