@@ -115,9 +115,12 @@ in
 
       socketConfig = {
         ListenStream = cfg.socketPath;
-        SocketUser = "root";
-        SocketGroup = "nixbld";
-        SocketMode = "0660";
+        # Only the nix daemon runs the post-build hook. Build users need no
+        # access: a build outside the sandbox could otherwise queue any
+        # store path for upload or flood the daemon.
+        SocketUser = config.nix.daemonUser or "root";
+        SocketGroup = config.nix.daemonGroup or "root";
+        SocketMode = "0600";
         RemoveOnStop = true;
       };
     };
