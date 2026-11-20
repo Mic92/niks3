@@ -60,6 +60,9 @@ func TestIsValidCachePath(t *testing.T) {
 		{"pin empty name", "pins/", false},
 		{"pin nested", "pins/a/b", false},
 		{"pin invalid char", "pins/my app", false},
+		{"pins substring attack", "nar/pins/host-web-01", false},
+		{"xpins substring attack", "xpins/host-web-01", false},
+		{"log pins substring attack", "log/pins/host-web-01", false},
 	}
 
 	for _, tc := range tests {

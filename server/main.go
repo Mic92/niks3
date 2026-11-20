@@ -173,6 +173,10 @@ func validateTLSOptions(opts *options) error {
 		return errors.New("--tls-client-ca and --mtls-proxy-header are mutually exclusive")
 	}
 
+	if len(opts.MTLSPinReadRules) > 0 && len(opts.MTLSBoundSubjects) == 0 {
+		return errors.New("--mtls-read-pin requires --mtls-bound-subject")
+	}
+
 	return nil
 }
 
@@ -254,6 +258,11 @@ func parseArgs() (*options, error) {
 		"Restrict mTLS write auth to certs whose subject DN matches this glob. Repeat for multiple patterns")
 	flag.Var((*stringSliceFlag)(&opts.MTLSBoundSubjectsRead), "mtls-bound-subject-read",
 		"Gate the read proxy behind mTLS for certs whose subject DN matches this glob. Repeat for multiple patterns. Empty = public reads")
+	flag.Var((*pinReadRulesFlag)(&opts.MTLSPinReadRules), "mtls-read-pin",
+		"Let certificates read only what a pin reaches, as <subject-glob>=<pin-glob>. {cn} in the pin glob stands for the common name. Repeatable")
+	flag.DurationVar(&opts.PinReadGrace, "pin-read-grace",
+		getEnvOrDefaultDuration("NIKS3_PIN_READ_GRACE", time.Hour),
+		"How long the previous target of a pin stays readable after the pin moves")
 	flag.StringVar(&opts.TLSCert, "tls-cert", getEnvOrDefault("NIKS3_TLS_CERT", ""),
 		"TLS certificate. When set with --tls-key the server terminates TLS itself instead of expecting a reverse proxy")
 	flag.StringVar(&opts.TLSKey, "tls-key", getEnvOrDefault("NIKS3_TLS_KEY", ""), "TLS private key")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Mic92/niks3/api"
+	"github.com/Mic92/niks3/server/oidc"
 )
 
 // SystemdListenerForTest exposes systemdListener to tests.
@@ -71,6 +72,36 @@ func ResolveDBConnectionString(flagValue, file string, lookupEnv func(string) (s
 	return resolveDBConnectionString(flagValue, file, lookupEnv)
 }
 
+// GlobToLike exports globToLike for tests.
+func GlobToLike(pattern string) string {
+	return globToLike(pattern)
+}
+
+// PinsReach reports whether a client limited to the pins may read key.
+func (s *Service) PinsReach(ctx context.Context, pins []string, key string) (bool, error) {
+	return s.pinScopedMayRead(ctx, principal{readPins: pins}, key)
+}
+
+type PinSets = pinSets
+
+const (
+	PinSetLifetime = pinSetLifetime
+)
+
+func (c *PinSets) Reaches(
+	ctx context.Context, target, key string, load func(context.Context, string) ([]string, error),
+) (bool, error) {
+	return c.reaches(ctx, target, key, load)
+}
+
+// Held is the number of keys in memory.
+func (c *PinSets) Held() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.keys
+}
+
 // ServerTLSConfig is an export of serverTLSConfig for tests.
 func ServerTLSConfig(clientCA string) (*tls.Config, error) {
 	return serverTLSConfig(clientCA)
@@ -124,4 +155,19 @@ func (s *Service) EnsureAbortUploadsRule(ctx context.Context) {
 
 func (s *Service) RefreshInventory(ctx context.Context) error {
 	return s.refreshInventory(ctx)
+}
+
+// CommonName exposes commonName for tests.
+func CommonName(dn string) (string, bool) {
+	return commonName(dn)
+}
+
+// PrincipalFromContext extracts the principal from a request context for tests.
+func PrincipalFromContext(r *http.Request) ([]string, []oidc.Scope, bool) {
+	p, ok := r.Context().Value(principalKey{}).(principal)
+	if !ok {
+		return nil, nil, false
+	}
+
+	return p.readPins, p.scopes, true
 }

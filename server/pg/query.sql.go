@@ -477,9 +477,17 @@ FROM pins
 WHERE name = $1
 `
 
-func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
+type GetPinRow struct {
+	Name       string             `json:"name"`
+	NarinfoKey string             `json:"narinfo_key"`
+	StorePath  string             `json:"store_path"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetPin(ctx context.Context, name string) (GetPinRow, error) {
 	row := q.db.QueryRow(ctx, getPin, name)
-	var i Pin
+	var i GetPinRow
 	err := row.Scan(
 		&i.Name,
 		&i.NarinfoKey,
@@ -488,6 +496,80 @@ func (q *Queries) GetPin(ctx context.Context, name string) (Pin, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getReachableKeys = `-- name: GetReachableKeys :many
+WITH RECURSIVE reach (key) AS (
+    SELECT $1::varchar
+    UNION
+    SELECT ref
+    FROM reach
+    INNER JOIN objects AS o ON reach.key = o.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+
+SELECT reach.key::varchar
+FROM reach
+`
+
+func (q *Queries) GetReachableKeys(ctx context.Context, key string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getReachableKeys, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var reach_key string
+		if err := rows.Scan(&reach_key); err != nil {
+			return nil, err
+		}
+		items = append(items, reach_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getReadablePinTargets = `-- name: GetReadablePinTargets :many
+SELECT p.narinfo_key
+FROM pins AS p
+WHERE p.name LIKE ANY($1::varchar [])
+UNION
+SELECT p.previous_narinfo_key::varchar
+FROM pins AS p
+WHERE
+    p.name LIKE ANY($1::varchar [])
+    AND p.previous_narinfo_key IS NOT NULL
+    AND p.moved_at > now() - $2::interval
+`
+
+type GetReadablePinTargetsParams struct {
+	Patterns []string        `json:"patterns"`
+	Grace    pgtype.Interval `json:"grace"`
+}
+
+// What the pins matching the LIKE patterns point at, and what they pointed
+// at before, while the grace period of the move lasts.
+func (q *Queries) GetReadablePinTargets(ctx context.Context, arg GetReadablePinTargetsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, getReadablePinTargets, arg.Patterns, arg.Grace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var narinfo_key string
+		if err := rows.Scan(&narinfo_key); err != nil {
+			return nil, err
+		}
+		items = append(items, narinfo_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertMultipartUpload = `-- name: InsertMultipartUpload :exec
@@ -570,15 +652,23 @@ FROM pins
 ORDER BY name
 `
 
-func (q *Queries) ListPins(ctx context.Context) ([]Pin, error) {
+type ListPinsRow struct {
+	Name       string             `json:"name"`
+	NarinfoKey string             `json:"narinfo_key"`
+	StorePath  string             `json:"store_path"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListPins(ctx context.Context) ([]ListPinsRow, error) {
 	rows, err := q.db.Query(ctx, listPins)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Pin
+	var items []ListPinsRow
 	for rows.Next() {
-		var i Pin
+		var i ListPinsRow
 		if err := rows.Scan(
 			&i.Name,
 			&i.NarinfoKey,
@@ -892,11 +982,19 @@ func (q *Queries) TouchLiveClosures(ctx context.Context, dollar_1 []string) ([]s
 
 const upsertPin = `-- name: UpsertPin :exec
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
-VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
+VALUES ($1, $2, $3, now(), now())
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
     store_path = EXCLUDED.store_path,
-    updated_at = timezone('UTC', now())
+    previous_narinfo_key = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN pins.narinfo_key
+        ELSE pins.previous_narinfo_key
+    END,
+    moved_at = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN now()
+        ELSE pins.moved_at
+    END,
+    updated_at = now()
 `
 
 type UpsertPinParams struct {
@@ -906,6 +1004,7 @@ type UpsertPinParams struct {
 }
 
 // Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+// Sets previous_narinfo_key and moved_at only when narinfo_key changes.
 func (q *Queries) UpsertPin(ctx context.Context, arg UpsertPinParams) error {
 	_, err := q.db.Exec(ctx, upsertPin, arg.Name, arg.NarinfoKey, arg.StorePath)
 	return err
