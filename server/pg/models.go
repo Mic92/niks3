@@ -54,11 +54,13 @@ type PendingObject struct {
 }
 
 type Pin struct {
-	Name       string             `json:"name"`
-	NarinfoKey string             `json:"narinfo_key"`
-	StorePath  string             `json:"store_path"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	Name               string             `json:"name"`
+	NarinfoKey         string             `json:"narinfo_key"`
+	StorePath          string             `json:"store_path"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	PreviousNarinfoKey pgtype.Text        `json:"previous_narinfo_key"`
+	MovedAt            pgtype.Timestamptz `json:"moved_at"`
 }
 
 type PublishClaim struct {

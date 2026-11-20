@@ -361,12 +361,21 @@ FOR SHARE;
 
 -- name: UpsertPin :exec
 -- Create or update a pin. Updates the narinfo_key, store_path, and updated_at if the pin already exists.
+-- Sets previous_narinfo_key and moved_at only when narinfo_key changes.
 INSERT INTO pins (name, narinfo_key, store_path, created_at, updated_at)
-VALUES ($1, $2, $3, timezone('UTC', now()), timezone('UTC', now()))
+VALUES ($1, $2, $3, now(), now())
 ON CONFLICT (name) DO UPDATE SET
     narinfo_key = EXCLUDED.narinfo_key,
     store_path = EXCLUDED.store_path,
-    updated_at = timezone('UTC', now());
+    previous_narinfo_key = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN pins.narinfo_key
+        ELSE pins.previous_narinfo_key
+    END,
+    moved_at = CASE
+        WHEN pins.narinfo_key != EXCLUDED.narinfo_key THEN now()
+        ELSE pins.moved_at
+    END,
+    updated_at = now();
 
 -- name: GetPin :one
 SELECT name, narinfo_key, store_path, created_at, updated_at
@@ -381,3 +390,30 @@ WHERE name = $1;
 SELECT name, narinfo_key, store_path, created_at, updated_at
 FROM pins
 ORDER BY name;
+
+-- name: GetReadablePinTargets :many
+-- What the pins matching the LIKE patterns point at, and what they pointed
+-- at before, while the grace period of the move lasts.
+SELECT p.narinfo_key
+FROM pins AS p
+WHERE p.name LIKE ANY(sqlc.arg(patterns)::varchar [])
+UNION
+SELECT p.previous_narinfo_key::varchar
+FROM pins AS p
+WHERE
+    p.name LIKE ANY(sqlc.arg(patterns)::varchar [])
+    AND p.previous_narinfo_key IS NOT NULL
+    AND p.moved_at > now() - sqlc.arg(grace)::interval;
+
+-- name: GetReachableKeys :many
+WITH RECURSIVE reach (key) AS (
+    SELECT sqlc.arg(key)::varchar
+    UNION
+    SELECT ref
+    FROM reach
+    INNER JOIN objects AS o ON reach.key = o.key
+    CROSS JOIN LATERAL unnest(o.refs) AS ref
+)
+
+SELECT reach.key::varchar
+FROM reach;

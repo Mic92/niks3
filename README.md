@@ -53,6 +53,39 @@ presigned S3 URL instead of being streamed, so NAR bytes bypass niks3. Narinfos
 and other metadata stay proxied. Note that anyone holding such a URL can fetch
 that object until it expires, regardless of read-proxy authentication.
 
+#### Pin-scoped reads (optional)
+
+A client certificate can be limited to what one pin reaches.
+A host then fetches its own system closure through the read proxy and nothing else in the cache.
+
+```nix
+services.niks3.nginx.mtls = {
+  enable = true;
+  clientCAFile = "/path/to/ca.pem";
+  boundSubjects = [ "CN=ci" ]; # full access
+  readPins = [ "CN=*=host-{cn}" ]; # CN=web-01 reads pin host-web-01
+};
+services.niks3.readProxy.pinReadGrace = "1h";
+```
+
+Each `readPins` entry is `<subject-glob>=<pin-glob>`, split at the last `=`.
+The subject glob is matched against the certificate's subject DN.
+`{cn}` in the pin glob stands for the certificate's common name.
+`CN=web-*=host-{cn}` lets the certificate `CN=web-01` read the pin `host-web-01`.
+A common name that is not a valid pin name (`[a-zA-Z0-9._-]+`) gets no access.
+
+A certificate that matches `boundSubjects` or `boundSubjectsRead` keeps its full access.
+A request that carries a token is judged by the token, so a host can read by certificate and push with a token.
+
+After a pin moves, its previous target stays readable for `pinReadGrace` (default one hour).
+A download in progress finishes and a rollback still works.
+
+Such a client gets 404 for everything outside its pins and 403 on the API.
+It must use the read proxy, since the bucket itself knows nothing about pins.
+
+On the command line the options are `--mtls-read-pin` (repeatable) and `--pin-read-grace` (`NIKS3_PIN_READ_GRACE`).
+`--mtls-read-pin` needs `--mtls-bound-subject`.
+
 ## Features
 
 ### Binary Cache Protocol Support
