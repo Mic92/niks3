@@ -18,6 +18,7 @@ func TestCacheStatsHandler(t *testing.T) {
 
 	service := createTestService(t)
 	defer service.Close()
+	databaseOnlyTest(t)
 
 	ctx := t.Context()
 	queries := pg.New(service.Pool)
@@ -58,6 +59,7 @@ func TestCacheStatsHandler(t *testing.T) {
 // The count leaves out deleted objects and is kept for a while.
 func TestObjectsAreCountedOnceInAWhile(t *testing.T) {
 	t.Parallel()
+	databaseOnlyTest(t)
 
 	service := createTestService(t)
 	defer service.Close()

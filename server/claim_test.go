@@ -43,7 +43,17 @@ func (bld build) keys() []string {
 	return keys
 }
 
+// push starts a push and uploads what it was offered.
 func (bld build) push(t *testing.T, service *server.Service) string {
+	t.Helper()
+
+	push := bld.begin(t, service)
+	uploadPush(t, service, push)
+
+	return push.ID
+}
+
+func (bld build) begin(t *testing.T, service *server.Service) server.PendingClosureResponse {
 	t.Helper()
 
 	objects := make([]map[string]any, 0, 2*len(bld.outputs))
@@ -53,7 +63,7 @@ func (bld build) push(t *testing.T, service *server.Service) string {
 			map[string]any{"key": bld.nars[out], "type": "nar", "refs": []string{}})
 	}
 
-	return createPush(t, service, bld.keys(), objects).ID
+	return createPush(t, service, bld.keys(), objects)
 }
 
 // sign returns the NAR each narinfo key is or is to be published with.
@@ -178,7 +188,7 @@ func TestClaim_SecondBuildPublishesTheFirst(t *testing.T) {
 	}
 
 	// The first push never commits. Its NARs must outlive it.
-	completePush(t, service, secondID)
+	commitPush(t, service, secondID)
 	collectGarbage(t, service)
 
 	for _, nar := range first.nars {
@@ -253,7 +263,8 @@ func TestClaim_CollectedBuildIsReplaced(t *testing.T) {
 
 	dead, next := newBuild(1, 1, 2), newBuild(1, 2, 2)
 
-	dead.sign(t, service, dead.push(t, service))
+	// The dead build uploaded nothing, so no object of it is live.
+	dead.sign(t, service, dead.begin(t, service).ID)
 
 	stale := dead.keys()[0]
 	_, err := service.MinioClient.PutObject(ctx, service.Bucket, stale,
@@ -292,7 +303,7 @@ func TestClaim_CommittedBuildIsPublished(t *testing.T) {
 	firstID, secondID := first.push(t, service), second.push(t, service)
 
 	first.sign(t, service, firstID)
-	completePush(t, service, firstID)
+	commitPush(t, service, firstID)
 
 	if n := countRows(t, service, `SELECT count(*) FROM publish_claims`); n != 0 {
 		t.Fatalf("%d claims left after the commit", n)
@@ -309,7 +320,7 @@ func TestClaim_CommittedBuildIsPublished(t *testing.T) {
 		t.Fatalf("%d claims on committed narinfos", n)
 	}
 
-	completePush(t, service, secondID)
+	commitPush(t, service, secondID)
 
 	for out, key := range first.keys() {
 		if n := countRows(t, service, `SELECT count(*) FROM objects WHERE key = $1 AND refs = $2`, key, first.nars[out:out+1]); n != 1 {
@@ -339,7 +350,7 @@ func TestClaim_MarkedBuildIsDeletedFirst(t *testing.T) {
 		ok(t, err)
 	}
 
-	completePush(t, service, oldID)
+	commitPush(t, service, oldID)
 
 	_, err := service.Pool.Exec(ctx, `UPDATE objects SET deleted_at = timezone('UTC', now()), first_deleted_at = timezone('UTC', now())`)
 	ok(t, err)

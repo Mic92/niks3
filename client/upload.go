@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -611,14 +612,6 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 
 	slog.Debug("Found paths in closure", "count", len(pathInfos))
 
-	// Collect all closure paths to return to the caller. This includes paths
-	// from closures skipped by the size filter below, so callers (e.g. the
-	// hook queue) treat them as handled instead of retrying forever.
-	closurePaths := make([]string, 0, len(pathInfos))
-	for storePath := range pathInfos {
-		closurePaths = append(closurePaths, storePath)
-	}
-
 	// Skip closures containing paths larger than the server's max NAR size.
 	var maxNarSize uint64
 
@@ -636,6 +629,10 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 	for p, why := range skipped.Reasons {
 		reports[p] = PathReport{Skipped: why}
 	}
+
+	// The hook daemon drops these from its queue. A closure skipped for size
+	// is left out: its dependencies that fit may be queued on their own.
+	closurePaths := slices.Collect(maps.Keys(pathInfos))
 
 	if len(resolvedPaths) == 0 {
 		slog.Warn("All closures skipped by server max NAR size, nothing to upload")
