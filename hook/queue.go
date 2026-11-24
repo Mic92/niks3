@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,21 +111,48 @@ func openQueue(dbPath string, retain bool) (*Queue, error) {
 }
 
 // Enqueue inserts store paths into the queue, silently ignoring duplicates.
+// Paths that cannot be retained are logged and returned as an error; the rest are queued.
 func (q *Queue) Enqueue(paths []string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.owner == nil {
 		return errors.New("queue is closed")
 	}
-	err := q.retain(paths)
-	if err == nil {
-		err = q.enqueue(paths)
+	paths = normalizeEntries(paths)
+	retained, failed, failures := q.retain(paths)
+	for i, path := range failed {
+		slog.Warn("Not queueing path: cannot retain it", "path", path, "error", failures[i])
 	}
-	if err != nil {
+	if err := q.enqueue(retained); err != nil {
 		return errors.Join(err, q.releaseUnqueued(paths))
+	}
+	if len(failed) > 0 {
+		return errors.Join(fmt.Errorf("queued %d of %d paths", len(retained), len(paths)),
+			errors.Join(failures...), q.releaseUnqueued(failed))
 	}
 
 	return nil
+}
+
+// normalizeEntries queues a derivation's outputs as <drv>^*: every
+// realisation of the derivation is pushed, and its queue root is the one
+// reconcileRoots expects for a root that targets the .drv.
+func normalizeEntries(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+
+	for _, p := range paths {
+		if drv, _, found := strings.Cut(p, "^"); found && strings.HasSuffix(drv, ".drv") {
+			p = drv + "^*"
+		}
+
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+
+	return out
 }
 
 // FetchBatch returns up to batchSize store paths from the head of the queue.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -107,21 +108,12 @@ type PrepareClosuresResult struct {
 
 // PrepareClosures prepares closures from path info, including NAR, .ls, narinfo, build log, and realisation objects.
 // Build logs are automatically discovered for output paths and included by default.
-// Realisations are queried for CA derivations and included automatically.
+// Each realisation (see QueryRealisations) goes with the path it realises.
 // topLevelPaths specifies which paths are closure roots - one ClosureInfo is created per top-level path.
-func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[string]*PathInfo, nixEnv []string) (*PrepareClosuresResult, error) {
+func PrepareClosures(topLevelPaths []string, pathInfos map[string]*PathInfo, realisations map[string]*RealisationInfo) (*PrepareClosuresResult, error) {
 	pathInfoByHash := make(map[string]*PathInfo)
 	narKeyToHash := make(map[string]string)
 	logPathsByKey := make(map[string]string)
-
-	// Query realisations for CA paths
-	realisations, err := QueryRealisations(ctx, pathInfos, nixEnv)
-	if err != nil {
-		// Log warning but don't fail - realisations are optional
-		slog.Warn("Failed to query realisations (CA derivations may not upload correctly)", "error", err)
-
-		realisations = make(map[string]*RealisationInfo)
-	}
 
 	// First pass: collect all objects for all paths
 	allObjects := make(map[string][]ObjectWithRefs) // storePath -> objects for that path
@@ -187,7 +179,7 @@ func PrepareClosures(ctx context.Context, topLevelPaths []string, pathInfos map[
 		}
 
 		for realisationKey, realisation := range realisations {
-			if realisation.OutPath == storePath {
+			if realisation.OutPath == filepath.Base(storePath) {
 				parts = append(parts, ObjectWithRefs{Key: realisationKey, Type: ObjectTypeRealisation, Refs: []string{}})
 			}
 		}
@@ -408,19 +400,47 @@ type PathReport struct {
 	Skipped string
 }
 
-// SignAndUploadNarinfos signs narinfos on the server and uploads them to S3 in
-// parallel. It reports on the store paths in reports.
-func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinfosByClosureID map[string]map[string]NarinfoMetadata, pendingObjects map[string]PendingObject, reports map[string]PathReport) error {
+// SignAndUploadNarinfos signs narinfos and realisations on the server and
+// uploads them to S3 in parallel. It reports on the store paths in reports.
+func (c *Client) SignAndUploadNarinfos(
+	ctx context.Context,
+	route string,
+	narinfosByClosureID map[string]map[string]NarinfoMetadata,
+	realisationsByClosureID map[string]map[string]*RealisationInfo,
+	pendingObjects map[string]PendingObject,
+	reports map[string]PathReport,
+) error {
 	var toUpload []narinfoTask
 
-	for closureID, narinfos := range narinfosByClosureID {
-		if len(narinfos) == 0 {
+	realisationSignatures := make(map[string][]string)
+
+	closureIDs := make(map[string]bool, len(narinfosByClosureID))
+	for id := range narinfosByClosureID {
+		closureIDs[id] = true
+	}
+
+	for id := range realisationsByClosureID {
+		closureIDs[id] = true
+	}
+
+	for closureID := range closureIDs {
+		narinfos := narinfosByClosureID[closureID]
+		if len(narinfos) == 0 && len(realisationsByClosureID[closureID]) == 0 {
 			continue
 		}
 
-		signed, err := c.SignPendingClosure(ctx, route, closureID, narinfos)
+		realisations := make(map[string]RealisationMetadata, len(realisationsByClosureID[closureID]))
+		for key, r := range realisationsByClosureID[closureID] {
+			realisations[key] = r.metadata()
+		}
+
+		signed, err := c.SignPendingClosure(ctx, route, closureID, narinfos, realisations)
 		if err != nil {
 			return fmt.Errorf("signing narinfos for closure %s: %w", closureID, err)
+		}
+
+		for key := range realisations {
+			realisationSignatures[key] = signed.Signatures[key]
 		}
 
 		for key, own := range narinfos {
@@ -450,7 +470,21 @@ func (c *Client) SignAndUploadNarinfos(ctx context.Context, route string, narinf
 		}
 	}
 
-	return c.uploadNarinfosInParallel(ctx, toUpload, pendingObjects)
+	g, gctx := errgroup.WithContext(ctx)
+
+	for _, realisations := range realisationsByClosureID {
+		for key, realisation := range realisations {
+			g.Go(func() error {
+				return c.uploadRealisation(gctx, uploadTask{key: key, obj: pendingObjects[key]}, realisation, realisationSignatures[key])
+			})
+		}
+	}
+
+	g.Go(func() error {
+		return c.uploadNarinfosInParallel(gctx, toUpload, pendingObjects)
+	})
+
+	return g.Wait() //nolint:wrapcheck // errgroup returns the first task's already-wrapped error
 }
 
 // uploadNarinfosInParallel generates, compresses, and uploads narinfos in parallel.
@@ -549,8 +583,16 @@ func (c *Client) pushPaths(ctx context.Context, paths []string) ([]string, map[s
 	return closurePaths, reports, err
 }
 
-func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, map[string]PathReport, error) {
+func (c *Client) pushPathsOnce(ctx context.Context, args []string) ([]string, map[string]PathReport, error) {
 	startTime := time.Now()
+
+	paths, derivationOutputs := splitDerivationOutputs(args)
+	paths = withFixedOutputs(paths, derivationOutputs)
+
+	named, namedOutPaths, err := c.namedRealisations(ctx, derivationOutputs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying realisations: %w", err)
+	}
 
 	// Resolve symlinks to actual store paths
 	resolvedPaths, err := resolveSymlinks(paths, c.storeDir)
@@ -584,21 +626,28 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 	} else if present, err := c.ClosuresExist(ctx, resolvedPaths); err != nil {
 		slog.Debug("Cannot ask for pushed closures, pushing everything", "error", err)
 	} else if len(present) > 0 {
-		missing := resolvedPaths[:0:0]
+		missing := slices.DeleteFunc(slices.Clone(resolvedPaths), func(p string) bool { return present[p] })
 
-		for _, p := range resolvedPaths {
-			if !present[p] {
-				missing = append(missing, p)
-			}
-		}
-
-		if len(missing) == 0 {
+		if len(missing) == 0 && len(namedOutPaths) == 0 {
 			slog.Info(fmt.Sprintf("All %d paths already cached", len(resolvedPaths)))
 
 			return resolvedPaths, report(), nil
 		}
 
 		resolvedPaths = missing
+	}
+
+	// Push the outputs of named derivations even if cached: the server
+	// uploads only what it lacks, such as a realisation of an output that
+	// another derivation built first.
+	for _, p := range namedOutPaths {
+		if !slices.Contains(resolvedPaths, p) {
+			resolvedPaths = append(resolvedPaths, p)
+		}
+	}
+
+	if len(resolvedPaths) == 0 {
+		return nil, report(), nil
 	}
 
 	// Get path info for all paths and their closures
@@ -643,8 +692,10 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 		return closurePaths, report(), nil
 	}
 
+	realisations := c.queryRealisations(ctx, pathInfos, named)
+
 	// Prepare closures - one per top-level path
-	result, err := PrepareClosures(ctx, resolvedPaths, pathInfos, c.NixEnv)
+	result, err := PrepareClosures(resolvedPaths, pathInfos, realisations)
 	if err != nil {
 		return nil, nil, fmt.Errorf("preparing closures: %w", err)
 	}
@@ -685,11 +736,10 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 
 	// Upload all pending objects and collect narinfo metadata
 	narinfoMetadata, err := c.UploadPendingObjects(ctx, &UploadContext{
-		PendingObjects:    pendingObjects,
-		PathInfoByHash:    result.PathInfoByHash,
-		NARKeyToHash:      result.NARKeyToHash,
-		LogPathsByKey:     result.LogPathsByKey,
-		RealisationsByKey: result.RealisationsByKey,
+		PendingObjects: pendingObjects,
+		PathInfoByHash: result.PathInfoByHash,
+		NARKeyToHash:   result.NARKeyToHash,
+		LogPathsByKey:  result.LogPathsByKey,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("uploading objects: %w", err)
@@ -697,22 +747,10 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 
 	slog.Debug("Uploaded all objects", "narinfos", len(narinfoMetadata))
 
-	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
+	narinfosByClosureID, realisationsByClosureID := groupByClosure(pendingByClosureID, narinfoMetadata, result.RealisationsByKey)
 
-	for id, closurePending := range pendingByClosureID {
-		closureNarinfos := make(map[string]NarinfoMetadata)
-
-		for key := range closurePending {
-			if meta, ok := narinfoMetadata[key]; ok {
-				closureNarinfos[key] = meta
-			}
-		}
-
-		narinfosByClosureID[id] = closureNarinfos
-	}
-
-	// Sign narinfos for each closure and upload them
-	if err := c.SignAndUploadNarinfos(ctx, route, narinfosByClosureID, pendingObjects, reports); err != nil {
+	// Sign narinfos and realisations for each closure and upload them
+	if err := c.SignAndUploadNarinfos(ctx, route, narinfosByClosureID, realisationsByClosureID, pendingObjects, reports); err != nil {
 		return nil, nil, fmt.Errorf("signing and uploading narinfos: %w", err)
 	}
 
@@ -727,4 +765,41 @@ func (c *Client) pushPathsOnce(ctx context.Context, paths []string) ([]string, m
 	slog.Info(fmt.Sprintf("Upload complete. (%s)", duration.Round(time.Millisecond)))
 
 	return closurePaths, report(), nil
+}
+
+// groupByClosure groups what to sign by pending closure; the server signs
+// only a closure's own objects.
+func groupByClosure(
+	pendingByClosureID map[string]map[string]PendingObject,
+	narinfoMetadata map[string]NarinfoMetadata,
+	realisationsByKey map[string]*RealisationInfo,
+) (map[string]map[string]NarinfoMetadata, map[string]map[string]*RealisationInfo) {
+	narinfosByClosureID := make(map[string]map[string]NarinfoMetadata)
+	realisationsByClosureID := make(map[string]map[string]*RealisationInfo)
+
+	for id, closurePending := range pendingByClosureID {
+		closureNarinfos := make(map[string]NarinfoMetadata)
+		closureRealisations := make(map[string]*RealisationInfo)
+
+		for key, obj := range closurePending {
+			if meta, ok := narinfoMetadata[key]; ok {
+				closureNarinfos[key] = meta
+			}
+
+			if obj.Type == string(ObjectTypeRealisation) {
+				if r, ok := realisationsByKey[key]; ok {
+					closureRealisations[key] = r
+				} else {
+					slog.Warn("Realisation not found", "key", key)
+				}
+			}
+		}
+
+		narinfosByClosureID[id] = closureNarinfos
+		if len(closureRealisations) > 0 {
+			realisationsByClosureID[id] = closureRealisations
+		}
+	}
+
+	return narinfosByClosureID, realisationsByClosureID
 }

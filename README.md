@@ -67,7 +67,8 @@ niks3 implements the [Nix binary cache specification](https://nixos.org/manual/n
   - Signatures (Sig fields)
   - CA field for content-addressed derivations
 - **Build logs** (`log/`): Compressed build output storage
-- **Realisation files** (`realisations/*.doi`): For content-addressed derivations
+- **Realisation files** for content-addressed derivations, signed like narinfos:
+  `build-trace-v2/<drv>/<output>.doi` (Nix >= 2.35) or `realisations/*.doi` (older Nix)
 - **Cache info** (`nix-cache-info`): Automatic generation with WantMassQuery, Priority
 
 ### Advanced Features

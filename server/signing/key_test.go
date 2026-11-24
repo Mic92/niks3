@@ -157,7 +157,7 @@ func TestSignBatch(t *testing.T) {
 	infos := map[string]*signing.NarInfo{"first.narinfo": narInfo, "second.narinfo": &second}
 
 	for i, key := range keys {
-		signatures, err := key.Sign(t.Context(), infos)
+		signatures, err := signing.SignNarInfos(t.Context(), key, infos)
 		if err != nil {
 			t.Fatalf("Sign failed: %v", err)
 		}
@@ -171,7 +171,7 @@ func TestSignBatch(t *testing.T) {
 				t.Errorf("Signature should start with %q, got: %s", prefix, signatures[objectKey])
 			}
 
-			single, err := key.Sign(t.Context(), map[string]*signing.NarInfo{"test.narinfo": info})
+			single, err := signing.SignNarInfos(t.Context(), key, map[string]*signing.NarInfo{"test.narinfo": info})
 			if err != nil {
 				t.Fatalf("Sign (single narinfo) failed: %v", err)
 			}
@@ -181,7 +181,7 @@ func TestSignBatch(t *testing.T) {
 		}
 
 		// Signatures should be deterministic
-		signatures2, err := key.Sign(t.Context(), infos)
+		signatures2, err := signing.SignNarInfos(t.Context(), key, infos)
 		if err != nil {
 			t.Fatalf("Sign (second call) failed: %v", err)
 		}

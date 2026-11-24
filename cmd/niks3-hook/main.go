@@ -123,6 +123,13 @@ func runSend() error {
 		return nil
 	}
 
+	// The derivation, so that its realisations are pushed even when its
+	// outputs are cached already: a CA output another derivation built
+	// first records that one as deriver.
+	if drv := os.Getenv("DRV_PATH"); strings.HasSuffix(drv, ".drv") {
+		paths = append(paths, drv+"^*")
+	}
+
 	// Always exit 0: log errors to stderr but never return an error.
 	if err := hook.SendPaths(*socket, paths); err != nil {
 		fmt.Fprintf(os.Stderr, "niks3-hook send: %v\n", err)
@@ -194,10 +201,8 @@ func runServe() error {
 
 	// QueueFunc: enqueue paths in SQLite and notify worker + idle timer.
 	queueFunc := func(paths []string) error {
-		if err := queue.Enqueue(paths); err != nil {
-			return fmt.Errorf("enqueueing paths: %w", err)
-		}
-		// Non-blocking sends to wake both consumers.
+		err := queue.Enqueue(paths)
+		// Wake both consumers, also after a partial error.
 		select {
 		case workerNotify <- struct{}{}:
 		default:
@@ -206,6 +211,10 @@ func runServe() error {
 		select {
 		case idleNotify <- struct{}{}:
 		default:
+		}
+
+		if err != nil {
+			return fmt.Errorf("enqueueing paths: %w", err)
 		}
 
 		return nil

@@ -175,7 +175,8 @@ testers.nixosTest {
         experimental-features = [
           "nix-command"
           "flakes"
-        ];
+        ]
+        ++ lib.optional ca-derivations-supported "ca-derivations";
         substituters = [ ];
       };
       services.niks3-auto-upload = {
@@ -336,6 +337,16 @@ testers.nixosTest {
     # Verify realisation info is available in the chroot store
     realisation_info = server.succeed(f"nix --store /tmp/chroot-store realisation info {ca_output}")
     print(f"Realisation info in chroot store: {realisation_info}")
+
+    # A fresh store must substitute <drv>^out via the signed realisation.
+    ca_drv = server.succeed("nix-instantiate /tmp/ca-test.nix").strip()
+    server.succeed("nix-instantiate --store /tmp/ca-subst-store /tmp/ca-test.nix")
+    substituted = server.succeed(f"""
+      {s3_env}
+      nix build --store /tmp/ca-subst-store --no-link --print-out-paths --max-jobs 0 \
+        --option substituters '{binary_cache_url}' '{ca_drv}^out'
+    """).strip()
+    assert substituted == ca_output, f"substituted {substituted}, want {ca_output}"
   '')
   + ''
     # Test uploading a store path that is a symlink to a subdirectory
@@ -567,6 +578,40 @@ testers.nixosTest {
     builder.succeed(f"test -z \"$(ls -A {roots})\"")
 
     print("Post-build-hook pipeline test passed!")
+  ''
+  + (lib.optionalString ca-derivations-supported ''
+    # Early cutoff: a changed CA derivation that builds an output already
+    # cached gets its own realisation, through the hook's DRV_PATH.
+    for tag in ["first", "changed"]:
+        expr = (
+            "derivation { name = \"early-cutoff\"; system = builtins.currentSystem;"
+            " builder = \"/bin/sh\"; args = [ \"-c\" \"echo same > $out\" ];"
+            " __contentAddressed = true; outputHashMode = \"recursive\";"
+            f" outputHashAlgo = \"sha256\"; tag = \"{tag}\"; }}"
+        )
+        for machine in [builder, server]:
+            machine.succeed(f"echo '{expr}' > /tmp/early-{tag}.nix")
+        builder.succeed(f"nix-build /tmp/early-{tag}.nix --no-out-link")
+        builder.wait_until_succeeds(
+            "test $(systemctl is-active niks3-auto-upload.service) = inactive",
+            timeout=60,
+        )
+
+    first_out = builder.succeed("nix-build /tmp/early-first.nix --no-out-link").strip()
+    changed_out = builder.succeed("nix-build /tmp/early-changed.nix --no-out-link").strip()
+    assert first_out == changed_out, f"no early cutoff: {first_out} != {changed_out}"
+
+    changed_drv = server.succeed("nix-instantiate --store /tmp/early-store /tmp/early-changed.nix").strip()
+    substituted = server.succeed(f"""
+      {s3_env}
+      nix build --store /tmp/early-store --no-link --print-out-paths --max-jobs 0 \
+        --option substituters '{binary_cache_url}' '{changed_drv}^out'
+    """).strip()
+    assert substituted == changed_out, f"substituted {substituted}, want {changed_out}"
+
+    print("Early cutoff realisation test passed!")
+  '')
+  + ''
 
     # ============================================
     # Queued paths survive GC until uploaded
@@ -587,10 +632,32 @@ testers.nixosTest {
     builder.succeed(f"test -n \"$(ls -A {roots})\"")
     builder.fail(f"nix-store --delete {retained}")
 
+    # A .drv output is rooted unbuilt; a bad path does not drop the batch.
+    builder.succeed("""
+    cat > /tmp/unbuilt-drv.nix << 'EOF'
+    derivation {
+      name = "unbuilt-test";
+      system = builtins.currentSystem;
+      builder = "/bin/sh";
+      args = [ "-c" "exit 1" ];
+    }
+    EOF
+    """)
+    unbuilt = builder.succeed("nix-instantiate /tmp/unbuilt-drv.nix").strip()
+    missing = "/nix/store/00000000000000000000000000000000-missing"
+    sent = builder.succeed(
+        f"OUT_PATHS='{missing} {unbuilt}' ${lib.getExe' niks3-hook "niks3-hook"} send"
+        " --socket /run/niks3/upload-to-cache.sock 2>&1"
+    )
+    assert "queued 1 of 2 paths" in sent, sent
+    builder.fail(f"nix-store --delete {unbuilt}")
+    builder.fail(f"test -e $(nix-store --query --outputs {unbuilt})")
+
     server.systemctl("start niks3.service")
     server.wait_for_unit("niks3.service")
     builder.wait_until_succeeds(f"test -z \"$(ls -A {roots})\"", timeout=120)
     builder.succeed(f"nix-store --delete {retained}")
+    builder.succeed(f"nix-store --delete {unbuilt}")
 
     print("GC root test passed!")
   '';

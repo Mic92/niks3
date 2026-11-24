@@ -75,9 +75,20 @@ func (c *Client) CompletePendingClosure(ctx context.Context, route, closureID st
 	return nil
 }
 
+// RealisationMetadata is a realisation for the server to sign.
+type RealisationMetadata struct {
+	DrvPath               string            `json:"drv_path,omitempty"`
+	OutputName            string            `json:"output_name,omitempty"`
+	ID                    string            `json:"id,omitempty"`
+	OutPath               string            `json:"out_path"`
+	DependentRealisations map[string]string `json:"dependent_realisations,omitempty"`
+}
+
 type signNarinfosRequest struct {
 	Narinfos map[string]NarinfoMetadata `json:"narinfos"`
 	Claim    bool                       `json:"claim"`
+	// Ignored by older servers.
+	Realisations map[string]RealisationMetadata `json:"realisations,omitempty"`
 }
 
 // SignedNarinfos is the server's answer to a sign request, by narinfo key.
@@ -91,13 +102,14 @@ type SignedNarinfos struct {
 	Published map[string]string `json:"published"`
 }
 
-// SignPendingClosure sends narinfo metadata to the server for signing.
-func (c *Client) SignPendingClosure(ctx context.Context, route, closureID string, narinfos map[string]NarinfoMetadata) (*SignedNarinfos, error) {
+// SignPendingClosure has the server sign narinfos and realisations.
+func (c *Client) SignPendingClosure(ctx context.Context, route, closureID string, narinfos map[string]NarinfoMetadata, realisations map[string]RealisationMetadata) (*SignedNarinfos, error) {
 	reqURL := c.baseURL.JoinPath("api", route, closureID, "sign")
 
 	reqBody := signNarinfosRequest{
-		Narinfos: narinfos,
-		Claim:    true,
+		Narinfos:     narinfos,
+		Claim:        true,
+		Realisations: realisations,
 	}
 
 	var result SignedNarinfos

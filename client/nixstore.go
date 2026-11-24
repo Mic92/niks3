@@ -212,14 +212,6 @@ type PathInfo struct {
 	CA         *ContentAddress `json:"ca,omitempty"`
 }
 
-// RealisationInfo represents Nix realisation information for CA derivations.
-type RealisationInfo struct {
-	ID                    string            `json:"id"`      // "sha256:hash!outputName"
-	OutPath               string            `json:"outPath"` //nolint:tagliatelle // outPath is defined by Nix's JSON format
-	Signatures            []string          `json:"signatures,omitempty"`
-	DependentRealisations map[string]string `json:"dependentRealisations,omitempty"` //nolint:tagliatelle
-}
-
 // GetPathInfoRecursive queries Nix for path info including all dependencies.
 func GetPathInfoRecursive(ctx context.Context, storePaths []string, nixEnv []string) (map[string]*PathInfo, error) {
 	args := make([]string, 0, 6+len(storePaths))
@@ -308,65 +300,4 @@ func GetStorePathHash(storePath string) (string, error) {
 	}
 
 	return hash, nil
-}
-
-// QueryRealisations queries realisations from Nix's local database using `nix realisation info`.
-// It only queries CA paths with a deriver: .drv files and added sources are
-// CA too, but no derivation output.
-// Returns a map from realisation key ("realisations/<id>.doi") to RealisationInfo.
-func QueryRealisations(ctx context.Context, pathInfos map[string]*PathInfo, nixEnv []string) (map[string]*RealisationInfo, error) {
-	caPaths := make([]string, 0, len(pathInfos))
-	for _, info := range pathInfos {
-		if info.CA != nil && info.CA.String() != "" && info.Deriver != nil && *info.Deriver != "" {
-			caPaths = append(caPaths, info.Path)
-		}
-	}
-
-	if len(caPaths) == 0 {
-		return make(map[string]*RealisationInfo), nil
-	}
-
-	result := make(map[string]*RealisationInfo)
-
-	// Chunk paths to avoid ARG_MAX overflow (typically 2MB on most systems)
-	// Store paths are ~60 chars, so 1000 paths per chunk is safe (~300KB with overhead)
-	const maxPathsPerChunk = 1000
-	for i := 0; i < len(caPaths); i += maxPathsPerChunk {
-		end := min(i+maxPathsPerChunk, len(caPaths))
-
-		chunk := caPaths[i:end]
-
-		// Batch query chunk of CA paths
-		args := append([]string{"--extra-experimental-features", "nix-command ca-derivations", "realisation", "info", "--json"}, chunk...)
-
-		cmd := exec.CommandContext(ctx, "nix", args...)
-		if len(nixEnv) > 0 {
-			cmd.Env = nixEnv
-		}
-
-		output, err := cmd.Output()
-		if err != nil {
-			// Some CA paths might not have realisations yet - this is OK
-			continue
-		}
-
-		var realisations []RealisationInfo
-		if err := json.Unmarshal(output, &realisations); err != nil {
-			return nil, fmt.Errorf("parsing realisation info: %w", err)
-		}
-
-		// Build map: realisations/<id>.doi -> RealisationInfo
-		for _, r := range realisations {
-			// {"opaquePath": ...}: no realisation
-			if r.ID == "" {
-				continue
-			}
-
-			key := "realisations/" + r.ID + ".doi"
-			rCopy := r
-			result[key] = &rCopy
-		}
-	}
-
-	return result, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,12 +21,8 @@ import (
 	minio "github.com/minio/minio-go/v7"
 )
 
-func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) string {
-	t.Helper()
-
-	// Create a CA (content-addressed) derivation using bare derivation
-	nixExpr := filepath.Join(t.TempDir(), "ca-test.nix")
-	nixContent := `
+// A floating content-addressed derivation.
+const caTestExpr = `
 	derivation {
 		name = "ca-test";
 		system = builtins.currentSystem;
@@ -34,81 +32,111 @@ func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) strin
 		outputHashMode = "recursive";
 		outputHashAlgo = "sha256";
 	}
-	`
+`
 
-	if err := os.WriteFile(nixExpr, []byte(nixContent), 0o600); err != nil {
-		ok(t, err)
-	}
-
-	// Build the CA derivation without using binary caches (build locally only)
-	// Use --option substitute false to prevent fetching from binary caches
-	// Enable ca-derivations experimental feature
-	var (
-		output []byte
-		err    error
-	)
-
-	cmd := exec.CommandContext(ctx, "nix-build", nixExpr, "--no-out-link",
-		"--extra-experimental-features", "ca-derivations",
-		"--option", "substitute", "false")
-	cmd.Env = nixEnv
-
-	output, err = cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to build CA derivation: %v\nOutput: %s", err, output)
-	}
-
-	// Extract the store path from output (last line)
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	storePath := lines[len(lines)-1]
-	t.Logf("Built CA derivation: %s", storePath)
-
-	return storePath
-}
-
-// verifyRealisationFiles verifies the structure and content of realisation files.
-func verifyRealisationFiles(ctx context.Context, t *testing.T, testService *server.Service, realisationKeys []string) {
+func nixOutput(ctx context.Context, t *testing.T, nixEnv []string, args ...string) string {
 	t.Helper()
 
-	for _, realisationKey := range realisationKeys {
-		realisationObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, realisationKey, minio.GetObjectOptions{})
-		ok(t, err)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // test commands
+	cmd.Env = nixEnv
 
-		compressedRealisation, err := io.ReadAll(realisationObj)
-		if closeErr := realisationObj.Close(); closeErr != nil {
-			t.Logf("Failed to close realisation object: %v", closeErr)
+	output, err := cmd.Output()
+	if err != nil {
+		var stderr []byte
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			stderr = exitErr.Stderr
 		}
 
-		ok(t, err)
-
-		// Decompress with zstd
-		realisationDecoder, err := zstd.NewReader(bytes.NewReader(compressedRealisation))
-		ok(t, err)
-
-		realisationContent, err := io.ReadAll(realisationDecoder)
-		realisationDecoder.Close()
-		ok(t, err)
-
-		var realisation map[string]any
-
-		err = json.Unmarshal(realisationContent, &realisation)
-		ok(t, err)
-
-		// Verify required fields
-		if _, exists := realisation["id"]; !exists {
-			t.Errorf("Realisation %s missing 'id' field", realisationKey)
-		}
-
-		if outPath, exists := realisation["outPath"]; exists {
-			if outPathStr, isString := outPath.(string); isString {
-				t.Logf("Realisation %s maps to: %s", realisationKey, outPathStr)
-			}
-		} else {
-			t.Errorf("Realisation %s missing 'outPath' field", realisationKey)
-		}
-
-		t.Logf("Realisation file verified (%s):\n%s", realisationKey, realisationContent)
+		t.Fatalf("%s failed: %v\nstderr: %s", strings.Join(args, " "), err, stderr)
 	}
+
+	return strings.TrimSpace(string(output))
+}
+
+// buildCADerivation returns the drv path, output path and expression file.
+func buildCADerivation(ctx context.Context, t *testing.T, nixEnv []string) (string, string, string) {
+	t.Helper()
+
+	return buildCADerivationFrom(ctx, t, nixEnv, caTestExpr)
+}
+
+func buildCADerivationFrom(ctx context.Context, t *testing.T, nixEnv []string, expr string) (string, string, string) {
+	t.Helper()
+
+	nixExpr := filepath.Join(t.TempDir(), "ca-test.nix")
+	ok(t, os.WriteFile(nixExpr, []byte(expr), 0o600))
+
+	drvPath := nixOutput(ctx, t, nixEnv, "nix-instantiate", "--extra-experimental-features", "ca-derivations", nixExpr)
+
+	// Build locally only, without binary caches.
+	output := nixOutput(ctx, t, nixEnv, "nix-build", nixExpr, "--no-out-link",
+		"--extra-experimental-features", "ca-derivations",
+		"--option", "substitute", "false")
+
+	lines := strings.Split(output, "\n")
+	storePath := lines[len(lines)-1]
+	t.Logf("Built CA derivation %s: %s", drvPath, storePath)
+
+	return drvPath, storePath, nixExpr
+}
+
+// expectedRealisationKey returns the cache key the local Nix version uses.
+func expectedRealisationKey(ctx context.Context, t *testing.T, nixEnv []string, drvPath, outPath string) string {
+	t.Helper()
+
+	output := nixOutput(ctx, t, nixEnv, "nix", "--extra-experimental-features", "nix-command ca-derivations",
+		"realisation", "info", "--json", drvPath+"^out")
+	t.Logf("nix realisation info: %s", output)
+
+	var entries []struct {
+		Key *struct {
+			DrvPath    string `json:"drvPath"`    //nolint:tagliatelle // Nix's JSON format
+			OutputName string `json:"outputName"` //nolint:tagliatelle // Nix's JSON format
+		} `json:"key"`
+		Value *struct {
+			OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's JSON format
+		} `json:"value"`
+		ID      string `json:"id"`
+		OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's JSON format
+	}
+	ok(t, json.Unmarshal([]byte(output), &entries))
+
+	for _, e := range entries {
+		switch {
+		case e.Key != nil && e.Value != nil && e.Value.OutPath == filepath.Base(outPath):
+			return "build-trace-v2/" + e.Key.DrvPath + "/" + e.Key.OutputName + ".doi"
+		case e.ID != "" && e.OutPath == filepath.Base(outPath):
+			return "realisations/" + e.ID + ".doi"
+		}
+	}
+
+	t.Fatalf("no realisation for %s^out in %s", drvPath, output)
+
+	return ""
+}
+
+func readZstdObject(ctx context.Context, t *testing.T, testService *server.Service, key string) []byte {
+	t.Helper()
+
+	obj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, key, minio.GetObjectOptions{})
+	ok(t, err)
+
+	defer func() { _ = obj.Close() }()
+
+	compressed, err := io.ReadAll(obj)
+	if err != nil {
+		t.Fatalf("reading %s: %v", key, err)
+	}
+
+	decoder, err := zstd.NewReader(bytes.NewReader(compressed))
+	ok(t, err)
+
+	defer decoder.Close()
+
+	content, err := io.ReadAll(decoder)
+	ok(t, err)
+
+	return content
 }
 
 func TestClientCADerivations(t *testing.T) {
@@ -132,8 +160,7 @@ func TestClientCADerivations(t *testing.T) {
 	ctx := t.Context()
 	nixEnv := setupIsolatedNixStore(t)
 
-	// Build CA derivation
-	caPath := buildCADerivation(ctx, t, nixEnv)
+	drvPath, caPath, nixExpr := buildCADerivation(ctx, t, nixEnv)
 
 	// Upload to server
 	uploadedCount := runClientAndVerifyUpload(ctx, t, testService, caPath, ts.URL, testAuthToken, nixEnv)
@@ -141,92 +168,33 @@ func TestClientCADerivations(t *testing.T) {
 		t.Error("Expected at least one CA derivation upload")
 	}
 
-	// Extract hash from CA path for verification
-	pathParts := strings.Split(filepath.Base(caPath), "-")
-	if len(pathParts) < 1 {
-		t.Fatal("Invalid store path format")
+	hash, _, _ := strings.Cut(filepath.Base(caPath), "-")
+
+	narinfo := string(readZstdObject(ctx, t, testService, hash+".narinfo"))
+	if !strings.Contains(narinfo, "CA:") {
+		t.Errorf("Narinfo missing CA field:\n%s", narinfo)
 	}
 
-	hash := pathParts[0]
+	realisationKey := expectedRealisationKey(ctx, t, nixEnv, drvPath, caPath)
+	content := readZstdObject(ctx, t, testService, realisationKey)
+	t.Logf("Realisation %s: %s", realisationKey, content)
 
-	// Test 1: Verify narinfo contains CA field
-	narinfoKey := hash + ".narinfo"
-	narinfoObj, err := testService.MinioClient.GetObject(ctx, testService.Bucket, narinfoKey, minio.GetObjectOptions{})
-	ok(t, err)
+	var realisation struct {
+		OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's JSON format
+	}
+	ok(t, json.Unmarshal(content, &realisation))
 
-	defer func() {
-		if err := narinfoObj.Close(); err != nil {
-			t.Logf("Failed to close narinfo object: %v", err)
-		}
-	}()
-
-	// Decompress and parse narinfo
-	compressedContent, err := io.ReadAll(narinfoObj)
-	ok(t, err)
-
-	decoder, err := zstd.NewReader(bytes.NewReader(compressedContent))
-	ok(t, err)
-
-	defer decoder.Close()
-
-	narinfoContent, err := io.ReadAll(decoder)
-	ok(t, err)
-
-	narinfoStr := string(narinfoContent)
-	if !strings.Contains(narinfoStr, "CA:") {
-		t.Errorf("Narinfo missing CA field:\n%s", narinfoStr)
+	if realisation.OutPath != filepath.Base(caPath) {
+		t.Errorf("realisation outPath = %q, want %q", realisation.OutPath, filepath.Base(caPath))
 	}
 
-	t.Logf("Narinfo contains CA field: %s", narinfoStr)
-
-	// Test 2: Check if realisations were uploaded
-	// Note: Locally built CA derivations might not have DrvOutput IDs registered,
-	// so realisations might not be uploaded. This is OK - we just verify if they exist.
-	t.Log("Checking for realisation files in S3...")
-
-	objectCh := testService.MinioClient.ListObjects(ctx, testService.Bucket, minio.ListObjectsOptions{
-		Prefix:    "realisations/",
-		Recursive: true,
-	})
-
-	realisationKeys := []string{}
-
-	for object := range objectCh {
-		if object.Err != nil {
-			t.Errorf("Error listing realisations: %v", object.Err)
-
-			continue
-		}
-
-		if strings.HasSuffix(object.Key, ".doi") {
-			realisationKeys = append(realisationKeys, object.Key)
-		}
-	}
-
-	if len(realisationKeys) == 0 {
-		t.Log("No realisation files uploaded - this is expected for locally built CA derivations")
-		t.Log("Locally built CA derivations don't have DrvOutput IDs until they're substituted from a cache")
-	}
-
-	if len(realisationKeys) > 0 {
-		t.Logf("Found %d realisation file(s): %v", len(realisationKeys), realisationKeys)
-
-		// Test 3: Verify realisation JSON structure if realisations exist
-		verifyRealisationFiles(ctx, t, testService, realisationKeys)
-	}
-
-	// Test 4: Verify Nix can retrieve the CA derivation (inlined to avoid subtest parallel issues)
-	// Configure the binary cache URL with the correct store prefix
-	endpoint := testService.MinioClient.EndpointURL().Host
-
-	// Extract NIX_STORE_DIR from nixEnv
+	// A fresh store must substitute drv^out. Unsigned: the isolated store
+	// dir can't be signed; the NixOS test checks signatures.
 	var storeDir string
 
 	for _, envVar := range nixEnv {
 		if after, ok0 := strings.CutPrefix(envVar, "NIX_STORE_DIR="); ok0 {
 			storeDir = after
-
-			break
 		}
 	}
 
@@ -234,41 +202,123 @@ func TestClientCADerivations(t *testing.T) {
 		storeDir = defaultNixStoreDir
 	}
 
-	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1&store=%s", testService.Bucket, endpoint, storeDir)
+	// Nix ignores a cache for another store dir.
+	cacheInfo := "StoreDir: " + storeDir + "\n"
+	_, err = testService.MinioClient.PutObject(ctx, testService.Bucket, "nix-cache-info",
+		strings.NewReader(cacheInfo), int64(len(cacheInfo)), minio.PutObjectOptions{ContentType: "text/plain"})
+	ok(t, err)
 
-	nixEnv = append(
-		nixEnv,
+	endpoint := testService.MinioClient.EndpointURL().Host
+	binaryCacheURL := fmt.Sprintf("s3://%s?endpoint=http://%s&region=eu-west-1", testService.Bucket, endpoint)
+
+	testEnv := slices.Concat(nixEnv, []string{
 		"AWS_ACCESS_KEY_ID=rustfsadmin",
-		"AWS_SECRET_ACCESS_KEY="+testRustfsServer.secret,
-	)
-	testEnv := nixEnv
+		"AWS_SECRET_ACCESS_KEY=" + testRustfsServer.secret,
+	})
+	otherStore := "local?root=" + filepath.Join(t.TempDir(), "other")
 
-	// Try to copy from our cache
-	copyArgs := []string{
-		"--extra-experimental-features", "nix-command flakes ca-derivations", "copy",
-		"--no-check-sigs",
-		"--from", binaryCacheURL,
-		caPath,
+	otherDrv := nixOutput(ctx, t, testEnv, "nix-instantiate", "--store", otherStore,
+		"--extra-experimental-features", "ca-derivations", nixExpr)
+	if otherDrv != drvPath {
+		t.Fatalf("derivation in the other store = %s, want %s", otherDrv, drvPath)
 	}
-	cmd := exec.CommandContext(ctx, "nix", copyArgs...)
-	cmd.Env = testEnv
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Logf("nix copy output: %s", output)
-		t.Logf("nix copy failed (might be expected with isolated stores): %v", err)
-	} else {
-		// Verify realisation is registered locally
-		realisationArgs := []string{"--extra-experimental-features", "nix-command flakes ca-derivations", "realisation", "info", caPath}
-		cmd = exec.CommandContext(ctx, "nix", realisationArgs...)
-		cmd.Env = testEnv
+	// Nix disables substitution without Internet unless it is set.
+	substituted := nixOutput(ctx, t, testEnv, "nix", "--extra-experimental-features", "nix-command ca-derivations",
+		"build", "--store", otherStore, "--no-link", "--print-out-paths", "--max-jobs", "0",
+		"--option", "substitute", "true", "--option", "substituters", binaryCacheURL, "--option", "require-sigs", "false",
+		drvPath+"^out")
+	if substituted != caPath {
+		t.Errorf("substituted %q, want %q", substituted, caPath)
+	}
+}
 
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			t.Logf("nix realisation info output: %s", output)
-			t.Logf("Failed to query realisation after copy: %v", err)
-		} else {
-			t.Logf("Realisation info after copy:\n%s", output)
+// A changed derivation that builds the same output (early cutoff) has a
+// realisation of its own, which a push of the derivation by name must add
+// although the output is already cached. The output path alone does not
+// find it: its deriver is the first derivation.
+func TestClientCAEarlyCutoff(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(func() { ts.Close() })
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	firstDrv, outPath, _ := buildCADerivation(ctx, t, nixEnv)
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{outPath}, nixEnv))
+
+	// Another derivation, the same output.
+	changed := strings.Replace(caTestExpr, `name = "ca-test";`, `name = "ca-test"; unused = "changed";`, 1)
+	secondDrv, secondOut, _ := buildCADerivationFrom(ctx, t, nixEnv, changed)
+
+	if secondDrv == firstDrv {
+		t.Fatalf("the changed expression gave the same derivation %s", firstDrv)
+	}
+
+	if secondOut != outPath {
+		t.Fatalf("the changed derivation built %s, want the cached %s", secondOut, outPath)
+	}
+
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{secondDrv + "^*"}, nixEnv))
+
+	for _, drv := range []string{firstDrv, secondDrv} {
+		key := expectedRealisationKey(ctx, t, nixEnv, drv, outPath)
+
+		var realisation struct {
+			OutPath string `json:"outPath"` //nolint:tagliatelle // Nix's JSON format
 		}
+		ok(t, json.Unmarshal(readZstdObject(ctx, t, testService, key), &realisation))
+
+		if realisation.OutPath != filepath.Base(outPath) {
+			t.Errorf("%s: outPath = %q, want %q", key, realisation.OutPath, filepath.Base(outPath))
+		}
+	}
+}
+
+// Naming an input-addressed derivation pushes its outputs, as nix copy
+// does: there is no realisation, and a backfill may name derivations whose
+// outputs were never pushed.
+func TestClientPushInputAddressedByDrv(t *testing.T) {
+	t.Parallel()
+
+	testService := createTestServiceWithAuth(t, testAuthToken)
+	t.Cleanup(func() { testService.Close() })
+	ok(t, testService.InitializeBucket(t.Context()))
+
+	mux := http.NewServeMux()
+	registerTestHandlers(mux, testService)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(func() { ts.Close() })
+
+	ctx := t.Context()
+	nixEnv := setupIsolatedNixStore(t)
+
+	inputAddressed := `
+		derivation {
+			name = "ia-test";
+			system = builtins.currentSystem;
+			builder = "/bin/sh";
+			args = [ "-c" "echo 'Hello from an input-addressed derivation' > $out" ];
+		}
+	`
+	drvPath, outPath, _ := buildCADerivationFrom(ctx, t, nixEnv, inputAddressed)
+
+	ok(t, pushToServer(ctx, ts.URL, testAuthToken, []string{drvPath + "^*"}, nixEnv))
+
+	hash := filepath.Base(outPath)[:32]
+	narinfo := string(readZstdObject(ctx, t, testService, hash+".narinfo"))
+
+	if !strings.Contains(narinfo, "StorePath: "+outPath) {
+		t.Errorf("narinfo for %s:\n%s", outPath, narinfo)
 	}
 }

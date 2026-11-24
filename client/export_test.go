@@ -108,3 +108,21 @@ func (c *Client) SetRegistrationTimeout(d time.Duration) {
 func NewStallingTransport(timeout time.Duration, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return newStallingTransport(timeout, dial)
 }
+
+// GenerateNarinfoContent re-exports generateNarinfoContent for the external test package.
+var GenerateNarinfoContent = generateNarinfoContent //nolint:gochecknoglobals // test-only re-export
+
+// ParseRealisationsJSON re-exports parseRealisationsJSON for the external test package.
+var ParseRealisationsJSON = parseRealisationsJSON //nolint:gochecknoglobals // test-only re-export
+
+// RealisationInstallable re-exports realisationInstallable for the external test package.
+var RealisationInstallable = realisationInstallable //nolint:gochecknoglobals // test-only re-export
+
+// SplitDerivationOutputs re-exports splitDerivationOutputs for the external test package.
+var SplitDerivationOutputs = splitDerivationOutputs //nolint:gochecknoglobals // test-only re-export
+
+// FloatingInstallable re-exports floatingInstallable for the external test package.
+var FloatingInstallable = floatingInstallable //nolint:gochecknoglobals // test-only re-export
+
+// WithFixedOutputs re-exports withFixedOutputs for the external test package.
+var WithFixedOutputs = withFixedOutputs //nolint:gochecknoglobals // test-only re-export
