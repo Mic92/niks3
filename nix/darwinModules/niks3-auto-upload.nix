@@ -127,6 +127,12 @@ in
             idleStr = if cfg.idleExitTimeout == 0 then "0" else "${toString cfg.idleExitTimeout}s";
           in
           [
+            # At boot launchd can start the job before the Nix volume is
+            # mounted, and it never retries a job whose program is missing.
+            "/bin/sh"
+            "-c"
+            ''/bin/wait4path /nix/store && exec "$@"''
+            "niks3-hook"
             (lib.getExe' cfg.package "niks3-hook")
             "serve"
             "--server-url"
