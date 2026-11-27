@@ -108,6 +108,8 @@ in
 
   config = lib.mkIf cfg.enable {
     nix.settings.post-build-hook = toString postBuildHookScript;
+    # Set empty default for authTokenFile if mtls is enabled so it still can be provided if needed
+    services.niks3-auto-upload.authTokenFile = lib.mkOptionDefault (lib.optionalString cfg.mtls.enable "");
 
     systemd.sockets.niks3-auto-upload = {
       description = "niks3 auto-upload socket";
@@ -147,8 +149,6 @@ in
               "serve"
               "--server-url"
               (lib.escapeShellArg cfg.serverUrl)
-              "--auth-token-path"
-              "%d/auth-token"
               "--socket"
               (lib.escapeShellArg cfg.socketPath)
               "--batch-size"
@@ -162,6 +162,10 @@ in
             ]
             ++ lib.optional cfg.verifyS3Integrity "--verify-s3-integrity"
             ++ lib.optional cfg.debug "--debug"
+            ++ lib.optionals (cfg.authTokenFile != "") [
+              "--auth-token-path"
+              "%d/auth-token"
+            ]
             ++ lib.optionals cfg.mtls.enable [
               "--client-cert"
               "%d/client-cert"
@@ -182,7 +186,7 @@ in
         CacheDirectory = "niks3-hook";
         # Secrets are typically root-only (sops-nix, agenix). systemd hands
         # the dynamic user a private copy.
-        LoadCredential = [
+        LoadCredential = lib.optionals (cfg.authTokenFile != "") [
           "auth-token:${cfg.authTokenFile}"
         ]
         ++ lib.optionals cfg.mtls.enable [
